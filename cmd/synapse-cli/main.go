@@ -1181,6 +1181,20 @@ func runScan() {
 		case os.Args[i] == "--project" && i+1 < len(os.Args):
 			push.project = os.Args[i+1]
 			i++
+		// Upload the scanned tree for the analysis this push creates. Without it the console's Code
+		// view reports source as unavailable with reason not_retained, because the CLI pushes results
+		// and not files. `synapse-cli publish-source` does the same thing as a separate step against
+		// an analysis id; this does it in the same run, which is what a pipeline wants.
+		case os.Args[i] == "--push-source":
+			push.source = true
+		// Record the scan's security findings on an engagement, through the server's own SARIF ingest.
+		// Independent of --project: a pipeline may record code quality, engagement findings, or both.
+		case os.Args[i] == "--engagement" && i+1 < len(os.Args):
+			push.engagement = os.Args[i+1]
+			i++
+		case os.Args[i] == "--asset" && i+1 < len(os.Args):
+			push.asset = os.Args[i+1]
+			i++
 		case os.Args[i] == "--branch" && i+1 < len(os.Args):
 			push.ci.Branch = os.Args[i+1]
 			i++
@@ -2029,13 +2043,50 @@ func run(path string, failOn shared.Severity, mode, priority, minConfidence, bas
 	if push.enabled() {
 		pushCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
-		analysis, console, perr := pushAnalysis(pushCtx, pushHTTPClient(), push, res)
-		if perr != nil {
-			// A pipeline that asked for its result to be recorded must not go green because the
-			// record silently did not happen, so this is a failure whatever the local gate says.
-			return fmt.Errorf("record analysis on the server: %w", perr)
+		if push.pushesEngagement() {
+			ruleMeta, rerr := exportcompose.SARIFRuleMeta(pushCtx)
+			if rerr != nil {
+				return fmt.Errorf("load rule catalog for the engagement ingest: %w", rerr)
+			}
+			document, merr := exportuc.MarshalSARIF(res.Findings, buildinfo.App(), exportuc.SARIFOptions{RuleMeta: ruleMeta})
+			if merr != nil {
+				return fmt.Errorf("encode findings for the engagement ingest: %w", merr)
+			}
+			ingest, ierr := pushEngagementSARIF(pushCtx, pushHTTPClient(), push, document)
+			if ierr != nil {
+				// Same rule as the analysis push: a pipeline that asked for its findings to be recorded
+				// must not go green because the record did not happen.
+				return fmt.Errorf("record engagement findings on the server: %w", ierr)
+			}
+			reportEngagementIngest(os.Stdout, push.engagement, ingest)
 		}
-		reportPush(analysis, console)
+		if push.pushesAnalysis() {
+			analysis, console, perr := pushAnalysis(pushCtx, pushHTTPClient(), push, res)
+			if perr != nil {
+				// A pipeline that asked for its result to be recorded must not go green because the
+				// record silently did not happen, so this is a failure whatever the local gate says.
+				return fmt.Errorf("record analysis on the server: %w", perr)
+			}
+			reportPush(analysis, console)
+			if push.source {
+				// Best-effort on purpose: the analysis is already recorded and its gate already decided, so
+				// failing the pipeline here would turn a Code-view convenience into a build break. The
+				// warning names the separate command that retries it against the same analysis.
+				manifest, serr := publishSourceFromAnalysis(pushCtx, pushHTTPClient(), push.server, push.token,
+					push.project, analysis.ID, target, buildinfo.App())
+				switch {
+				case serr != nil:
+					fmt.Fprintf(os.Stderr, "warning: source not published for analysis %s: %v\n", analysis.ID, serr)
+					fmt.Fprintf(os.Stderr, "         the Code view will report source as unavailable; retry with:\n")
+					fmt.Fprintf(os.Stderr, "         synapse-cli publish-source --server %s --project %s --analysis %s %s\n",
+						push.server, push.project, analysis.ID, target)
+				case manifest.Truncated:
+					fmt.Printf("Source published for the Code view: %d files retained, truncated at the server's limit\n", len(manifest.Files))
+				default:
+					fmt.Printf("Source published for the Code view: %d files retained\n", len(manifest.Files))
+				}
+			}
+		}
 	}
 
 	gate := shared.SeverityRank(failOn)

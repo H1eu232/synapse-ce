@@ -9,6 +9,8 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ### Added
 
+- **A pipeline scan can record its security findings on an engagement.** `--server --project` recorded a code-quality analysis and the security findings of the same run had no destination, so an engagement stayed empty while CI was green. `--engagement <id>` now posts them through `POST /api/v1/engagements/{id}/sarif`, the server's own ingest path, so they are deduplicated against first-party findings and the refusals and coverage gaps the server decided are reported rather than hidden. `--asset <id>` binds them to a business asset. The two destinations are independent: `--server` asks for `--project`, `--engagement`, or both.
+- **`--push-source` uploads the scanned tree with the analysis.** A CI-pushed analysis reported source as unavailable with the reason `not_retained`, because the CLI pushes results and not files and only a server-side git or archive acquisition retains source; the `publish-source` subcommand could do it afterwards against an analysis id, which a pipeline had no reason to know. The flag does it in the same run, best-effort: the analysis and its gate are already recorded by then, so a failed upload warns and names the retry instead of failing the build.
 - **A code-quality project can be deleted from the console.** `DELETE /api/v1/projects/{key}` has existed since the route table was written, and nothing in the dashboard called it, so a project could be created and never removed. The control is on the project detail page rather than on a card in the grid, because a delete takes the project's analyses and their history with it; it confirms with the project key and is disabled while an analysis is running.
 
 ### Fixed
