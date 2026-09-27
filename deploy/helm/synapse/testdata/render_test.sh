@@ -16,7 +16,11 @@ helm template synapse "$chart_dir" -f "$values" --kube-version 1.29.0 \
   --set execution.mode=inClusterBroker \
   --set egressBroker.enabled=true \
   --set egressBroker.grantAuthorityURL=https://grant.internal.example \
-  --set egressBroker.grantPublicKey=Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyMzJieXRlcw== >"$in_cluster"
+  --set egressBroker.grantPublicKey=Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyMzJieXRlcw== \
+  `# The broker mounts /run/netns with bidirectional propagation, which the kubelet allows only on a` \
+  `# privileged container, so the capability-scoped default renders a DaemonSet the API server rejects.` \
+  `# A render guard now refuses that combination; this leg has to ask for the posture it is testing.` \
+  --set egressBroker.privileged=true >"$in_cluster"
 
 # controlPlaneOnly must BOOT on any node (managed EKS / kind): non-production, sandbox off, in-process,
 # no worker, no broker, and it does NOT require the grant authority. This is the portable/offline posture.

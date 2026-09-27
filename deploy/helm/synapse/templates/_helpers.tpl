@@ -126,6 +126,9 @@ broker DaemonSet enabled and an execution node selector.
 {{- if not .Values.egressBroker.nodeSelector -}}
 {{- fail "execution.mode=inClusterBroker requires egressBroker.nodeSelector to pin the broker and worker to execution-capable nodes (unprivileged userns + delegated cgroup v2)" -}}
 {{- end -}}
+{{- if not .Values.egressBroker.privileged -}}
+{{- fail "execution.mode=inClusterBroker requires egressBroker.privileged=true: the broker mounts /run/netns with mountPropagation Bidirectional so a per-run netns is visible to the worker, and the kubelet allows bidirectional propagation only on a privileged container. The capability-scoped path is rejected by the API server (\"Bidirectional mount propagation is available only to privileged containers\"), so this fails at render time instead. Use execution.mode=externalNative to keep execution off the cluster" -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 
@@ -271,6 +274,10 @@ broker DaemonSet enabled and an execution node selector.
 {{- /* Scan-time settings. Every one of these only exists on the component that runs a scan, and each is
      omitted entirely when unset so the binary keeps its own default rather than being handed an empty value. */}}
 {{- with .Values.scan }}
+{{- if .maxWorkspaceBytes }}
+- name: SYNAPSE_MAX_WORKSPACE_BYTES
+  value: {{ .maxWorkspaceBytes | quote }}
+{{- end }}
 {{- if .sastSourceBudgetBytes }}
 - name: SYNAPSE_SAST_SOURCE_BUDGET_BYTES
   value: {{ .sastSourceBudgetBytes | quote }}
