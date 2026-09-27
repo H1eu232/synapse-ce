@@ -81,15 +81,50 @@ jobs:
           git push --force origin "refs/tags/$ACTION_MAJOR"
 
   image:
-    name: synapse-cli image
+    name: ${{ matrix.image }} image
     runs-on: ubuntu-latest
     # Independent of goreleaser: a release whose binaries publish but whose image build fails must be visible
-    # as a failed image job, not hidden behind a skipped step.
+    # as a failed image job, not hidden behind a skipped step. One row per image the deploy artefacts
+    # reference, so an image nobody built is a red job rather than a pull that fails in a cluster months
+    # later. Two releases shipped with the Helm chart pointing at ghcr.io/kkloudtarus/synapse and
+    # ghcr.io/kkloudtarus/synapse-web, neither of which had ever been pushed.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The CLI: what a pipeline runs, and what the reusable action installs.
+          - image: synapse-cli
+            file: Dockerfile.cli
+            target: ""
+            platforms: linux/amd64,linux/arm64
+          # The control plane: api, worker, migrate, the egress broker and the sandbox helpers, at the
+          # /opt/synapse paths the chart's commands name. amd64 only, because the production target builds
+          # Synapse's seccomp filter for linux/amd64 and bubblewrap needs that runtime.
+          - image: synapse
+            file: deploy/Dockerfile
+            target: production
+            platforms: linux/amd64
+          # The dashboard: a static server, since the ingress routes /api, /healthz and /readyz to the api.
+          - image: synapse-web
+            file: deploy/Dockerfile.web
+            target: production
+            platforms: linux/amd64,linux/arm64
+          # The endpoint agent, deployed by deploy/k8s/endpoint-agent-daemonset.yaml.
+          - image: synapse-agent
+            file: deploy/Dockerfile.agent
+            target: endpoint
+            platforms: linux/amd64,linux/arm64
+          # The cluster agent, deployed by deploy/k8s/cluster-agent.yaml.
+          - image: synapse-cluster-agent
+            file: deploy/Dockerfile.agent
+            target: cluster
+            platforms: linux/amd64,linux/arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # Dockerfile.cli cross-compiles with CGO_ENABLED=0 from a native builder, so arm64 needs buildx but no
-      # QEMU: nothing is emulated and the build is as fast as the amd64 one.
+      # Every Dockerfile here cross-compiles with CGO_ENABLED=0 from a native builder, so arm64 needs buildx
+      # but no QEMU: nothing is emulated and the build is as fast as the amd64 one. The one CGO stage, the
+      # tree-sitter helper in deploy/Dockerfile, is why the control-plane image stays single-arch.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -104,16 +139,17 @@ jobs:
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
-          file: Dockerfile.cli
-          platforms: linux/amd64,linux/arm64
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platforms }}
           push: true
           build-args: |
             VERSION=${{ github.ref_name }}
           tags: |
-            ghcr.io/kkloudtarus/synapse-cli:${{ github.ref_name }}
-            ghcr.io/kkloudtarus/synapse-cli:latest
+            ghcr.io/kkloudtarus/${{ matrix.image }}:${{ github.ref_name }}
+            ghcr.io/kkloudtarus/${{ matrix.image }}:latest
           labels: |
-            org.opencontainers.image.title=synapse-cli
+            org.opencontainers.image.title=${{ matrix.image }}
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/KKloudTarus/synapse-ce
