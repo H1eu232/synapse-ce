@@ -52,12 +52,12 @@ type Config struct {
 	// APIToken protects all API + UI routes; required (no anonymous access).
 	APIToken string
 	// OIDCEnabled enables the browser-based OIDC authorization-code BFF flow.
-	OIDCEnabled          bool
-	OIDCIssuer           string
-	OIDCClientID         string
-	OIDCClientSecret     string
-	OIDCRedirectURL      string
-	OIDCFrontendURL      string
+	OIDCEnabled      bool
+	OIDCIssuer       string
+	OIDCClientID     string
+	OIDCClientSecret string
+	OIDCRedirectURL  string
+	OIDCFrontendURL  string
 	// PublicBaseURL is the trusted console URL for outbound links, independent of OIDC enablement.
 	PublicBaseURL        string
 	OIDCTenantID         string
