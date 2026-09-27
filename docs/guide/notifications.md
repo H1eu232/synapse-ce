@@ -75,6 +75,26 @@ of these events:
 - `incident.created`
 - `finding.ownership_changed` (requires explicit `team_ids` or `all_teams` scope)
 
+Each event type accepts only the rule filters its producer can satisfy, and a rule
+with any other filter is rejected when it is saved:
+
+| Event | Filters |
+| --- | --- |
+| `vulnerability_action.created` | severity floor, action types, engagements |
+| `scan.completed` | engagements |
+| `quality_gate.failed` | none |
+| `sla.approaching_deadline` | engagements, lead time (24 hours by default) |
+| `fleet.agent.offline` | none |
+| `incident.created` | severity floor, engagements |
+| `finding.ownership_changed` | engagements, teams (required) |
+| `notification.destination_changed` | none; operator-driven, and a rule cannot target it |
+
+The severity floor is inclusive. Quality gate and fleet events carry no engagement,
+so an engagement scope on them could never match. Rules of that shape saved before
+this check were disabled on upgrade with `disabled_reason: engagement_filter_unsupported`;
+their engagement list is kept so you can see what was intended. Remove the engagement
+scope and save the rule to enable it again.
+
 Engagement and team scope use searchable pickers over the existing engagement
 list and ownership team pages. Each choice keeps its stable ID beside the
 display name, including when two records share a name. A saved ID that the
@@ -100,8 +120,7 @@ Personal recipients come from structured IDs already on the event: the canonical
 
 `PUT /api/v1/me/notification-preferences` stores `inherit`, `enabled`, or `disabled` for the signed-in user. Mandatory in-app wins over an explicit mute, and an explicit mute wins over the default for every other choice. Personal email is sent only to the verified contact version captured when the event was projected. A later email change does not retarget a message that is still queued. Personal delivery is currently available for finding ownership changes, approaching SLAs, and destination-change notices. Other framework event types, Slack direct messages, and Teams personal delivery are shown as unavailable until they have a structured personal recipient and subject.
 
-Vulnerability and incident rules can set an inclusive severity floor. SLA rules
-set a lead time (24 hours by default). Events created before the framework first
+Events created before the framework first
 activates for a tenant are not replayed automatically.
 
 Only tenant administrators (`PermAdminister`) can read or change these settings,
