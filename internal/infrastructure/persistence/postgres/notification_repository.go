@@ -768,12 +768,32 @@ func (r *NotificationRepository) CancelDelivery(ctx context.Context, tenant, did
 	})
 }
 
-func (r *NotificationRepository) DeadLetterDelivery(ctx context.Context, tenant, did shared.ID, reason string) error {
-	return WithTenant(ctx, r.pool, tenant.String(), func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `WITH changed AS (UPDATE notification_deliveries d SET state='dead_letter',last_error=$3,next_attempt_at=NULL,updated_at=now() WHERE tenant_id=$1 AND id=$2 AND state IN ('pending','retrying') AND EXISTS(SELECT 1 FROM jobs j WHERE j.tenant_id=d.tenant_id AND j.id='notification-'||d.id AND j.status='failed') RETURNING id)
-        INSERT INTO notification_audit_intents(tenant_id,id,delivery_id,action,error_code,occurred_at) SELECT $1,'dead:'||id,id,'notification.delivery_failed',$3,now() FROM changed ON CONFLICT DO NOTHING`, tenant, did, sanitizeError(reason))
+func (r *NotificationRepository) DeadLetterDelivery(ctx context.Context, tenant, did shared.ID, reason string) (bool, error) {
+	changed := false
+	err := WithTenant(ctx, r.pool, tenant.String(), func(tx pgx.Tx) error {
+		// The delivery and its queue job are locked/updated in the same
+		// transaction, so racing callbacks cannot both claim the transition.
+		tag, err := tx.Exec(ctx, `UPDATE notification_deliveries d
+			SET state='dead_letter',last_error=$3,next_attempt_at=NULL,updated_at=now()
+			WHERE tenant_id=$1 AND id=$2 AND state IN ('pending','retrying')
+			AND EXISTS(SELECT 1 FROM jobs j WHERE j.tenant_id=d.tenant_id
+				AND j.id='notification-'||d.id AND j.status='failed')`, tenant, did, sanitizeError(reason))
+		if err != nil || tag.RowsAffected() == 0 {
+			return err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO notification_audit_intents
+			(tenant_id,id,delivery_id,action,error_code,occurred_at)
+			VALUES($1,'dead:'||$2,$2,'notification.delivery_failed',$3,now())
+			ON CONFLICT DO NOTHING`, tenant, did, sanitizeError(reason))
+		if err == nil {
+			changed = true
+		}
 		return err
 	})
+	if err != nil {
+		return false, err // a transaction that failed to commit changed nothing
+	}
+	return changed, nil
 }
 
 func stableID(parts ...string) shared.ID {

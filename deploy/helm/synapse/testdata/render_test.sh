@@ -23,6 +23,36 @@ helm template synapse "$chart_dir" -f "$values" --kube-version 1.29.0 \
 cpo=$(mktemp); trap 'rm -f "$out" "$in_cluster" "$cpo"' EXIT
 helm template synapse "$chart_dir" -f "$chart_dir/values-dev.yaml" --kube-version 1.29.0 \
   --set execution.mode=controlPlaneOnly >"$cpo"
+
+# Optional worker scrape endpoint: private by default, explicitly scoped
+# to the monitoring namespace when enabled; never routed through the ingress.
+worker_metrics=$(mktemp)
+trap 'rm -f "$out" "$in_cluster" "$cpo" "$worker_metrics"' EXIT
+! grep -Eq 'name: [^ ]*worker-metrics$' "$in_cluster"
+helm template synapse "$chart_dir" -f "$values" --kube-version 1.29.0 \
+  --set execution.mode=inClusterBroker \
+  --set egressBroker.enabled=true \
+  --set egressBroker.grantAuthorityURL=https://grant.internal.example \
+  --set egressBroker.grantPublicKey=Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyMzJieXRlcw== \
+  --set worker.metrics.enabled=true \
+  --set worker.metrics.port=9091 \
+  --set worker.metrics.monitoringNamespace=monitoring >"$worker_metrics"
+grep -q 'containerPort: 9091' "$worker_metrics"
+grep -q 'value: "0.0.0.0:9091"' "$worker_metrics"
+awk '
+  /^---$/ {kind=""; policy=0}
+  /^kind: Service$/ {kind="svc"}
+  /^kind: NetworkPolicy$/ {kind="np"}
+  /name: [^ ]*worker-metrics$/ {
+    if (kind=="svc") service=1
+    if (kind=="np") policy=1
+  }
+  policy && /app.kubernetes.io\/component: worker/ {selector=1}
+  policy && /kubernetes.io\/metadata.name: "monitoring"/ {monitor=1}
+  policy && /port: 9091/ {port=1}
+  END {exit service && selector && monitor && port ? 0 : 1}
+' "$worker_metrics"
+! awk '/^kind: Ingress$/{ingress=1} /^---$/{ingress=0} ingress && /9091|worker-metrics/{found=1} END{exit found ? 0 : 1}' "$worker_metrics"
 grep -q 'value: development' "$cpo"
 awk '/name: SYNAPSE_SANDBOX_ENABLED/{getline; if ($0 ~ /value: "false"/) ok=1} END{exit ok?0:1}' "$cpo"
 ! grep -q 'app.kubernetes.io/component: worker' "$cpo"

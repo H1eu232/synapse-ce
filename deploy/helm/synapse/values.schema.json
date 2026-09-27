@@ -456,7 +456,8 @@
         "nodeSelector",
         "tolerations",
         "affinity",
-        "integrationScheduler"
+        "integrationScheduler",
+        "metrics"
       ],
       "properties": {
         "enabled": {
@@ -475,6 +476,16 @@
         },
         "affinity": {
           "type": "object"
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "port", "monitoringNamespace"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+            "monitoringNamespace": {"type": "string", "minLength": 1}
+          }
         },
         "integrationScheduler": {
           "type": "object",
