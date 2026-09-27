@@ -53,8 +53,9 @@ type NotificationSender interface {
 	Send(context.Context, NotificationWork, NotificationChannelConfig) NotificationSendResult
 }
 
-// NotificationRepository owns the transactional event → rule → delivery → job
-// handoff. Publish must be idempotent on (tenant, source kind, source id).
+// NotificationRepository owns notification administration and delivery work.
+// Producers publish through their transactional stores; PublishToChannel is
+// retained for targeted channel publication.
 type NotificationRepository interface {
 	CreateChannel(context.Context, notification.Channel, string) (notification.Channel, error)
 	UpdateChannel(context.Context, notification.Channel, string, bool) (notification.Channel, error)
@@ -68,7 +69,6 @@ type NotificationRepository interface {
 	GetRule(context.Context, shared.ID, shared.ID) (notification.Rule, error)
 	ListRules(context.Context, shared.ID) ([]notification.Rule, error)
 
-	Publish(context.Context, notification.Event) ([]shared.ID, error)
 	PublishToChannel(context.Context, notification.Event, shared.ID) (shared.ID, error)
 	GetDelivery(context.Context, shared.ID, shared.ID) (notification.Delivery, error)
 	ListDeliveries(context.Context, NotificationDeliveryFilter) (notification.Page, error)
