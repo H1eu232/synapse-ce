@@ -216,7 +216,7 @@ func (r *EngagementRepository) ListPromotionReconciliationScopes(ctx context.Con
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	tenants, err := r.pool.Query(ctx, `SELECT id FROM tenants ORDER BY id`)
+	tenants, err := r.pool.Query(ctx, `SELECT id FROM tenants WHERE id <> '' ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list promotion reconciliation tenants: %w", err)
 	}
