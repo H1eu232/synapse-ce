@@ -48,6 +48,186 @@ type scriptDriver struct {
 	fn    func(call int, req siem.Delivery) (siem.DeliveryResult, error)
 }
 
+type delayedAckDriver struct {
+	posts int
+	polls int
+}
+
+type captureSIEMMetrics struct {
+	items   map[siem.ItemDisposition]int
+	backlog map[string]int
+}
+
+func (m *captureSIEMMetrics) Batch(string, string) {}
+func (m *captureSIEMMetrics) Retry(string)         {}
+func (m *captureSIEMMetrics) Gap(string)           {}
+func (m *captureSIEMMetrics) Backlog(source string, _ float64, count int) {
+	if m.backlog == nil {
+		m.backlog = map[string]int{}
+	}
+	m.backlog[source] = count
+}
+func (m *captureSIEMMetrics) Blocked(string) {}
+func (m *captureSIEMMetrics) Items(_ string, disposition string, n int) {
+	m.items[siem.ItemDisposition(disposition)] += n
+}
+
+func TestCommittedItemMetricsSeparateDispositionsAndDoNotRecount(t *testing.T) {
+	svc, store, _, _, clock := testService(t)
+	ctx := shared.WithTenant(context.Background(), "tenant-a")
+	sink, err := svc.Create(ctx, "ada", SinkInput{Name: "Metrics", Provider: siem.ProviderSplunk,
+		Origin: "https://splunk.example:8088", Secret: "splunk-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := store.Claim(ctx, "worker", sink, siem.SourceAudit, clock.now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := make([]siem.BatchItem, 4)
+	for i, disposition := range []siem.ItemDisposition{siem.ItemAcked, siem.ItemQuarantined, siem.ItemSuppressed, siem.ItemAcked} {
+		items[i] = siem.BatchItem{Ordinal: i, RecordID: itoa(i + 1), Position: siem.Position{
+			Source: siem.SourceAudit, AuditID: int64(i + 1), AuditHash: itoa(i + 1), HashVersion: 2},
+			Disposition: disposition, PayloadDigest: "digest", DataClass: siem.ClassSignal}
+	}
+	batch := siem.Batch{ID: "batch-metrics", TenantID: sink.TenantID, SinkID: sink.ID, Source: siem.SourceAudit,
+		Generation: sink.Generation, LeaseToken: lease.Token, State: siem.BatchAcked,
+		PolicyVersion: "signal/v1", MappingVersion: "v1", Items: items, CreatedAt: clock.now, UpdatedAt: clock.now}
+	metrics := &captureSIEMMetrics{items: map[siem.ItemDisposition]int{}}
+	svc.SetMetrics(metrics)
+	if err := svc.finish(ctx, lease, batch, sink.Provider, clock.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.finish(ctx, lease, batch, sink.Provider, clock.now); err != nil {
+		t.Fatal(err)
+	}
+	if metrics.items[siem.ItemAcked] != 2 || metrics.items[siem.ItemQuarantined] != 1 || metrics.items[siem.ItemSuppressed] != 1 {
+		t.Fatalf("metrics counted cumulative prefix or wrong disposition: %+v", metrics.items)
+	}
+}
+
+func TestTickPublishesBacklogForAllSources(t *testing.T) {
+	svc, _, _, _, _ := testService(t)
+	ctx := shared.WithTenant(context.Background(), "tenant-a")
+	if _, err := svc.Create(ctx, "ada", SinkInput{Name: "Metrics", Provider: siem.ProviderSplunk,
+		Origin: "https://splunk.example:8088", Secret: "splunk-token"}); err != nil {
+		t.Fatal(err)
+	}
+	metrics := &captureSIEMMetrics{items: map[siem.ItemDisposition]int{}}
+	svc.SetMetrics(metrics)
+	if _, err := svc.Tick(ctx, "worker", TickBudget{MaxPartitions: 3}); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range partitions() {
+		if _, found := metrics.backlog[string(source)]; !found {
+			t.Fatalf("missing backlog metric for %s: %+v", source, metrics.backlog)
+		}
+	}
+}
+
+func TestTickRotatesSinksUnderPartitionBudget(t *testing.T) {
+	svc, store, driver, _, clock := testService(t)
+	ctx := shared.WithTenant(context.Background(), "tenant-a")
+	for i := 0; i < 4; i++ {
+		if _, err := svc.Create(ctx, "ada", SinkInput{Name: "Sink " + itoa(i),
+			Provider: siem.ProviderSplunk, Origin: "https://splunk.example:8088", Secret: "splunk-token"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fact := chain("ada", "user.login", "console", "", clock.now, nil)
+	fact.ID = 1
+	store.AddAudit("tenant-a", fact, nil)
+	for i := 0; i < 4; i++ {
+		if _, err := svc.Tick(ctx, "worker", TickBudget{MaxPartitions: 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if driver.calls != 4 {
+		sinks, _ := store.ListSinks(ctx)
+		for _, sink := range sinks {
+			cp, ok, _ := store.Checkpoint(ctx, sink.ID, siem.SourceAudit)
+			t.Logf("sink %s cursor %+v found=%v", sink.Name, cp.Position, ok)
+		}
+		t.Fatalf("fourth sink starved under budget: calls=%d", driver.calls)
+	}
+}
+
+func TestReplayHeadUsesLastIncidentBeyondFirstPage(t *testing.T) {
+	svc, store, _, _, _ := testService(t)
+	ctx := shared.WithTenant(context.Background(), "tenant-a")
+	sink, err := svc.Create(ctx, "ada", SinkInput{Name: "Replay", Provider: siem.ProviderSplunk,
+		Origin: "https://old.example", Secret: "splunk-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for seq := 1; seq <= 150; seq++ {
+		store.AddIncident("tenant-a", siem.IncidentFact{Phase: siem.PhaseLive, StreamSeq: int64(seq),
+			IncidentID: "incident-" + itoa(seq), EventSeq: 1, Kind: "created"})
+	}
+	if _, err := svc.ChangeOrigin(ctx, "ada", sink.ID, OriginInput{
+		Origin: "https://new.example", Secret: "new-token", Replay: siem.ReplayHead, Version: sink.Version,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cp, found, err := store.Checkpoint(ctx, sink.ID, siem.SourceIncidentLive)
+	if err != nil || !found || cp.Position.StreamSeq != 150 {
+		t.Fatalf("head stopped at first page: %+v found=%v err=%v", cp, found, err)
+	}
+}
+
+func (d *delayedAckDriver) Deliver(_ context.Context, _ siem.Delivery) (siem.DeliveryResult, error) {
+	d.posts++
+	id := int64(0)
+	return siem.DeliveryResult{IndexerAckID: &id}, nil
+}
+
+func (d *delayedAckDriver) PollAck(_ context.Context, _ siem.Delivery, id int64) (bool, time.Duration, error) {
+	if id != 0 {
+		return false, 0, invalid("wrong receipt")
+	}
+	d.polls++
+	return d.polls >= 3, 0, nil
+}
+
+func TestIndexerReceiptSurvivesRetryAndRestartWithoutRepost(t *testing.T) {
+	svc, store, _, auditLog, clock := testService(t)
+	ctx := shared.WithTenant(context.Background(), "tenant-a")
+	driver := &delayedAckDriver{}
+	svc.drivers[siem.ProviderSplunk] = driver
+	sink, err := svc.Create(ctx, "ada", SinkInput{
+		Name: "Indexer", Provider: siem.ProviderSplunk, Origin: "https://splunk.example:8088",
+		AckMode: siem.AckIndexer, IndexerAckSupported: true, Secret: "splunk-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact := chain("ada", "user.login", "console", "", clock.now, nil)
+	fact.ID = 1
+	store.AddAudit("tenant-a", fact, nil)
+	if _, err := svc.Tick(ctx, "worker-a", TickBudget{MaxPartitions: 3}); err != nil {
+		t.Fatal(err)
+	}
+	batch, _, found, err := store.OpenBatch(ctx, sink.ID, siem.SourceAudit)
+	if err != nil || !found || batch.State != siem.BatchAwaitingAck || batch.IndexerAckID == nil || *batch.IndexerAckID != 0 {
+		t.Fatalf("receipt was not persisted: %+v %v", batch, err)
+	}
+	for i := 1; i <= 3; i++ {
+		restarted, err := NewService(store, store, store, svc.sealer,
+			map[siem.Provider]ports.SIEMDriver{siem.ProviderSplunk: driver}, auditLog,
+			fakeClock{now: clock.now.Add(time.Duration(i) * time.Minute)}, &seqIDs{n: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := restarted.Tick(ctx, "worker-b", TickBudget{MaxPartitions: 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cp, found, err := store.Checkpoint(ctx, sink.ID, siem.SourceAudit)
+	if err != nil || !found || cp.Position.AuditID != 1 || driver.posts != 1 || driver.polls != 3 {
+		t.Fatalf("receipt was reposted or lost: cp=%+v found=%v posts=%d polls=%d err=%v", cp, found, driver.posts, driver.polls, err)
+	}
+}
+
 func (d *scriptDriver) Deliver(_ context.Context, req siem.Delivery) (siem.DeliveryResult, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -97,6 +277,38 @@ func testService(t *testing.T) (*Service, *Memory, *scriptDriver, *memAudit, fak
 		t.Fatal(err)
 	}
 	return svc, store, driver, auditLog, clock
+}
+
+func TestUpdateMergesOnlyPresentFields(t *testing.T) {
+	svc, _, _, _, _ := testService(t)
+	ctx := shared.WithTenant(context.Background(), "tenant-a")
+	created, err := svc.Create(ctx, "ada", SinkInput{
+		Name: "Main", Provider: siem.ProviderSplunk, Origin: "https://splunk.example:8088",
+		DataClass: siem.ClassSummary, AllowHosts: []string{"splunk.example"}, Secret: "splunk-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := svc.Update(ctx, "ada", created.ID, SinkInput{Name: "Renamed", Version: created.Version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "Renamed" || updated.Origin != created.Origin || updated.Target != created.Target ||
+		updated.DataClass != created.DataClass || updated.AckMode != created.AckMode ||
+		len(updated.AllowHosts) != 1 || updated.AllowHosts[0] != "splunk.example" {
+		t.Fatalf("rename changed omitted fields: %+v", updated)
+	}
+	cleared, err := svc.Update(ctx, "ada", created.ID, SinkInput{
+		Version: updated.Version, AllowHostsPresent: true, AllowHosts: []string{},
+	})
+	if err != nil || len(cleared.AllowHosts) != 0 {
+		t.Fatalf("explicit empty allowlist: %+v, %v", cleared, err)
+	}
+	if _, err := svc.Update(ctx, "ada", created.ID, SinkInput{
+		Version: cleared.Version, Provider: siem.ProviderElasticsearch,
+	}); err == nil {
+		t.Fatal("provider change was silently accepted")
+	}
 }
 
 func chain(actor, action, target, prev string, at time.Time, meta map[string]string) siem.AuditFact {

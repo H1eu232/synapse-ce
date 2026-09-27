@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { Dataflow03 } from '@untitledui/icons'
 import { ApiError, api } from '../../lib/api'
-import type { SIEMAckMode, SIEMDataClass, SIEMProvider, SIEMSink, SIEMStatus } from '../../lib/api'
+import type { SIEMAckMode, SIEMProvider, SIEMSink, SIEMStatus } from '../../lib/api'
 import { Button, Card, EmptyState, ErrorState, Field, Input, Select, Spinner } from '../../components/ui'
 import { useFetch } from '../../hooks'
 
@@ -90,7 +90,12 @@ export function SIEM() {
                     {sink.paused ? (
                       <Button type="button" onClick={() => void run(() => api.resumeSIEMSink(sink.id, sink.version), load, setError)}>Resume</Button>
                     ) : (
-                      <Button type="button" onClick={() => void run(() => api.pauseSIEMSink(sink.id, sink.version), load, setError)}>Pause</Button>
+                      <>
+                        <Button type="button" onClick={() => void run(() => api.pauseSIEMSink(sink.id, sink.version), load, setError)}>Pause</Button>
+                        {sink.blocked_reason ? (
+                          <Button type="button" onClick={() => void run(() => api.resumeSIEMSink(sink.id, sink.version), load, setError)}>Resume</Button>
+                        ) : null}
+                      </>
                     )}
                   </div>
                 </div>
@@ -109,14 +114,13 @@ function CreateSink({ onCreated }: { onCreated: () => void }) {
   const [provider, setProvider] = useState<SIEMProvider>('splunk_hec')
   const [origin, setOrigin] = useState('')
   const [target, setTarget] = useState('')
-  const [dataClass, setDataClass] = useState<SIEMDataClass>('signal')
   const [secret, setSecret] = useState('')
   const [error, setError] = useState<string | null>(null)
   async function submit(event: FormEvent) {
     event.preventDefault()
     setError(null)
     try {
-      await api.createSIEMSink({ name, provider, origin, target, data_class: dataClass, secret })
+      await api.createSIEMSink({ name, provider, origin, target, data_class: 'signal', secret })
       setName('')
       setOrigin('')
       setTarget('')
@@ -150,19 +154,10 @@ function CreateSink({ onCreated }: { onCreated: () => void }) {
         <Field label={provider === 'elasticsearch' ? 'Index' : 'Collector path'} htmlFor="siem-target">
           <Input id="siem-target" value={target} onChange={(event) => setTarget(event.target.value)} placeholder={provider === 'elasticsearch' ? 'synapse-siem' : '/services/collector/event'} />
         </Field>
-        <Field label="Data class" htmlFor="siem-class">
-          <Select
-            id="siem-class"
-            ariaLabel="Data class"
-            value={dataClass}
-            onValueChange={(value) => setDataClass(value as SIEMDataClass)}
-            options={[
-              { value: 'signal', label: 'Signal' },
-              { value: 'summary', label: 'Summary' },
-              { value: 'detail', label: 'Detail' },
-            ]}
-          />
-        </Field>
+        <div className="text-sm">
+          <p className="font-medium">Data class: Signal</p>
+          <p>Summary and Detail require a wired engagement policy and are not currently available.</p>
+        </div>
         <Field label="Credential" htmlFor="siem-secret">
           <Input id="siem-secret" type="password" value={secret} onChange={(event) => setSecret(event.target.value)} autoComplete="new-password" required />
         </Field>

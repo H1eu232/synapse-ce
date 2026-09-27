@@ -7,6 +7,7 @@ import "github.com/prometheus/client_golang/prometheus"
 type SIEMMetrics struct {
 	batches *prometheus.CounterVec
 	items   *prometheus.CounterVec
+	dropped *prometheus.CounterVec
 	retries *prometheus.CounterVec
 	gaps    *prometheus.CounterVec
 	blocked *prometheus.CounterVec
@@ -19,13 +20,14 @@ func NewSIEMMetrics(registry *prometheus.Registry) *SIEMMetrics {
 	m := &SIEMMetrics{
 		batches: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "synapse_siem_batches_total", Help: "SIEM batches by provider and result."}, []string{"provider", "result"}),
 		items:   prometheus.NewCounterVec(prometheus.CounterOpts{Name: "synapse_siem_items_total", Help: "SIEM records by provider and disposition."}, []string{"provider", "disposition"}),
+		dropped: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "synapse_siem_dropped_total", Help: "SIEM records handled without provider delivery."}, []string{"provider", "disposition"}),
 		retries: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "synapse_siem_retries_total", Help: "SIEM retryable provider failures."}, []string{"provider"}),
 		gaps:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "synapse_siem_gaps_total", Help: "SIEM source gaps and chain breaks."}, []string{"source"}),
 		blocked: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "synapse_siem_blocked_total", Help: "SIEM partitions blocked for an operator."}, []string{"reason"}),
 		backlog: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "synapse_siem_backlog_age_seconds", Help: "Age of the oldest unsent SIEM record."}, []string{"source"}),
 		lag:     prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "synapse_siem_lag_records", Help: "Unsent SIEM records."}, []string{"source"}),
 	}
-	registry.MustRegister(m.batches, m.items, m.retries, m.gaps, m.blocked, m.backlog, m.lag)
+	registry.MustRegister(m.batches, m.items, m.dropped, m.retries, m.gaps, m.blocked, m.backlog, m.lag)
 	return m
 }
 
@@ -44,7 +46,11 @@ func (m *SIEMMetrics) Batch(provider, result string) {
 // Items records a disposition count.
 func (m *SIEMMetrics) Items(provider, disposition string, n int) {
 	if n > 0 {
-		m.items.WithLabelValues(label(provider, "unknown"), label(disposition, "unknown")).Add(float64(n))
+		provider = label(provider, "unknown")
+		m.items.WithLabelValues(provider, label(disposition, "unknown")).Add(float64(n))
+		if disposition == "quarantined" || disposition == "suppressed" {
+			m.dropped.WithLabelValues(provider, disposition).Add(float64(n))
+		}
 	}
 }
 

@@ -17,6 +17,7 @@ type SIEMStore interface {
 	ListSinks(ctx context.Context) ([]siem.Sink, error)
 	PutSecret(ctx context.Context, sinkID shared.ID, version int64, sealed string) error
 	LatestSecret(ctx context.Context, sinkID shared.ID) (version int64, sealed string, err error)
+	GetSecret(ctx context.Context, sinkID shared.ID, version int64) (sealed string, err error)
 
 	Claim(ctx context.Context, owner string, sink siem.Sink, source siem.Source, now time.Time, ttl time.Duration) (siem.Lease, error)
 	Release(ctx context.Context, lease siem.Lease) error
@@ -26,6 +27,7 @@ type SIEMStore interface {
 	Commit(ctx context.Context, lease siem.Lease, batch siem.Batch, checkpoint siem.Checkpoint, now time.Time) error
 	ResetPartition(ctx context.Context, sink siem.Sink, source siem.Source, checkpoint siem.Checkpoint) error
 	Prune(ctx context.Context, before time.Time) error
+	AggregateBacklog(ctx context.Context) (map[siem.Source]siem.BacklogAggregate, error)
 }
 
 // SIEMSources reads committed audit and incident rows. Audit metadata is
@@ -34,6 +36,7 @@ type SIEMSources interface {
 	ReadAudit(ctx context.Context, afterID int64, limit int) ([]siem.AuditFact, []map[string]string, siem.AuditAnchor, error)
 	CountAudit(ctx context.Context, afterID int64) (count int, oldestUnixMicro int64, err error)
 	ReadIncident(ctx context.Context, phase siem.Phase, afterSeq int64, limit int) ([]siem.IncidentFact, error)
+	HeadIncident(ctx context.Context, phase siem.Phase) (siem.IncidentFact, bool, error)
 	CountIncident(ctx context.Context, phase siem.Phase, afterSeq int64) (count int, oldestUnixMicro int64, err error)
 	BackfillIncidents(ctx context.Context, limit int) (int, error)
 }
@@ -53,6 +56,11 @@ type SIEMSealer interface {
 // SIEMDriver sends one batch to a single destination.
 type SIEMDriver interface {
 	Deliver(ctx context.Context, req siem.Delivery) (siem.DeliveryResult, error)
+}
+
+// SIEMAckDriver polls a durable receipt without resubmitting the POST.
+type SIEMAckDriver interface {
+	PollAck(ctx context.Context, req siem.Delivery, ackID int64) (bool, time.Duration, error)
 }
 
 // SIEMEngagementPolicy is the shared engagement ceiling. Unknown policy is

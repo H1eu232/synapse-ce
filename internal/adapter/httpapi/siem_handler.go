@@ -1,13 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/siem"
@@ -44,17 +44,53 @@ type siemSinkBody struct {
 	DataClass           string   `json:"data_class"`
 	AckMode             string   `json:"ack_mode"`
 	IndexerAckSupported bool     `json:"indexer_ack_supported"`
+	IndexerAckPresent   bool     `json:"-"`
+	NamePresent         bool     `json:"-"`
+	ProviderPresent     bool     `json:"-"`
+	OriginPresent       bool     `json:"-"`
+	TargetPresent       bool     `json:"-"`
+	DataClassPresent    bool     `json:"-"`
+	AckModePresent      bool     `json:"-"`
+	AllowHostsPresent   bool     `json:"-"`
 	AllowHosts          []string `json:"allow_hosts"`
 	Secret              string   `json:"secret,omitempty"`
 	Version             int64    `json:"version"`
 	Replay              string   `json:"replay"`
 }
 
+func (b *siemSinkBody) UnmarshalJSON(data []byte) error {
+	type fields siemSinkBody
+	var decoded fields
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&decoded); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	_, decoded.IndexerAckPresent = raw["indexer_ack_supported"]
+	_, decoded.NamePresent = raw["name"]
+	_, decoded.ProviderPresent = raw["provider"]
+	_, decoded.OriginPresent = raw["origin"]
+	_, decoded.TargetPresent = raw["target"]
+	_, decoded.DataClassPresent = raw["data_class"]
+	_, decoded.AckModePresent = raw["ack_mode"]
+	_, decoded.AllowHostsPresent = raw["allow_hosts"]
+	*b = siemSinkBody(decoded)
+	return nil
+}
+
 func (b siemSinkBody) input() siemuc.SinkInput {
 	return siemuc.SinkInput{
 		Name: b.Name, Provider: siem.Provider(b.Provider), Origin: b.Origin, Target: b.Target,
 		DataClass: siem.DataClass(b.DataClass), AckMode: siem.AckMode(b.AckMode),
-		IndexerAckSupported: b.IndexerAckSupported, AllowHosts: b.AllowHosts, Secret: b.Secret, Version: b.Version,
+		IndexerAckSupported: b.IndexerAckSupported, IndexerAckPresent: b.IndexerAckPresent,
+		NamePresent: b.NamePresent, ProviderPresent: b.ProviderPresent, OriginPresent: b.OriginPresent,
+		TargetPresent: b.TargetPresent, DataClassPresent: b.DataClassPresent, AckModePresent: b.AckModePresent,
+		AllowHostsPresent: b.AllowHostsPresent,
+		AllowHosts:        b.AllowHosts, Secret: b.Secret, Version: b.Version,
 	}
 }
 
@@ -99,18 +135,7 @@ func (rt *Router) updateSIEMSink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, rt.log, err)
 		return
 	}
-	current, err := rt.siem.Get(rt.siemContext(r), PrincipalFrom(r.Context()), shared.ID(r.PathValue("id")))
-	if err != nil {
-		writeError(w, rt.log, err)
-		return
-	}
 	in := body.input()
-	if strings.TrimSpace(in.Origin) == "" {
-		in.Origin = current.Origin
-	}
-	if in.Provider == "" {
-		in.Provider = current.Provider
-	}
 	item, err := rt.siem.Update(rt.siemContext(r), PrincipalFrom(r.Context()), shared.ID(r.PathValue("id")), in)
 	if err != nil {
 		writeError(w, rt.log, err)

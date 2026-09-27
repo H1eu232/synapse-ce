@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/KKloudTarus/synapse-ce/internal/adapter/observability"
 	"github.com/KKloudTarus/synapse-ce/internal/composition/scacompose"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/agent"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/cloudposture"
@@ -60,6 +62,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/platform/binregistry"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/buildinfo"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/config"
+	"github.com/KKloudTarus/synapse-ce/internal/platform/httpserver"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/idgen"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/jobs"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/logging"
@@ -109,6 +112,8 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/vulnerabilityscheduler"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/worker"
 	writeupdraftuc "github.com/KKloudTarus/synapse-ce/internal/usecase/writeupdraftuc"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -1156,33 +1161,50 @@ func main() {
 
 	// SIEM export runs on every replica. Leases, not leader election, decide
 	// which worker may commit a partition.
-	go func() {
-		repository := postgres.NewSIEMRepository(pool)
-		service, serviceErr := siemuc.NewService(repository, repository, repository, siemseal.Vault{Cipher: vaultCipher}, map[siem.Provider]ports.SIEMDriver{
-			siem.ProviderSplunk:        splunk.New(5*time.Second, true),
-			siem.ProviderElasticsearch: elastic.New(5 * time.Second),
-		}, auditLog, clock, ids)
-		if serviceErr != nil {
-			log.Error("siem worker init failed", "err", serviceErr)
-			return
-		}
-		workerID := "siem-" + ids.NewID().String()
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for {
-			stats, tickErr := service.Tick(ctx, workerID, siemuc.TickBudget{MaxPartitions: 8, Deadline: clock.Now().Add(5 * time.Second)})
-			if tickErr != nil && ctx.Err() == nil {
-				log.Warn("siem tick failed", "err", tickErr)
-			} else if stats.Sent > 0 || stats.Blocked > 0 {
-				log.Info("siem tick", "sent", stats.Sent, "blocked", stats.Blocked)
-			}
-			select {
-			case <-ctx.Done():
+	if cfg.SIEMEnabled {
+		go func() {
+			repository := postgres.NewSIEMRepository(pool)
+			service, serviceErr := siemuc.NewService(repository, repository, repository, siemseal.Vault{Cipher: vaultCipher}, map[siem.Provider]ports.SIEMDriver{
+				siem.ProviderSplunk:        splunk.New(5*time.Second, true),
+				siem.ProviderElasticsearch: elastic.New(5 * time.Second),
+			}, auditLog, clock, ids)
+			if serviceErr != nil {
+				log.Error("siem worker init failed", "err", serviceErr)
 				return
-			case <-ticker.C:
 			}
-		}
-	}()
+			if err := service.SetPublicBase(cfg.SIEMPublicBaseURL); err != nil {
+				log.Error("siem public base URL is invalid", "err", err)
+				return
+			}
+			if cfg.MetricsEnabled {
+				registry := prometheus.NewRegistry()
+				service.SetMetrics(observability.NewSIEMMetrics(registry))
+				mux := http.NewServeMux()
+				mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+				go func() {
+					if err := httpserver.Run(ctx, cfg.MetricsAddr, mux, log); err != nil && ctx.Err() == nil {
+						log.Error("siem worker metrics listener failed", "err", err)
+					}
+				}()
+			}
+			workerID := "siem-" + ids.NewID().String()
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				stats, tickErr := service.Tick(ctx, workerID, siemuc.TickBudget{MaxPartitions: 8, Deadline: clock.Now().Add(5 * time.Second)})
+				if tickErr != nil && ctx.Err() == nil {
+					log.Warn("siem tick failed", "err", tickErr)
+				} else if stats.Sent > 0 || stats.Blocked > 0 {
+					log.Info("siem tick", "sent", stats.Sent, "blocked", stats.Blocked)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
 
 	runWorkerRuntime(ctx, cfg, queue, handlers, maintenanceTasks, leaderStore, auditLog, clock, ids, visibility, log)
 }

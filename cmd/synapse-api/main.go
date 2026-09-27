@@ -1519,6 +1519,11 @@ func main() {
 			log.Error("siem service init failed", "err", siemErr)
 			os.Exit(1)
 		}
+		siemService.SetTransactions(postgres.NewTenantTransactionRunner(databasePool))
+		if err := siemService.SetPublicBase(cfg.SIEMPublicBaseURL); err != nil {
+			log.Error("siem public base URL is invalid", "err", err)
+			os.Exit(1)
+		}
 		router.SetSIEM(siemService)
 		log.Info("siem streams enabled")
 	}
@@ -1761,9 +1766,6 @@ func main() {
 			os.Exit(1)
 		}
 		metrics = observability.New(queueReader, postgres.NewPoolStatsSource(databasePool))
-		if siemService != nil {
-			siemService.SetMetrics(observability.NewSIEMMetrics(metrics.Registry()))
-		}
 		if cfg.NotificationEnabled {
 			metrics.EnableNotifications()
 		}

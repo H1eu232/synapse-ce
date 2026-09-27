@@ -120,6 +120,12 @@ type Checkpoint struct {
 	UpdatedAt  time.Time
 }
 
+// BacklogAggregate contains only bounded operational counts, never payloads.
+type BacklogAggregate struct {
+	Records         int
+	OldestUnixMicro int64
+}
+
 // AuditAnchor is what the reader observed in the same snapshot as the page.
 type AuditAnchor struct {
 	CursorID    int64

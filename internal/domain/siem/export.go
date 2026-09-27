@@ -52,17 +52,17 @@ func ExportAudit(tenant string, fact AuditFact, class DataClass, known []string,
 	switch {
 	case strings.HasPrefix(fact.Action, "vulnerability."):
 		if class != ClassDetail || !cveID(fact.AdvisoryID) {
-			return terminal(id, ItemQuarantined, class, "ocsf_vulnerability_fields_missing")
+			return finish(id, class, FormatAuditEnvelope, auditEnvelope(tenant, fact, class, known, publicBase))
 		}
 		body, err := vulnerabilityFinding(fact, class, known)
 		if err != nil {
-			return terminal(id, ItemQuarantined, class, "ocsf_vulnerability_fields_missing")
+			return finish(id, class, FormatAuditEnvelope, auditEnvelope(tenant, fact, class, known, publicBase))
 		}
 		return finish(id, class, FormatVulnerabilityFinding, body)
 	case strings.HasPrefix(fact.Action, "detection."):
 		body, err := detectionFinding(fact, class, known, publicBase)
 		if err != nil {
-			return terminal(id, ItemQuarantined, class, "ocsf_detection_fields_missing")
+			return finish(id, class, FormatAuditEnvelope, auditEnvelope(tenant, fact, class, known, publicBase))
 		}
 		return finish(id, class, FormatDetectionFinding, body)
 	default:
@@ -81,9 +81,6 @@ func ExportIncident(tenant string, fact IncidentFact, class DataClass, known []s
 	}
 	if body, ok := incidentFinding(fact, class, known, publicBase); ok {
 		return finish(id, class, FormatIncidentFinding, body)
-	}
-	if fact.Kind == stringCreated || fact.Kind == stringStatus {
-		return terminal(id, ItemQuarantined, class, "ocsf_incident_fields_missing")
 	}
 	return finish(id, class, FormatIncidentEnvelope, incidentEnvelope(tenant, fact, class, known, publicBase))
 }

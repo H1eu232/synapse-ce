@@ -15,31 +15,40 @@ import (
 
 // Service manages tenant SIEM sinks and the fenced export tick.
 type Service struct {
-	store      ports.SIEMStore
-	sources    ports.SIEMSources
-	directory  ports.SIEMDirectory
-	sealer     ports.SIEMSealer
-	drivers    map[siem.Provider]ports.SIEMDriver
-	policy     ports.SIEMEngagementPolicy
-	metrics    ports.SIEMMetrics
-	audit      ports.AuditLogger
-	clock      ports.Clock
-	ids        ports.IDGenerator
-	rng        func() float64
-	publicBase string
-	turn       atomic.Uint64
+	store        ports.SIEMStore
+	sources      ports.SIEMSources
+	directory    ports.SIEMDirectory
+	sealer       ports.SIEMSealer
+	drivers      map[siem.Provider]ports.SIEMDriver
+	policy       ports.SIEMEngagementPolicy
+	metrics      ports.SIEMMetrics
+	audit        ports.AuditLogger
+	transactions ports.TenantTransactionRunner
+	clock        ports.Clock
+	ids          ports.IDGenerator
+	rng          func() float64
+	publicBase   string
+	turn         atomic.Uint64
 }
 
 // SinkInput is an operator write. Secret is write-only.
 type SinkInput struct {
 	Name                string
+	NamePresent         bool
 	Provider            siem.Provider
+	ProviderPresent     bool
 	Origin              string
+	OriginPresent       bool
 	Target              string
+	TargetPresent       bool
 	DataClass           siem.DataClass
+	DataClassPresent    bool
 	AckMode             siem.AckMode
+	AckModePresent      bool
 	IndexerAckSupported bool
+	IndexerAckPresent   bool
 	AllowHosts          []string
+	AllowHostsPresent   bool
 	Secret              string
 	Version             int64
 }
@@ -91,6 +100,27 @@ func NewService(store ports.SIEMStore, sources ports.SIEMSources, directory port
 // scoped records stay at signal.
 func (s *Service) SetEngagementPolicy(policy ports.SIEMEngagementPolicy) { s.policy = policy }
 
+// SetTransactions makes configuration, cursor resets, secrets and audit one
+// tenant-local commit. It must be wired with the same pool as the SIEM store.
+func (s *Service) SetTransactions(runner ports.TenantTransactionRunner) { s.transactions = runner }
+
+func (s *Service) write(ctx context.Context, fn func(context.Context) (siem.Sink, error)) (siem.Sink, error) {
+	if s.transactions == nil {
+		return fn(ctx)
+	}
+	tenant, err := tenantOf(ctx)
+	if err != nil {
+		return siem.Sink{}, err
+	}
+	var result siem.Sink
+	err = s.transactions.Run(ctx, tenant, func(txCtx context.Context) error {
+		var callErr error
+		result, callErr = fn(txCtx)
+		return callErr
+	})
+	return result, err
+}
+
 // SetMetrics installs the operational recorder.
 func (s *Service) SetMetrics(metrics ports.SIEMMetrics) {
 	if metrics != nil {
@@ -123,6 +153,10 @@ func (s *Service) SetRNG(rng func() float64) {
 
 // Create stores a sink and its first sealed secret.
 func (s *Service) Create(ctx context.Context, actor string, in SinkInput) (siem.Sink, error) {
+	return s.write(ctx, func(txCtx context.Context) (siem.Sink, error) { return s.create(txCtx, actor, in) })
+}
+
+func (s *Service) create(ctx context.Context, actor string, in SinkInput) (siem.Sink, error) {
 	if err := s.human(actor); err != nil {
 		return siem.Sink{}, err
 	}
@@ -147,6 +181,10 @@ func (s *Service) Create(ctx context.Context, actor string, in SinkInput) (siem.
 // ChangeOrigin. Raising the data class is allowed for the tenant admin and
 // still passes through the engagement ceiling at send time.
 func (s *Service) Update(ctx context.Context, actor string, id shared.ID, in SinkInput) (siem.Sink, error) {
+	return s.write(ctx, func(txCtx context.Context) (siem.Sink, error) { return s.update(txCtx, actor, id, in) })
+}
+
+func (s *Service) update(ctx context.Context, actor string, id shared.ID, in SinkInput) (siem.Sink, error) {
 	if err := s.human(actor); err != nil {
 		return siem.Sink{}, err
 	}
@@ -157,20 +195,40 @@ func (s *Service) Update(ctx context.Context, actor string, id shared.ID, in Sin
 	if in.Version != current.Version {
 		return siem.Sink{}, conflict("sink version")
 	}
-	origin, err := siem.NormalizeOrigin(in.Origin)
-	if err != nil {
-		return siem.Sink{}, err
-	}
-	if origin != current.Origin {
-		return siem.Sink{}, invalid("host changes require an explicit replay choice")
+	if in.OriginPresent || in.Origin != "" {
+		origin, err := siem.NormalizeOrigin(in.Origin)
+		if err != nil {
+			return siem.Sink{}, err
+		}
+		if origin != current.Origin {
+			return siem.Sink{}, invalid("host changes require an explicit replay choice")
+		}
 	}
 	updated := current
-	updated.Name = strings.TrimSpace(in.Name)
-	updated.Target = defaultTarget(current.Provider, in.Target)
-	updated.DataClass = defaultClass(in.DataClass)
-	updated.AckMode = defaultAck(current.Provider, in.AckMode)
-	updated.IndexerAckSupported = in.IndexerAckSupported
-	updated.AllowHosts = append([]string(nil), in.AllowHosts...)
+	if in.ProviderPresent && in.Provider == "" {
+		return siem.Sink{}, invalid("sink provider cannot be cleared")
+	}
+	if in.Provider != "" && in.Provider != current.Provider {
+		return siem.Sink{}, invalid("sink provider cannot be changed")
+	}
+	if in.NamePresent || in.Name != "" {
+		updated.Name = strings.TrimSpace(in.Name)
+	}
+	if in.TargetPresent || in.Target != "" {
+		updated.Target = in.Target
+	}
+	if in.DataClassPresent || in.DataClass != "" {
+		updated.DataClass = in.DataClass
+	}
+	if in.AckModePresent || in.AckMode != "" {
+		updated.AckMode = in.AckMode
+	}
+	if in.IndexerAckPresent {
+		updated.IndexerAckSupported = in.IndexerAckSupported
+	}
+	if in.AllowHostsPresent || in.AllowHosts != nil {
+		updated.AllowHosts = append([]string{}, in.AllowHosts...)
+	}
 	updated.Version++
 	updated.UpdatedAt = s.clock.Now().UTC()
 	if err := updated.Validate(); err != nil {
@@ -189,6 +247,12 @@ func (s *Service) Update(ctx context.Context, actor string, id shared.ID, in Sin
 // remains sealed so an in-flight batch can still be explained, but sends use
 // the latest version.
 func (s *Service) RotateSecret(ctx context.Context, actor string, id shared.ID, secret string, version int64) (siem.Sink, error) {
+	return s.write(ctx, func(txCtx context.Context) (siem.Sink, error) {
+		return s.rotateSecret(txCtx, actor, id, secret, version)
+	})
+}
+
+func (s *Service) rotateSecret(ctx context.Context, actor string, id shared.ID, secret string, version int64) (siem.Sink, error) {
 	if err := s.human(actor); err != nil {
 		return siem.Sink{}, err
 	}
@@ -224,6 +288,10 @@ func (s *Service) RotateSecret(ctx context.Context, actor string, id shared.ID, 
 // ChangeOrigin pauses the sink, invalidates prepared batches, and starts a
 // new generation at the chosen cursor. The new secret is required.
 func (s *Service) ChangeOrigin(ctx context.Context, actor string, id shared.ID, in OriginInput) (siem.Sink, error) {
+	return s.write(ctx, func(txCtx context.Context) (siem.Sink, error) { return s.changeOrigin(txCtx, actor, id, in) })
+}
+
+func (s *Service) changeOrigin(ctx context.Context, actor string, id shared.ID, in OriginInput) (siem.Sink, error) {
 	if err := s.human(actor); err != nil {
 		return siem.Sink{}, err
 	}
@@ -285,27 +353,17 @@ func (s *Service) ChangeOrigin(ctx context.Context, actor string, id shared.ID, 
 
 // Pause stops new sends without moving cursors.
 func (s *Service) Pause(ctx context.Context, actor string, id shared.ID, version int64) (siem.Sink, error) {
-	return s.setPaused(ctx, actor, id, version, true, "siem.sink.pause")
+	return s.write(ctx, func(txCtx context.Context) (siem.Sink, error) {
+		return s.setPaused(txCtx, actor, id, version, true, "siem.sink.pause")
+	})
 }
 
 // Resume clears an operator pause and a blocked reason. A still-broken
 // source chain blocks again on the next tick instead of skipping.
 func (s *Service) Resume(ctx context.Context, actor string, id shared.ID, version int64) (siem.Sink, error) {
-	sink, err := s.setPaused(ctx, actor, id, version, false, "siem.sink.resume")
-	if err != nil {
-		return siem.Sink{}, err
-	}
-	if sink.BlockedReason == "" {
-		return sink, nil
-	}
-	sink.BlockedReason = ""
-	sink.Version++
-	expected := sink.Version - 1
-	sink.UpdatedAt = s.clock.Now().UTC()
-	if err := s.store.UpdateSink(ctx, sink, expected); err != nil {
-		return siem.Sink{}, err
-	}
-	return sink, nil
+	return s.write(ctx, func(txCtx context.Context) (siem.Sink, error) {
+		return s.setPaused(txCtx, actor, id, version, false, "siem.sink.resume")
+	})
 }
 
 // Get returns one sink without its secret.
@@ -372,6 +430,20 @@ func (s *Service) Test(ctx context.Context, actor string, id shared.ID) (string,
 	if err != nil {
 		return "", invalid(siem.SafeDiagnostic(err.Error()))
 	}
+	if result.IndexerAckID != nil {
+		poller, ok := driver.(ports.SIEMAckDriver)
+		if !ok {
+			return "", invalid("indexer acknowledgement is not supported by the provider")
+		}
+		confirmed, _, pollErr := poller.PollAck(ctx, siem.Delivery{
+			Origin: sink.Origin, Secret: secret, Target: sink.Target, Channel: sink.Channel,
+			AckMode: sink.AckMode,
+		}, *result.IndexerAckID)
+		if pollErr != nil || !confirmed {
+			return "", invalid("connection test indexer acknowledgement was not confirmed")
+		}
+		result.Items = []siem.DeliveryItem{{Disposition: siem.ItemAcked}}
+	}
 	if len(result.Items) != 1 || result.Items[0].Disposition != siem.ItemAcked {
 		reason := "connection test was not accepted"
 		if len(result.Items) == 1 {
@@ -421,7 +493,7 @@ func (s *Service) sealSecret(ctx context.Context, sink siem.Sink, secret string)
 }
 
 func (s *Service) openSecret(ctx context.Context, sink siem.Sink) (string, error) {
-	_, sealed, err := s.store.LatestSecret(ctx, sink.ID)
+	sealed, err := s.store.GetSecret(ctx, sink.ID, sink.SecretVersion)
 	if err != nil {
 		return "", err
 	}
@@ -448,6 +520,9 @@ func (s *Service) setPaused(ctx context.Context, actor string, id shared.ID, ver
 		return siem.Sink{}, conflict("sink version")
 	}
 	sink.Paused = paused
+	if !paused {
+		sink.BlockedReason = ""
+	}
 	sink.Version++
 	sink.UpdatedAt = s.clock.Now().UTC()
 	if err := s.store.UpdateSink(ctx, sink, version); err != nil {
@@ -487,12 +562,11 @@ func (s *Service) checkpointForReplay(ctx context.Context, sink siem.Sink, sourc
 		if source == siem.SourceIncidentHistorical {
 			phase = siem.PhaseHistorical
 		}
-		rows, err := s.sources.ReadIncident(ctx, phase, 0, siem.MaxBatchRecords)
+		last, found, err := s.sources.HeadIncident(ctx, phase)
 		if err != nil {
 			return siem.Checkpoint{}, err
 		}
-		if len(rows) > 0 {
-			last := rows[len(rows)-1]
+		if found {
 			cp.Position = siem.Position{Source: source, StreamSeq: last.StreamSeq, IncidentID: last.IncidentID, EventSeq: last.EventSeq, Phase: phase}
 		}
 	}

@@ -11,18 +11,19 @@ import (
 type BatchState string
 
 const (
-	BatchPrepared BatchState = "prepared"
-	BatchSending  BatchState = "sending"
-	BatchPartial  BatchState = "partial"
-	BatchAcked    BatchState = "acked"
-	BatchBlocked  BatchState = "blocked"
-	BatchInvalid  BatchState = "invalidated"
+	BatchPrepared    BatchState = "prepared"
+	BatchSending     BatchState = "sending"
+	BatchPartial     BatchState = "partial"
+	BatchAwaitingAck BatchState = "awaiting_ack"
+	BatchAcked       BatchState = "acked"
+	BatchBlocked     BatchState = "blocked"
+	BatchInvalid     BatchState = "invalidated"
 )
 
 // Open reports whether another batch must not be prepared for the partition.
 func (s BatchState) Open() bool {
 	switch s {
-	case BatchPrepared, BatchSending, BatchPartial, BatchBlocked:
+	case BatchPrepared, BatchSending, BatchPartial, BatchAwaitingAck, BatchBlocked:
 		return true
 	default:
 		return false
@@ -75,6 +76,7 @@ type Batch struct {
 	Diagnostic     string
 	Attempt        int
 	NextAttemptAt  time.Time
+	IndexerAckID   *int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }

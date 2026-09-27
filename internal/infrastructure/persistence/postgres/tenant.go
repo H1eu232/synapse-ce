@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -76,7 +78,12 @@ func WithTenant(ctx context.Context, pool *pgxpool.Pool, tenantID string, fn fun
 		defer cancel()
 		_ = tx.Rollback(rbCtx)
 	}()
-	if _, err = tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", tenantID); err != nil {
+	capture := "on"
+	if enabled, parseErr := strconv.ParseBool(os.Getenv("SYNAPSE_SIEM_ENABLED")); parseErr == nil && !enabled {
+		capture = "off"
+	}
+	if _, err = tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true),
+		set_config('app.siem_capture_enabled', $2, true)`, tenantID, capture); err != nil {
 		return fmt.Errorf("rls: set tenant: %w", err)
 	}
 	if err = fn(tx); err != nil {

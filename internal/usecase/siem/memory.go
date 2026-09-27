@@ -2,6 +2,7 @@ package siemuc
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -136,6 +137,7 @@ func (m *Memory) ListSinks(ctx context.Context) ([]siem.Sink, error) {
 			out = append(out, sink)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
@@ -179,6 +181,20 @@ func (m *Memory) LatestSecret(ctx context.Context, sinkID shared.ID) (int64, str
 	return best, sealed, nil
 }
 
+func (m *Memory) GetSecret(ctx context.Context, sinkID shared.ID, version int64) (string, error) {
+	tenant, err := tenantOf(ctx)
+	if err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sealed, ok := m.secrets[idKey(tenant, sinkID)][version]
+	if !ok {
+		return "", missing("secret")
+	}
+	return sealed, nil
+}
+
 func (m *Memory) Claim(ctx context.Context, owner string, sink siem.Sink, source siem.Source, now time.Time, ttl time.Duration) (siem.Lease, error) {
 	tenant, err := tenantOf(ctx)
 	if err != nil {
@@ -205,6 +221,13 @@ func (m *Memory) Claim(ctx context.Context, owner string, sink siem.Sink, source
 		return siem.Lease{}, err
 	}
 	m.leases[key] = lease
+	if id, ok := m.open[key]; ok {
+		stored := m.batches[id]
+		if stored.batch.Generation == sink.Generation {
+			stored.batch.LeaseToken = lease.Token
+			m.batches[id] = stored
+		}
+	}
 	return lease, nil
 }
 
@@ -218,7 +241,9 @@ func (m *Memory) Release(ctx context.Context, lease siem.Lease) error {
 	key := partKey(tenant, lease.SinkID, lease.Source)
 	current, ok := m.leases[key]
 	if ok && current.Token == lease.Token && current.Owner == lease.Owner {
-		delete(m.leases, key)
+		current.Owner = ""
+		current.ExpiresAt = time.Time{}
+		m.leases[key] = current
 	}
 	return nil
 }
@@ -237,6 +262,14 @@ func (m *Memory) SaveBatch(ctx context.Context, batch siem.Batch, sealed []strin
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := partKey(tenant, batch.SinkID, batch.Source)
+	lease, held := m.leases[key]
+	sink, exists := m.sinks[idKey(tenant, batch.SinkID)]
+	if !held || lease.Token != batch.LeaseToken || !exists || sink.Generation != batch.Generation {
+		return siem.ErrStaleLease
+	}
+	if old, exists := m.batches[batch.ID.String()]; exists && !old.batch.State.Open() {
+		return siem.ErrStaleLease
+	}
 	if batch.State.Open() {
 		if id, ok := m.open[key]; ok && id != batch.ID.String() {
 			return conflict("open batch")
@@ -296,6 +329,15 @@ func (m *Memory) Commit(ctx context.Context, lease siem.Lease, batch siem.Batch,
 	if batch.LeaseToken != held.Token || batch.Generation != held.Generation {
 		return siem.ErrStaleLease
 	}
+	currentSink, ok := m.sinks[idKey(tenant, batch.SinkID)]
+	if !ok || currentSink.Generation != batch.Generation || checkpoint.Generation != batch.Generation {
+		return siem.ErrStaleLease
+	}
+	if old, ok := m.checkpoints[partKey(tenant, batch.SinkID, batch.Source)]; ok {
+		if old.Generation != batch.Generation || memoryPositionRegresses(checkpoint.Position, old.Position) {
+			return siem.ErrStaleLease
+		}
+	}
 	stored := m.batches[batch.ID.String()]
 	stored.batch = batch
 	m.batches[batch.ID.String()] = stored
@@ -311,6 +353,13 @@ func (m *Memory) Commit(ctx context.Context, lease siem.Lease, batch siem.Batch,
 	return nil
 }
 
+func memoryPositionRegresses(next, current siem.Position) bool {
+	if current.Source == siem.SourceAudit {
+		return next.AuditID < current.AuditID
+	}
+	return next.StreamSeq < current.StreamSeq
+}
+
 func (m *Memory) ResetPartition(ctx context.Context, sink siem.Sink, source siem.Source, checkpoint siem.Checkpoint) error {
 	tenant, err := tenantOf(ctx)
 	if err != nil {
@@ -319,7 +368,12 @@ func (m *Memory) ResetPartition(ctx context.Context, sink siem.Sink, source siem
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := partKey(tenant, sink.ID, source)
-	delete(m.leases, key)
+	if lease, ok := m.leases[key]; ok {
+		lease.Token++
+		lease.Owner = ""
+		lease.ExpiresAt = time.Time{}
+		m.leases[key] = lease
+	}
 	if id, ok := m.open[key]; ok {
 		stored := m.batches[id]
 		stored.batch.State = siem.BatchInvalid
@@ -350,6 +404,46 @@ func (m *Memory) Prune(ctx context.Context, before time.Time) error {
 		}
 	}
 	return nil
+}
+
+func (m *Memory) AggregateBacklog(ctx context.Context) (map[siem.Source]siem.BacklogAggregate, error) {
+	sinks, err := m.ListSinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := map[siem.Source]siem.BacklogAggregate{}
+	for _, sink := range sinks {
+		if !sink.Enabled {
+			continue
+		}
+		for _, source := range partitions() {
+			cp, _, err := m.Checkpoint(ctx, sink.ID, source)
+			if err != nil {
+				return nil, err
+			}
+			var count int
+			var oldest int64
+			if source == siem.SourceAudit {
+				count, oldest, err = m.CountAudit(ctx, cp.Position.AuditID)
+			} else {
+				phase := siem.PhaseLive
+				if source == siem.SourceIncidentHistorical {
+					phase = siem.PhaseHistorical
+				}
+				count, oldest, err = m.CountIncident(ctx, phase, cp.Position.StreamSeq)
+			}
+			if err != nil {
+				return nil, err
+			}
+			value := result[source]
+			value.Records += count
+			if oldest > 0 && (value.OldestUnixMicro == 0 || oldest < value.OldestUnixMicro) {
+				value.OldestUnixMicro = oldest
+			}
+			result[source] = value
+		}
+	}
+	return result, nil
 }
 
 func (m *Memory) ReadAudit(ctx context.Context, afterID int64, limit int) ([]siem.AuditFact, []map[string]string, siem.AuditAnchor, error) {
@@ -437,18 +531,40 @@ func (m *Memory) ReadIncident(ctx context.Context, phase siem.Phase, afterSeq in
 	return out, nil
 }
 
+func (m *Memory) HeadIncident(ctx context.Context, phase siem.Phase) (siem.IncidentFact, bool, error) {
+	tenant, err := tenantOf(ctx)
+	if err != nil {
+		return siem.IncidentFact{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rows := m.incidents[tenant.String()+"\x00"+string(phase)]
+	if len(rows) == 0 {
+		return siem.IncidentFact{}, false, nil
+	}
+	return rows[len(rows)-1], true, nil
+}
+
 func (m *Memory) CountIncident(ctx context.Context, phase siem.Phase, afterSeq int64) (int, int64, error) {
-	rows, err := m.ReadIncident(ctx, phase, afterSeq, siem.MaxBatchRecords)
+	tenant, err := tenantOf(ctx)
 	if err != nil {
 		return 0, 0, err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rows := m.incidents[tenant.String()+"\x00"+string(phase)]
+	count := 0
 	var oldest int64
 	for _, row := range rows {
+		if row.StreamSeq <= afterSeq {
+			continue
+		}
+		count++
 		if oldest == 0 || row.AtUnixMicro < oldest {
 			oldest = row.AtUnixMicro
 		}
 	}
-	return len(rows), oldest, nil
+	return count, oldest, nil
 }
 
 func (m *Memory) BackfillIncidents(ctx context.Context, limit int) (int, error) {

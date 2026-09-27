@@ -81,6 +81,7 @@ CREATE TABLE siem_batches (
     diagnostic TEXT NOT NULL DEFAULT '',
     attempt INT NOT NULL DEFAULT 0,
     next_attempt_at TIMESTAMPTZ,
+    indexer_ack_id BIGINT,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (tenant_id, id),
@@ -89,7 +90,7 @@ CREATE TABLE siem_batches (
 );
 CREATE UNIQUE INDEX siem_batches_one_open
     ON siem_batches (tenant_id, sink_id, source)
-    WHERE state IN ('prepared', 'sending', 'partial', 'blocked');
+    WHERE state IN ('prepared', 'sending', 'partial', 'awaiting_ack', 'blocked');
 CALL synapse_enable_tenant_rls('siem_batches');
 
 CREATE TABLE siem_batch_items (
@@ -138,10 +139,6 @@ CREATE INDEX siem_incident_capture_keyset
     ON siem_incident_capture (tenant_id, phase, stream_seq);
 CALL synapse_enable_tenant_rls('siem_incident_capture');
 
-CREATE INDEX siem_audit_v2_keyset_idx
-    ON audit_log (tenant_id, id)
-    WHERE hash_version = 2 AND hash IS NOT NULL;
-
 -- +goose StatementBegin
 CREATE FUNCTION siem_capture_incident_event() RETURNS trigger
 LANGUAGE plpgsql
@@ -150,6 +147,20 @@ AS $$
 DECLARE
     assigned BIGINT;
 BEGIN
+    IF current_setting('app.siem_capture_enabled', true) = 'off' THEN
+        RETURN NEW;
+    END IF;
+    -- Tenants without an active SIEM sink must not pay the per-tenant
+    -- counter lock or accumulate unbounded capture identities.
+    IF NOT EXISTS (
+        SELECT 1 FROM public.siem_sinks
+         WHERE tenant_id = NEW.tenant_id AND enabled
+    ) THEN
+        RETURN NEW;
+    END IF;
+    -- Same lock as prune and historical backfill, so a capture row cannot
+    -- be inserted into a range that retention is deleting.
+    PERFORM pg_catalog.pg_advisory_xact_lock(1484, pg_catalog.hashtext(NEW.tenant_id));
     INSERT INTO public.siem_incident_counters AS counters (tenant_id)
     VALUES (NEW.tenant_id)
     ON CONFLICT (tenant_id) DO NOTHING;
@@ -177,7 +188,6 @@ CREATE TRIGGER siem_incident_events_capture
 -- +goose Down
 DROP TRIGGER IF EXISTS siem_incident_events_capture ON incident_events;
 DROP FUNCTION IF EXISTS siem_capture_incident_event();
-DROP INDEX IF EXISTS siem_audit_v2_keyset_idx;
 DROP TABLE IF EXISTS siem_incident_capture;
 DROP TABLE IF EXISTS siem_incident_counters;
 DROP TABLE IF EXISTS siem_batch_items;

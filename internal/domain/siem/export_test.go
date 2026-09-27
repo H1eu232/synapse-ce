@@ -37,11 +37,11 @@ func TestExportSignalOmitsSummaryFieldsAndScrubsSecrets(t *testing.T) {
 	}
 }
 
-func TestExportQuarantinesIncompleteOCSFAndKeepsUnicode(t *testing.T) {
+func TestExportFallsBackToEnvelopeForIncompleteOCSFAndKeepsUnicode(t *testing.T) {
 	vuln := AuditFact{ID: 3, Action: "vulnerability.created", AtUnixMicro: 1_700_000_000_000_000, HashVersion: 2, AdvisoryID: "GHSA-aaaa-bbbb-cccc"}
 	got := ExportAudit("tenant-a", vuln, ClassDetail, nil, "")
-	if got.Disposition != ItemQuarantined {
-		t.Fatalf("non-CVE advisory was forced into cve.uid: %+v", got)
+	if got.Disposition != ItemPending || got.Format != FormatAuditEnvelope {
+		t.Fatalf("non-CVE advisory was not safely exported: %+v", got)
 	}
 	cve := vuln
 	cve.AdvisoryID = "CVE-2024-9999"
@@ -74,8 +74,8 @@ func TestExportQuarantinesIncompleteOCSFAndKeepsUnicode(t *testing.T) {
 
 func TestIncidentFindingRequiresOwnerAndEventStatus(t *testing.T) {
 	base := IncidentFact{StreamSeq: 1, Phase: PhaseLive, IncidentID: "inc-1", EventSeq: 1, Kind: "created", AtUnixMicro: 1_700_000_000_000_000, Severity: "high", Title: "Phát hiện"}
-	if got := ExportIncident("t", base, ClassSummary, nil, ""); got.Disposition != ItemQuarantined {
-		t.Fatalf("ownerless incident was given an assignee: %+v", got)
+	if got := ExportIncident("t", base, ClassSummary, nil, ""); got.Disposition != ItemPending || got.Format != FormatIncidentEnvelope || strings.Contains(string(got.Body), "assignee") {
+		t.Fatalf("ownerless incident was not safely exported: %+v", got)
 	}
 	base.Owner = "ada"
 	got := ExportIncident("t", base, ClassSummary, nil, "https://console.example")

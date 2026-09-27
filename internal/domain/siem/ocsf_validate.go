@@ -3,8 +3,8 @@ package siem
 import "fmt"
 
 // ValidateOCSF checks the fields this exporter is allowed to emit for the
-// pinned OCSF 1.5.0 finding classes. It is not a full schema compiler. The
-// vendored class documents and their checksums live beside the runbook.
+// pinned OCSF 1.5.0 finding classes. It is a local contract check, not an
+// official schema validator; no upstream schema documents are vendored here.
 func ValidateOCSF(doc map[string]any) error {
 	classUID, ok := number(doc["class_uid"])
 	if !ok || (classUID != 2002 && classUID != 2004 && classUID != 2005) {

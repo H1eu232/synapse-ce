@@ -88,31 +88,33 @@ func (c *Client) Deliver(ctx context.Context, req siem.Delivery) (siem.DeliveryR
 		return blocked(len(req.Records), "splunk rejected the batch"), nil
 	}
 	var hec struct {
-		Code  int    `json:"code"`
+		Code  *int   `json:"code"`
 		Text  string `json:"text"`
-		AckID int64  `json:"ackId"`
+		AckID *int64 `json:"ackId"`
 	}
 	if err := json.Unmarshal(payload, &hec); err != nil {
 		return siem.DeliveryResult{}, fmt.Errorf("splunk response was malformed")
 	}
-	if hec.Code != 0 {
+	if hec.Code == nil {
+		return siem.DeliveryResult{}, fmt.Errorf("splunk response omitted the HEC code")
+	}
+	if *hec.Code != 0 {
 		return blocked(len(req.Records), "hec code was not success"), nil
 	}
 	if req.AckMode == siem.AckIndexer {
-		ok, retry, err := c.pollAck(ctx, req, host, hec.AckID)
-		if err != nil {
-			return siem.DeliveryResult{}, err
+		if hec.AckID == nil || *hec.AckID < 0 {
+			return siem.DeliveryResult{}, fmt.Errorf("splunk response omitted a valid ack id")
 		}
-		if !ok {
-			return retryAll(len(req.Records), retry, "splunk indexer acknowledgement is not true"), nil
-		}
+		return siem.DeliveryResult{IndexerAckID: hec.AckID}, nil
 	}
 	return acked(len(req.Records)), nil
 }
 
-func (c *Client) pollAck(ctx context.Context, req siem.Delivery, host string, ackID int64) (bool, time.Duration, error) {
-	if ackID == 0 {
-		return false, time.Second, nil
+// PollAck continues an already persisted HEC receipt without resending data.
+func (c *Client) PollAck(ctx context.Context, req siem.Delivery, ackID int64) (bool, time.Duration, error) {
+	_, host, err := endpoint(req.Origin, req.Target, req.Channel, true)
+	if err != nil {
+		return false, 0, err
 	}
 	pollURL, _, err := endpoint(req.Origin, "/services/collector/ack", req.Channel, true)
 	if err != nil {

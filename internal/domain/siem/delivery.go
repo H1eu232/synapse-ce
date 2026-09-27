@@ -32,4 +32,7 @@ type DeliveryItem struct {
 // A short or long result is a malformed response and must not advance.
 type DeliveryResult struct {
 	Items []DeliveryItem
+	// IndexerAckID means HEC accepted the POST but indexing is not yet
+	// confirmed. The caller must persist it before polling; zero is valid.
+	IndexerAckID *int64
 }
