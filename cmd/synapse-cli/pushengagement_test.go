@@ -142,3 +142,79 @@ func TestEngagementIngestDecodesAnEmptyRefusalList(t *testing.T) {
 		t.Fatalf("report = %q", got)
 	}
 }
+
+func TestPushTargetValidateGuardsTheNewDestinations(t *testing.T) {
+	base := pushTarget{server: "https://console.example", token: "tok"}
+	for _, tc := range []struct {
+		name    string
+		target  pushTarget
+		wantErr string
+	}{
+		{name: "coverage needs a project", target: func() pushTarget { t := base; t.engagement, t.coverage = "eng-1", "cov.info"; return t }(), wantErr: "--coverage"},
+		{name: "coverage with a project", target: func() pushTarget { t := base; t.project, t.coverage = "my-app", "cov.info"; return t }()},
+		{name: "push-sbom needs an engagement", target: func() pushTarget { t := base; t.project, t.sbom = "my-app", true; return t }(), wantErr: "--push-sbom"},
+		{name: "push-sbom with an engagement", target: func() pushTarget { t := base; t.engagement, t.sbom = "eng-1", true; return t }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.target.validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want one mentioning %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestEngagementSBOMURLEscapesTheID(t *testing.T) {
+	got, err := engagementSBOMURL("https://console.example/synapse/", "eng/../admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://console.example/synapse/api/v1/engagements/eng%2F..%2Fadmin/sbom"; got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+	if _, err := engagementSBOMURL("https://console.example", " "); err == nil {
+		t.Fatal("an empty engagement id must be refused")
+	}
+}
+
+func TestPushEngagementSBOMPostsTheDocument(t *testing.T) {
+	var gotBody []byte
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	target := pushTarget{server: srv.URL, engagement: "eng-1", token: "tok", sbom: true}
+	if err := pushEngagementSBOM(context.Background(), srv.Client(), target, []byte(`{"bomFormat":"CycloneDX"}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/api/v1/engagements/eng-1/sbom" || gotAuth != "Bearer tok" {
+		t.Fatalf("path = %q, auth = %q", gotPath, gotAuth)
+	}
+	if string(gotBody) != `{"bomFormat":"CycloneDX"}` {
+		t.Fatalf("body = %q", gotBody)
+	}
+}
+
+func TestPushEngagementSBOMPassesTheRefusalThrough(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"validation error: only CycloneDX is accepted"}`))
+	}))
+	defer srv.Close()
+
+	err := pushEngagementSBOM(context.Background(), srv.Client(),
+		pushTarget{server: srv.URL, engagement: "eng-1", token: "tok"}, []byte(`{}`))
+	if err == nil || !strings.Contains(err.Error(), "only CycloneDX is accepted") {
+		t.Fatalf("error lost the server's reason: %v", err)
+	}
+}

@@ -39,6 +39,16 @@ type pushTarget struct {
 	engagement string
 	// asset optionally binds the ingested findings to a business asset.
 	asset string
+	// coverage is a test-coverage report (lcov, cobertura or jacoco) to record with the analysis. The
+	// analysis payload has carried a line_coverage field all along and the scan subcommand had no way
+	// to fill it, so a pushed analysis showed no coverage and the managed gate could not evaluate a
+	// coverage condition. Only meaningful with a project destination.
+	coverage string
+	// sbom uploads the generated CycloneDX SBOM to the engagement, which is how an image scan's
+	// component inventory (its OS and language packages) becomes visible on the console next to the
+	// findings. Opt-in, because the server keeps ONE active imported SBOM per engagement: an automatic
+	// push would silently replace one an operator had imported by hand.
+	sbom bool
 }
 
 // projectKeyPattern mirrors the server's project key rule (internal/domain/project): lowercase
@@ -77,6 +87,12 @@ func (p pushTarget) validate() error {
 	}
 	if p.source && strings.TrimSpace(p.project) == "" {
 		return fmt.Errorf("--push-source publishes source for a project analysis and needs --project")
+	}
+	if strings.TrimSpace(p.coverage) != "" && strings.TrimSpace(p.project) == "" {
+		return fmt.Errorf("--coverage is recorded on a project analysis and needs --project")
+	}
+	if p.sbom && strings.TrimSpace(p.engagement) == "" {
+		return fmt.Errorf("--push-sbom uploads the SBOM to an engagement and needs --engagement")
 	}
 	if strings.TrimSpace(p.token) == "" {
 		return fmt.Errorf("--server requires SYNAPSE_API_TOKEN in the environment")

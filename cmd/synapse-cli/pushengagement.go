@@ -108,3 +108,51 @@ func reportEngagementIngest(w io.Writer, engagementID string, result engagementI
 		fmt.Fprintf(w, "  coverage: %s\n", note)
 	}
 }
+
+// engagementSBOMURL is the import endpoint for an engagement's active SBOM.
+func engagementSBOMURL(server, engagementID string) (string, error) {
+	base, err := pushBaseURL(server)
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(engagementID)
+	if id == "" {
+		return "", fmt.Errorf("engagement id is required")
+	}
+	prefix := strings.TrimRight(base.EscapedPath(), "/")
+	base.Path = strings.TrimRight(base.Path, "/") + "/api/v1/engagements/" + id + "/sbom"
+	base.RawPath = prefix + "/api/v1/engagements/" + url.PathEscape(id) + "/sbom"
+	return base.String(), nil
+}
+
+// pushEngagementSBOM uploads the CycloneDX document the scan generated. The server keeps one active
+// imported SBOM per engagement, so this replaces rather than accumulates, which is why the caller
+// only reaches it when the operator asked for it.
+func pushEngagementSBOM(ctx context.Context, client *http.Client, target pushTarget, document []byte) error {
+	if client == nil {
+		return fmt.Errorf("http client is required")
+	}
+	endpoint, err := engagementSBOMURL(target.server, target.engagement)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(document))
+	if err != nil {
+		return fmt.Errorf("build engagement sbom request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+target.token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("post engagement sbom: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read engagement sbom response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("engagement sbom import refused with %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
