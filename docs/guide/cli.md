@@ -151,6 +151,11 @@ synapse-cli scan <path|image-ref> [flags]
 | `--sarif-out <file>` | Write the same SARIF report to `<file>` and keep the human report on stdout. Prefer this in a pipeline: `--sarif` owns stdout, so redirecting it to a file leaves the job log with nothing but the exit code. |
 | `--sbom` | Print the generated CycloneDX SBOM to stdout instead of a findings report. |
 | `--server <url> --project <key>` | Record the result on a Synapse server as that project's next analysis. The token comes from `SYNAPSE_API_TOKEN`. `https` is required unless the host is loopback. See [Push results to the console](#push-results-to-the-console). |
+| `--engagement <id>` | Record the scan's security findings on that engagement, through the server's own SARIF ingest, so a pipeline scan reaches the console the way a code-quality analysis does. Independent of `--project`: give either, or both to record one run in both places. The server deduplicates against existing first-party findings and reports what it refused. |
+| `--asset <id>` | Bind the findings ingested by `--engagement` to a business asset. Needs `--engagement`. |
+| `--coverage <file>` | Record test coverage with the project analysis. lcov, cobertura and jacoco are auto-detected, by the same parser `synapse-cli coverage` and `gate --coverage` use. The analysis payload has always carried a `line_coverage` field and the scan had no way to fill it, so a pushed analysis showed no coverage and a managed gate could not evaluate a coverage condition. Needs `--project`. |
+| `--push-sbom` | Import the generated CycloneDX SBOM into the engagement, which is how an image scan's component inventory becomes visible on the console beside its findings. The server keeps one active imported SBOM per engagement, so this replaces any SBOM imported by hand. Needs `--engagement`. |
+| `--push-source` | Upload the scanned tree for the analysis `--project` creates, so the console's Code view can show the source. Without it a CI-pushed analysis reports source as unavailable with the reason `not_retained`, because the CLI pushes results and not files. Best-effort: a failed upload warns and names the `publish-source` command that retries it, and never fails the build. Needs `--project`. |
 | `--insecure-http` | Accept a plain-`http` `--server` that is not loopback. The API token then travels in the clear; use it only on a network you trust. |
 | `--branch <ref>`, `--run-url <url>`, `--ci-provider <name>` | What the pipeline says about itself, shown on the analysis in the console. On GitHub Actions, GitLab CI and Jenkins these are read from the provider's variables when not given. |
 
@@ -220,9 +225,12 @@ right about what they measure, and the server's is the one the console records.
 A push that fails is an error whatever the local gate says. A pipeline that asked for its result to
 be recorded must not go green because the record silently did not happen.
 
-`--server` runs a full source analysis, so it cannot be combined with `--image` or with a `--mode`
-other than `full`. The project must exist on the server first; create it in the console or with
-`POST /api/v1/projects`.
+`--project` records a full source analysis, so it cannot be combined with `--image` or with a `--mode`
+other than `full`: measures, ratings and a code-quality report have no meaning for an image. `--engagement`
+has no such limit, because an ingest is findings and an image scan produces those as well as a source scan
+does. An image pipeline therefore records with `--engagement`, optionally adding `--push-sbom` so the
+image's package inventory lands on the console too, and the findings appear under the engagement's
+**Imported** tab with the tool and rule that produced each one.
 
 Recording a result needs the operate permission. Give the pipeline its own user with that role
 rather than the bootstrap operator token.

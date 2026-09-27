@@ -1,7 +1,7 @@
-import { AlertTriangle, ArrowLeft, BarChart01, Check, CheckCircle, Copy01, GitBranch01 as BranchIcon, Play, Upload01 } from '@untitledui/icons'
+import { AlertTriangle, ArrowLeft, BarChart01, Check, CheckCircle, Copy01, GitBranch01 as BranchIcon, Play, Trash01, Upload01 } from '@untitledui/icons'
 import { copyText } from '../../lib/clipboard'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, NavLink, Outlet, useLocation, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation, useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
 import { Button, EmptyState, ErrorState, Pill, Spinner, cn } from '../../components/ui'
 import { api } from '../../lib/api'
 import { useFetch } from '../../hooks'
@@ -51,6 +51,9 @@ export function CodeQualityProject() {
   const [coverageFile, setCoverageFile] = useState<File | null>(null)
   const [analysisRevision, setAnalysisRevision] = useState(0)
   const [copied, setCopied] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { data: branchList } = useFetch(() => api.projectBranches(key), { deps: [key, analysisRevision], enabled: !!key })
   const poll = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -189,6 +192,19 @@ export function CodeQualityProject() {
     }
   }
 
+  async function deleteProject() {
+    setOperationError(null)
+    setDeleting(true)
+    try {
+      await api.deleteProject(key)
+      navigate('/code-quality', { replace: true })
+    } catch (e) {
+      setDeleting(false)
+      setConfirmingDelete(false)
+      setOperationError(e instanceof Error ? e.message : 'Failed to delete project')
+    }
+  }
+
   async function startAnalysis() {
     setOperationError(null)
     try {
@@ -317,6 +333,29 @@ export function CodeQualityProject() {
             <Button loading={isRunning} disabled={isRunning} onClick={startAnalysis}>
               <Play className="size-4" aria-hidden="true" /> Run analysis
             </Button>
+            {/* DELETE /api/v1/projects/{key} has always existed; the dashboard never called it, so a
+                project could be created and never removed. Two steps, because deleting a project
+                takes its analyses and their history with it. */}
+            {confirmingDelete ? (
+              <div className="inline-flex items-center gap-1.5 rounded-lg border border-error/40 bg-error-primary/10 px-2 py-1">
+                <span className="text-xs text-error-primary">Delete {project.key} and its analyses?</span>
+                <Button variant="danger" loading={deleting} disabled={deleting} onClick={deleteProject}>
+                  Delete
+                </Button>
+                <Button variant="secondary" disabled={deleting} onClick={() => setConfirmingDelete(false)}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="secondary"
+                disabled={isRunning}
+                title={isRunning ? 'Wait for the running analysis to finish' : 'Delete this project'}
+                onClick={() => setConfirmingDelete(true)}
+              >
+                <Trash01 className="size-4" aria-hidden="true" /> Delete
+              </Button>
+            )}
           </div>
         </div>
         {isRunning && (

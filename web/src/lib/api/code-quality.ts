@@ -441,6 +441,12 @@ export const codeQualityApi = {
   listProjects: async (): Promise<Project[]> =>
     ((await req('/projects')) ?? []).map(mapProject),
 
+  // DELETE /api/v1/projects/{key} has existed since the route table was written; nothing in the
+  // dashboard called it, so a project could be created and never removed from the console.
+  deleteProject: async (projectKey: string): Promise<void> => {
+    await req(`/projects/${encodeURIComponent(projectKey)}`, { method: 'DELETE' })
+  },
+
   createProject: async (input: CreateProjectInput): Promise<Project> =>
     mapProject(
       await req('/projects', {
