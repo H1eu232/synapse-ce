@@ -18,7 +18,9 @@ import (
 // into a public 400 containing the underlying diagnostic.
 type ciImportInternalHTTPTestError struct{ cause error }
 
-func (e ciImportInternalHTTPTestError) Error() string { return "audit imported analysis failed: " + e.cause.Error() }
+func (e ciImportInternalHTTPTestError) Error() string {
+	return "audit imported analysis failed: " + e.cause.Error()
+}
 func (e ciImportInternalHTTPTestError) Unwrap() error { return e.cause }
 func (ciImportInternalHTTPTestError) InternalOnly()   {}
 
