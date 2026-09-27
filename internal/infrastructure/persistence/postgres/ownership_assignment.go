@@ -139,6 +139,20 @@ func (r *OwnershipRepository) ApplyAssignment(ctx context.Context, m ports.Owner
 		}
 		before := current.Assignment
 		after := ownership.Assignment{TeamID: m.TeamID, AssigneeID: m.AssigneeID, LegacyAssignee: m.LegacyAssignee, Mode: "manual", Revision: before.Revision, ManualGeneration: before.ManualGeneration + 1}
+		if m.LegacyEndpoint && after.AssigneeID.IsZero() && after.LegacyAssignee != "" {
+			// The legacy route still accepts arbitrary labels. Only an exact,
+			// eligible user ID becomes a structured recipient in the decision;
+			// display names and unknown IDs remain free text.
+			var userID shared.ID
+			err := tx.QueryRow(ctx, `SELECT u.id FROM users u WHERE u.ownership_tenant_id=$1 AND u.id=$2
+				AND NOT u.disabled AND u.role IN ('admin','consultant','reviewer','member')`, tenant, after.LegacyAssignee).Scan(&userID)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if err == nil {
+				after.AssigneeID = userID
+			}
+		}
 		preserveAssignee := m.Kind == "transfer" && !m.ClearAssignee && m.AssigneeID.IsZero()
 		if preserveAssignee {
 			if before.AssigneeID.IsZero() && current.FindingAssignee != "" {

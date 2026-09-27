@@ -55,8 +55,8 @@ END $$;
 -- an old canonical binding, or binds an exact enabled same-tenant user ID.
 -- +goose StatementBegin
 -- Callers with write access to findings need not have direct read access to
--- users. Keep the lookup under the migration owner's privileges; FORCE RLS
--- still applies the caller's transaction tenant setting.
+-- users. Every lookup is explicitly scoped by NEW.tenant_id; do not rely on
+-- the function owner's RLS status to enforce that boundary.
 CREATE FUNCTION synapse_bridge_finding_assignee() RETURNS trigger LANGUAGE plpgsql
  SECURITY DEFINER SET search_path = public, pg_temp AS $$
 BEGIN

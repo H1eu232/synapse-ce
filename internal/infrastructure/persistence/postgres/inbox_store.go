@@ -101,8 +101,12 @@ func (s *InboxStore) ListInboxPreferences(ctx context.Context, tenant, user shar
 		out = append(out, item)
 	}
 	for _, event := range notification.ConfigurableEvents() {
-		add(event, notification.PersonalInApp, false, "")
-		add(event, notification.PersonalEmail, false, "")
+		reason := ""
+		if !notification.PersonalDeliveryAvailable(event) {
+			reason = "Personal delivery is not available for this event yet."
+		}
+		add(event, notification.PersonalInApp, false, reason)
+		add(event, notification.PersonalEmail, false, reason)
 	}
 	add(notification.EventDestinationChanged, notification.PersonalInApp, true, "")
 	add(notification.EventDestinationChanged, notification.PersonalEmail, false, "")

@@ -263,10 +263,17 @@ func limitText(value string, max int) string {
 }
 
 func retainPersonalInbox(ctx context.Context, tx pgx.Tx, tenant shared.ID, now time.Time) error {
-	if err := deleteInbox(ctx, tx, `SELECT tenant_id, user_id, id, event_id FROM user_notifications WHERE tenant_id=$1 AND created_at < $2 ORDER BY created_at, id LIMIT $3`, tenant, now.Add(-inboxAge), inboxRetainBatch); err != nil {
+	if err := deleteInbox(ctx, tx, `SELECT user_id, id FROM user_notifications
+		WHERE tenant_id=$1 AND created_at < $2 ORDER BY created_at, id LIMIT $3`, tenant, now.Add(-inboxAge), inboxRetainBatch); err != nil {
 		return err
 	}
-	rows, err := tx.Query(ctx, `SELECT user_id FROM user_notifications WHERE tenant_id=$1 GROUP BY user_id HAVING count(*) > $2 ORDER BY user_id LIMIT 20`, tenant, inboxPerUserCap)
+	// Each EXISTS probe stops at the cap using the feed index. This avoids a
+	// tenant-wide GROUP BY over every inbox row on each source poll.
+	rows, err := tx.Query(ctx, `SELECT u.id FROM users u WHERE u.ownership_tenant_id=$1
+		AND EXISTS (SELECT 1 FROM user_notifications n
+			WHERE n.tenant_id=$1 AND n.user_id=u.id
+			ORDER BY n.created_at DESC,n.id DESC OFFSET $2 LIMIT 1)
+		ORDER BY u.id LIMIT 20`, tenant, inboxPerUserCap)
 	if err != nil {
 		return err
 	}
@@ -285,10 +292,9 @@ func retainPersonalInbox(ctx context.Context, tx pgx.Tx, tenant shared.ID, now t
 	}
 	rows.Close()
 	for _, userID := range users {
-		if err := deleteInbox(ctx, tx, `SELECT tenant_id, user_id, id, event_id FROM (
-			SELECT tenant_id, user_id, id, event_id, row_number() OVER (ORDER BY created_at DESC, id DESC) AS n
-			FROM user_notifications WHERE tenant_id=$1 AND user_id=$2
-		) ranked WHERE n > $3 ORDER BY n DESC LIMIT $4`, tenant, userID, inboxPerUserCap, inboxRetainBatch); err != nil {
+		if err := deleteInbox(ctx, tx, `SELECT user_id, id FROM user_notifications
+			WHERE tenant_id=$1 AND user_id=$2
+			ORDER BY created_at DESC,id DESC OFFSET $3 LIMIT $4`, tenant, userID, inboxPerUserCap, inboxRetainBatch); err != nil {
 			return err
 		}
 	}
@@ -296,34 +302,15 @@ func retainPersonalInbox(ctx context.Context, tx pgx.Tx, tenant shared.ID, now t
 }
 
 func deleteInbox(ctx context.Context, tx pgx.Tx, query string, args ...any) error {
-	rows, err := tx.Query(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	type row struct{ tenant, user, id, event shared.ID }
-	var doomed []row
-	for rows.Next() {
-		var item row
-		if err := rows.Scan(&item.tenant, &item.user, &item.id, &item.event); err != nil {
-			rows.Close()
-			return err
-		}
-		doomed = append(doomed, item)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	for _, item := range doomed {
-		if _, err := tx.Exec(ctx, `INSERT INTO user_notification_tombstones(tenant_id,user_id,event_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, item.tenant, item.user, item.event); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM user_notifications WHERE tenant_id=$1 AND user_id=$2 AND id=$3`, item.tenant, item.user, item.id); err != nil {
-			return err
-		}
-	}
-	return nil
+	// The deleted rows and their replay fences are one SQL statement within the
+	// caller's transaction. A failure cannot leave deletion without a tombstone.
+	_, err := tx.Exec(ctx, `WITH doomed AS (`+query+`), removed AS (
+		DELETE FROM user_notifications n USING doomed d
+		WHERE n.tenant_id=$1 AND n.user_id=d.user_id AND n.id=d.id
+		RETURNING n.tenant_id,n.user_id,n.event_id
+	) INSERT INTO user_notification_tombstones(tenant_id,user_id,event_id)
+	SELECT tenant_id,user_id,event_id FROM removed ON CONFLICT DO NOTHING`, args...)
+	return err
 }
 
 func (r *NotificationRepository) EnableDestinationNotices() { r.destinationNotices = true }

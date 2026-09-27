@@ -1,7 +1,7 @@
 import { req } from './client'
 
 export interface OwnershipPage<T> { items: T[]; next?: string }
-export interface UserChoice { id: string; name: string; role: string }
+export interface UserChoice { id: string; name: string }
 export interface OwnershipCapability { enabled: boolean; mode: 'off' | 'observe' | 'enforce'; routing_available: boolean; reason?: string }
 export interface OwnershipTeam { id: string; slug: string; name: string; archived: boolean; revision: number; created_at: string; updated_at: string }
 export interface OwnershipMember { team_id: string; user_id: string; created_at: string }

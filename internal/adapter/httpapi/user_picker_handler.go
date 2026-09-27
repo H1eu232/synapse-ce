@@ -8,6 +8,10 @@ import (
 )
 
 func (rt *Router) SetUserPickerReader(reader ports.UserPickerReader) { rt.userPicker = reader }
+
+// Triage users need an assignee picker, but not the admin roster endpoint.
+// This bounded search exposes only eligible users' IDs and names, never roles
+// or contact/credential data.
 func (rt *Router) listUserChoices(w http.ResponseWriter, r *http.Request) {
 	limit := 25
 	if raw := r.URL.Query().Get("limit"); raw != "" {

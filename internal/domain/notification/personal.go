@@ -298,3 +298,14 @@ func MergePersonalRecipients(assignees, members, admins []shared.ID) []ResolvedR
 func ConfigurableEvents() []EventType {
 	return []EventType{EventVulnerabilityAction, EventScanCompleted, EventQualityGateFailed, EventSLAApproaching, EventFleetAgentOffline, EventIncidentCreated, EventOwnershipChanged}
 }
+
+// Personal delivery is available only where an event has a structured
+// recipient and a safe subject. Other framework events keep their tenant rules.
+func PersonalDeliveryAvailable(event EventType) bool {
+	switch event {
+	case EventOwnershipChanged, EventSLAApproaching, EventDestinationChanged:
+		return true
+	default:
+		return false
+	}
+}

@@ -91,6 +91,22 @@ func TestMandatoryInAppCannotBeMuted(t *testing.T) {
 	}
 }
 
+func TestUnavailablePersonalEventCannotBeEnabled(t *testing.T) {
+	svc, err := NewService(&fakeInbox{}, fixedClock{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []notification.EventType{
+		notification.EventVulnerabilityAction, notification.EventScanCompleted,
+		notification.EventQualityGateFailed, notification.EventFleetAgentOffline,
+		notification.EventIncidentCreated,
+	} {
+		if _, err := svc.SavePreference(context.Background(), "tenant", "user", event, notification.PersonalInApp, notification.PreferenceEnabled, 0); err == nil {
+			t.Fatalf("unsupported personal event %s was enabled", event)
+		}
+	}
+}
+
 func TestStalePersonalMailIsNotRetargeted(t *testing.T) {
 	svc, err := NewService(&fakeInbox{}, fixedClock{})
 	if err != nil {

@@ -8307,11 +8307,10 @@ components:
 
     UserChoice:
       type: object
-      required: [id, name, role]
+      required: [id, name]
       properties:
         id: {type: string}
         name: {type: string}
-        role: {type: string}
 
     AssigneeReviewItem:
       type: object

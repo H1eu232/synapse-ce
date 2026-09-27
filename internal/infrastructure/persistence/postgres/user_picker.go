@@ -24,14 +24,14 @@ func (r *UserPickerReader) ListUserChoices(ctx context.Context, tenantID, teamID
 	tenantID = shared.TenantOrDefault(tenantID)
 	out := make([]ports.UserChoice, 0)
 	err := WithTenant(ctx, r.pool, tenantID.String(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT u.id,u.name,u.role FROM users u WHERE u.ownership_tenant_id=$1 AND NOT u.disabled AND u.role IN ('admin','consultant','reviewer','member') AND u.id>$4 AND ($2='' OR EXISTS(SELECT 1 FROM ownership_memberships m WHERE m.tenant_id=$1 AND m.team_id=$2 AND m.user_id=u.id)) AND ($3='' OR POSITION(lower($3) IN lower(u.name))>0 OR POSITION(lower($3) IN lower(u.id))>0) ORDER BY u.id LIMIT $5`, tenantID, teamID, query, cursor, limit)
+		rows, err := tx.Query(ctx, `SELECT u.id,u.name FROM users u WHERE u.ownership_tenant_id=$1 AND NOT u.disabled AND u.role IN ('admin','consultant','reviewer','member') AND u.id>$4 AND ($2='' OR EXISTS(SELECT 1 FROM ownership_memberships m WHERE m.tenant_id=$1 AND m.team_id=$2 AND m.user_id=u.id)) AND ($3='' OR POSITION(lower($3) IN lower(u.name))>0 OR POSITION(lower($3) IN lower(u.id))>0) ORDER BY u.id LIMIT $5`, tenantID, teamID, query, cursor, limit)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var c ports.UserChoice
-			if err := rows.Scan(&c.ID, &c.Name, &c.Role); err != nil {
+			if err := rows.Scan(&c.ID, &c.Name); err != nil {
 				return err
 			}
 			out = append(out, c)

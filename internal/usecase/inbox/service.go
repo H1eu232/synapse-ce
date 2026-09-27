@@ -83,6 +83,9 @@ func (s *Service) SavePreference(ctx context.Context, tenant, user shared.ID, ev
 	if !known || !event.Valid() || event == notification.EventTest {
 		return ports.InboxPreference{}, fmt.Errorf("%w: unsupported notification preference", shared.ErrValidation)
 	}
+	if !notification.PersonalDeliveryAvailable(event) {
+		return ports.InboxPreference{}, fmt.Errorf("%w: personal delivery is unavailable for this event", shared.ErrValidation)
+	}
 	return s.store.SaveInboxPreference(ctx, shared.TenantOrDefault(tenant), user, event, channel, state, revision, s.clock.Now().UTC())
 }
 

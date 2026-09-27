@@ -9,8 +9,8 @@ describe('UserPicker', () => {
   beforeEach(() => { vi.resetAllMocks() })
 
   it('searches the selected team server-side and keeps the chosen identity visible', async () => {
-    vi.mocked(api.userChoices).mockResolvedValueOnce({ items: [{ id: 'user-1', name: 'Alex', role: 'consultant' }], next: 'user-1' })
-      .mockResolvedValueOnce({ items: [{ id: 'user-2', name: 'Alex', role: 'reviewer' }], next: '' })
+    vi.mocked(api.userChoices).mockResolvedValueOnce({ items: [{ id: 'user-1', name: 'Alex' }], next: 'user-1' })
+      .mockResolvedValueOnce({ items: [{ id: 'user-2', name: 'Alex' }], next: '' })
       .mockResolvedValueOnce({ items: [], next: '' })
     const onChange=vi.fn()
     const {rerender}=render(<UserPicker team="team-1" value="" onChange={onChange} />)
