@@ -128,9 +128,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # Every Dockerfile here cross-compiles with CGO_ENABLED=0 from a native builder, so arm64 needs buildx
-      # but no QEMU: nothing is emulated and the build is as fast as the amd64 one. The one CGO stage, the
-      # tree-sitter helper in deploy/Dockerfile, is why the control-plane image stays single-arch.
+      # No QEMU, because nothing here is emulated: the Go Dockerfiles cross-compile with CGO_ENABLED=0 from
+      # a native builder, and Dockerfile.web pins its Node stage to $BUILDPLATFORM because its output is
+      # static assets. That pin was missing at first and a linux/arm64 leg emulated `pnpm install` under
+      # QEMU for an hour before it was cancelled. The one CGO stage, the tree-sitter helper in
+      # deploy/Dockerfile, is why the control-plane image stays single-arch.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
