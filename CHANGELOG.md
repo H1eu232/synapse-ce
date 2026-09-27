@@ -7,6 +7,8 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-27
+
 ### Added
 
 - **A pipeline scan can record its security findings on an engagement.** `--server --project` recorded a code-quality analysis and the security findings of the same run had no destination, so an engagement stayed empty while CI was green. `--engagement <id>` now posts them through `POST /api/v1/engagements/{id}/sarif`, the server's own ingest path, so they are deduplicated against first-party findings and the refusals and coverage gaps the server decided are reported rather than hidden. `--asset <id>` binds them to a business asset. The two destinations are independent: `--server` asks for `--project`, `--engagement`, or both.
