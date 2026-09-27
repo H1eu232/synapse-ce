@@ -37,6 +37,14 @@ func requestLogger(w http.ResponseWriter, fallback *slog.Logger) *slog.Logger {
 
 // writeError maps domain sentinel errors to HTTP status codes.
 func writeError(w http.ResponseWriter, log *slog.Logger, err error) {
+	// Infrastructure failures may wrap validation/conflict sentinels. Their
+	// diagnostic Error() belongs in server logs, not a 4xx response body.
+	var internalOnly interface{ InternalOnly() }
+	if errors.As(err, &internalOnly) {
+		requestLogger(w, log).Error("request failed", "err", err)
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+		return
+	}
 	switch {
 	case errors.Is(err, shared.ErrValidation):
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
