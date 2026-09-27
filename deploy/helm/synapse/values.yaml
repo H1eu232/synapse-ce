@@ -133,6 +133,12 @@ worker:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  metrics:
+    # The unauthenticated worker endpoint is off by default and has a separate
+    # ClusterIP Service and monitoring-namespace-only ingress when enabled.
+    enabled: false
+    port: 9091
+    monitoringNamespace: monitoring
   integrationScheduler:
     enabled: false
     poll: 1m

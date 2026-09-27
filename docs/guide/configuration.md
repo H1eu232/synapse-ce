@@ -38,9 +38,12 @@ value. Any authenticated role may read it.
 | `SYNAPSE_OIDC_ISSUER` | (none) | Absolute HTTPS issuer used for pinned discovery and ID-token validation. |
 | `SYNAPSE_OIDC_CLIENT_ID`, `SYNAPSE_OIDC_CLIENT_SECRET`, `SYNAPSE_OIDC_REDIRECT_URL` | (none) | OAuth client settings. The callback must be the exact registered `https://<api-host>/api/auth/oidc/callback` URL. Never log the secret. |
 | `SYNAPSE_OIDC_FRONTEND_URL` | (none) | Fixed absolute HTTPS dashboard URL for a successful callback redirect. Query strings, fragments, and credentials are rejected; request parameters never control this destination. |
+| `SYNAPSE_PUBLIC_BASE_URL` | `SYNAPSE_OIDC_FRONTEND_URL` if set; otherwise unset | Trusted HTTPS console URL (optionally including the deployment path prefix) for outgoing deep links. Works without OIDC. HTTP, relative URLs, credentials, query strings, fragments, invalid ports, control and Unicode format characters (including percent-encoded characters in hostnames), and double-encoded path segments are rejected at API and worker startup. Never put tokens or secrets in this value. Set explicitly if no OIDC frontend URL exists. |
 | `SYNAPSE_OIDC_TENANT_ID` | (none) | The one fixed Synapse tenant accepted by this BFF instance. |
 | `SYNAPSE_OIDC_GROUP_ROLE_MAPPING` | (none) | Comma-separated exact `provider-group=role` entries. Roles may only be `admin`, `consultant`, `reviewer`, or `readonly`; unmapped, duplicate, and multi-role group claims are rejected. |
 | `SYNAPSE_OIDC_TRANSACTION_TTL`, `SYNAPSE_OIDC_SESSION_TTL` | `10m`, `8h` | Maximum authorization-transaction and opaque browser-session lifetimes. |
+
+The console link builder routes to engagements, incidents, the Findings tab (`#finding-<id>`) and the Scan Runs tab (`#scan-<id>`). The latter opens scan history and preserves the scan ID in its fragment; the current UI does not yet auto-select a scan from that fragment. If neither public URL nor OIDC frontend is configured, link generation is unavailable until an HTTPS base is supplied.
 
 ## Core and server
 
@@ -59,7 +62,7 @@ value. Any authenticated role may read it.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `SYNAPSE_METRICS_ENABLED` | `false` | Expose Prometheus metrics on a SEPARATE listener (`SYNAPSE_METRICS_ADDR`). Off by default; the listener is never bearer-protected and is never itself instrumented. |
+| `SYNAPSE_METRICS_ENABLED` | `false` | Expose Prometheus metrics on a SEPARATE listener (`SYNAPSE_METRICS_ADDR`). Off by default; the listener is never bearer-protected and is never itself instrumented. On an `all` profile worker with notifications enabled, it also exposes worker-owned delivery metrics. |
 | `SYNAPSE_METRICS_ADDR` | `127.0.0.1:9090` | Metrics listener address. Loopback-only by default; widen it only onto a private scrape network, never a public interface. |
 | `SYNAPSE_ACCESS_LOG_ENABLED` | `true` | Emit one structured `http access` log event per request (method, matched route, status, latency, request id, and (once authenticated) the resolved principal id). Never logs raw paths, query strings, headers, bodies, tenant ids, remote addresses, user agents, or secrets. |
 
@@ -73,6 +76,13 @@ Metric names and label cardinality:
 | `synapse_job_queue_in_flight` | gauge | none | Aggregate claimed/in-flight durable jobs, across every tenant. |
 | `synapse_job_queue_oldest_active_age_seconds` | gauge | none | Age of the oldest still-queued-or-claimed job (`ports.JobStats.OldestActiveAt`), `0` when the queue is empty. |
 | `synapse_job_queue_scrape_errors_total` | counter | none | Failed attempts to read aggregate durable job queue stats for a scrape. The three `synapse_job_queue_*` gauges above are omitted from that scrape (never a stale or bogus value) when this increments. |
+| `synapse_notification_worker_sent_total` | counter | `channel_type`, `provider` | Committed successful notification delivery attempts, emitted by the worker only. |
+| `synapse_notification_worker_failed_total` | counter | `channel_type`, `provider` | Committed unsuccessful attempts, including retryable ones. |
+| `synapse_notification_worker_dead_lettered_total` | counter | `channel_type`, `provider` | Committed terminal delivery transitions observed by the worker. |
+| `synapse_notification_worker_delivery_duration_seconds` | histogram | `channel_type`, `provider` | Attempt duration excluding durable queue wait. |
+| `synapse_notification_worker_oldest_pending_age_seconds` | gauge | `channel_type`, `provider` | Oldest pending/retrying delivery across RLS-scoped tenants (0 if none). Omitted when any tenant read fails. |
+| `synapse_notification_worker_pending_scrape_error` | gauge | none | 1 if aggregate backlog read failed, otherwise 0. |
+| `synapse_notification_worker_template_fallback_total` | counter | `channel_type`, `provider` | Committed attempts that rendered built-in title/summary fallback content. |
 | `synapse_sca_scan_duration_seconds` | histogram | `outcome` | Completed synchronous or asynchronous SCA execution duration. For an async scan, measured from worker execution start, not from `StartScan`/enqueue time. Queue failures, dead letters, stale sweeps, and blocked gates do not record a duration. |
 | `synapse_sca_scan_outcomes_total` | counter | `outcome` | Terminal SCA outcomes: `success`, `failed`, or `blocked`. Queue failures, dead letters, and stale sweeps count as `failed` without a duration. `blocked` is recorded only for an execution-gate denial reached after a genuine scan attempt, never for a pre-gate validation failure. |
 | `synapse_finding_lineage_operations_total` | counter | `outcome`, `method`, `reason` | Finding correlation and human-review outcomes. Every label is reduced to a fixed allowlist. |
@@ -97,7 +107,7 @@ scrape_configs:
       - targets: ["127.0.0.1:9090"]
 ```
 
-The metrics listener has no authentication of its own. Keep `SYNAPSE_METRICS_ADDR` on loopback or a private network reachable only by your scrape infrastructure; do not put it behind the same reverse-proxy path as the bearer-protected API, and do not widen it to a public interface. Startup logs a WARN if `SYNAPSE_METRICS_ENABLED` is set and `SYNAPSE_METRICS_ADDR` does not resolve to a loopback address.
+The metrics listener has no authentication of its own. Keep `SYNAPSE_METRICS_ADDR` on loopback or a private network reachable only by your scrape infrastructure; do not put it behind the same reverse-proxy path as the bearer-protected API, and do not widen it to a public interface. The API warns when a configured metrics listener is non-loopback. A co-located `synapse-worker` must use a different metrics port (for example `127.0.0.1:9091`); its listener is enabled only in the `all` profile with notifications enabled. Worker delivery metric labels are fixed to `webhook/generic`, `slack/slack`, `email/smtp` or `other/other`, never tenant or destination data.
 
 ## Persistence
 
@@ -494,7 +504,7 @@ when they are used only by a CLI, helper, or optional subsystem.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `SYNAPSE_SIEM_ENABLED` | `true` | Set `false` on every API and worker replica to stop incident capture and SIEM sends. Pausing one sink does not stop capture. Events written while capture is off are not in the live partition; a historical backfill can still copy identities that were never captured. |
-| `SYNAPSE_SIEM_PUBLIC_BASE_URL` | empty | Optional absolute `https` console origin added to exported records as a deep link. Empty omits links. This does not configure a general public URL builder. |
+| `SYNAPSE_SIEM_PUBLIC_BASE_URL` | empty | Optional absolute `https` console origin, with no path, added to exported SIEM records as a deep link. Empty omits links. It does not fall back to `SYNAPSE_PUBLIC_BASE_URL`, because that console builder can include a deployment prefix and uses different routes. |
 
 ### Database, project storage, and maintenance
 

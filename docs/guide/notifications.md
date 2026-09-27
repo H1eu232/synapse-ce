@@ -85,7 +85,7 @@ with any other filter is rejected when it is saved:
 | `quality_gate.failed` | none |
 | `sla.approaching_deadline` | engagements, lead time (24 hours by default) |
 | `fleet.agent.offline` | none |
-| `incident.created` | severity floor, engagements |
+| `incident.created` | severity floor, engagements (when the incident has one) |
 | `finding.ownership_changed` | engagements, teams (required) |
 | `notification.destination_changed` | none; operator-driven, and a rule cannot target it |
 
@@ -94,6 +94,10 @@ so an engagement scope on them could never match. Rules of that shape saved befo
 this check were disabled on upgrade with `disabled_reason: engagement_filter_unsupported`;
 their engagement list is kept so you can see what was intended. Remove the engagement
 scope and save the rule to enable it again.
+
+An incident carries the engagement its fleet correlation was scoped to. Incidents recorded
+before correlation was scoped to an engagement may carry none, and an engagement-scoped
+incident rule does not see them. Leave the scope empty to receive every incident.
 
 Engagement and team scope use searchable pickers over the existing engagement
 list and ownership team pages. Each choice keeps its stable ID beside the
@@ -200,6 +204,40 @@ pages to 200. Queue saturation rolls back source handoff for a later poll.
 When API metrics are enabled, `synapse_notification_jobs{state="queued|claimed|failed|done"}`
 exposes aggregate backlog and terminal jobs without tenant or destination labels.
 `synapse_notification_queue_scrape_error` indicates unavailable statistics.
+
+The **worker** exports delivery health on its own, isolated `/metrics` listener when
+`SYNAPSE_NOTIFICATIONS_ENABLED=true` and `SYNAPSE_METRICS_ENABLED=true`.
+Use `SYNAPSE_METRICS_ADDR=127.0.0.1:9091` for a worker running beside the API;
+the default `9090` port is already used by the API on the same host. The listener
+is **unauthenticated**: allow only a loopback or private scrape network.
+For `inClusterBroker` Helm installations, set `worker.metrics.enabled=true`,
+enable notifications via `extraEnv`, and scrape the worker-only ClusterIP
+Service from `worker.metrics.monitoringNamespace`. The chart creates a
+matching ingress NetworkPolicy; the default remains disabled. The
+`integrations` and `lifecycle` worker profiles do not process channel deliveries
+and do not serve these metrics. The API never duplicates worker delivery counters.
+
+Worker metric names all start with `synapse_notification_worker_`:
+- `sent_total` and `failed_total` count **committed delivery attempts**. Failed
+  includes attempts scheduled to retry, not just final delivery failures.
+- `dead_lettered_total` counts committed terminal transitions observed by the
+  worker, separately from the unsuccessful attempt that caused them.
+- `delivery_duration_seconds` is a histogram of attempt processing time; it
+  deliberately excludes the time a delivery waits in the durable queue.
+- `oldest_pending_age_seconds` shows the oldest pending/retrying delivery age
+  across all tenants, computed from tenant-scoped PostgreSQL reads on each scrape.
+  An empty family reports 0. On any database read error all age gauges are
+  omitted and `pending_scrape_error` reports 1 (0 on a healthy scrape).
+- `template_fallback_total` counts committed attempts whose email/Slack
+  rendering had to use built-in title or summary fallback content. Generic
+  webhooks send the event JSON and do not render that content.
+
+Every per-channel metric has only `channel_type` and `provider` labels.
+The fixed combinations are `webhook/generic`, `slack/slack`,
+`email/smtp`, and `other/other` for unknown types. No tenant ID,
+channel ID, recipient, host, URL, provider credentials or raw error text
+can become a metric label. Counters restart with each worker process;
+the pending-age gauge reads durable state at scrape time.
 
 The older `SYNAPSE_ALERT_WEBHOOK_URL` incident path remains available. When it is
 configured, the worker suppresses the new `incident.created` producer so an

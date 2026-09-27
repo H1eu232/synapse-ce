@@ -1,6 +1,10 @@
 package notification
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestDataClassRank(t *testing.T) {
 	if !(DataClassSignal.Rank() < DataClassSummary.Rank() && DataClassSummary.Rank() < DataClassDetail.Rank()) {
@@ -35,5 +39,17 @@ func TestEventSpecCloneIsIndependent(t *testing.T) {
 	copied.Variables[0].Name = "changed"
 	if original.Filters[0] != FilterEngagements || original.Variables[0].Name != "title" {
 		t.Fatal("clone shares slices with the original")
+	}
+}
+
+func TestEventSpecMarshalsEmptyListsAsArrays(t *testing.T) {
+	for _, spec := range EventCatalog() {
+		raw, err := json.Marshal(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "null") {
+			t.Fatalf("%s marshals a null: %s", spec.Type, raw)
+		}
 	}
 }

@@ -101,9 +101,12 @@ was off, can still be backfilled. A new sink starts from the retained anchor
 if old capture rows were pruned. The incident counter is never reset. Capture,
 prune, and backfill take the same per-tenant retention lock.
 
-When metrics are enabled, scrape the worker's separate `/metrics` listener
-for SIEM delivery counters. Give API and worker distinct metrics addresses if
-they share a host; both default to `127.0.0.1:9090`.
+When metrics are enabled, SIEM delivery counters are on the worker `/metrics`
+listener. If notification delivery metrics are also enabled, both series share
+that listener. Give API and worker distinct metrics addresses if they share a
+host; both default to `127.0.0.1:9090`. `SYNAPSE_SIEM_PUBLIC_BASE_URL` is a
+bare `https` origin. It does not use the shared console-link builder, so a
+deployment prefix on `SYNAPSE_PUBLIC_BASE_URL` is not applied to SIEM links.
 
 ## What this release does not prove
 

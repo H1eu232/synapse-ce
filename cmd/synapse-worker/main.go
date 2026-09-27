@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -62,7 +63,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/platform/binregistry"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/buildinfo"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/config"
-	"github.com/KKloudTarus/synapse-ce/internal/platform/httpserver"
+
 	"github.com/KKloudTarus/synapse-ce/internal/platform/idgen"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/jobs"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/logging"
@@ -119,6 +120,10 @@ import (
 func main() {
 	cfg := config.Load()
 	log := logging.New(cfg.LogLevel)
+	if err := cfg.ValidatePublicBaseURL(); err != nil {
+		log.Error("console link configuration invalid", "err", err)
+		os.Exit(1)
+	}
 	if cfg.OwnershipMode != "off" && cfg.OwnershipMode != "observe" && cfg.OwnershipMode != "enforce" {
 		log.Error("SYNAPSE_OWNERSHIP_MODE must be off, observe or enforce")
 		os.Exit(1)
@@ -647,6 +652,7 @@ func main() {
 		maintenanceTasks = append(maintenanceTasks, ownershipWorker.Run)
 		log.Info("durable finding ownership routing enabled", "mode", cfg.OwnershipMode, "profile", cfg.WorkerProfile)
 	}
+	var workerMetricsRegistry *prometheus.Registry
 	if cfg.NotificationEnabled {
 		if cfg.VaultMasterKey == "" {
 			log.Error("SYNAPSE_NOTIFICATIONS_ENABLED requires SYNAPSE_VAULT_MASTER_KEY shared by API and worker")
@@ -660,6 +666,35 @@ func main() {
 		if notificationErr != nil {
 			log.Error("notification service init failed", "err", notificationErr)
 			os.Exit(1)
+		}
+		// Delivery metrics are emitted by this worker only: the API exposes
+		// aggregate queue health but never observes worker transport outcomes.
+		if cfg.MetricsEnabled {
+			workerMetrics := observability.NewWorkerNotificationMetrics(postgres.NewNotificationRepository(pool))
+			workerMetricsRegistry = workerMetrics.Registry()
+			notificationService.SetDeliveryObserver(workerMetrics)
+			mux := http.NewServeMux()
+			mux.Handle("GET /metrics", workerMetrics.Handler())
+			listener, listenErr := net.Listen("tcp", cfg.MetricsAddr)
+			if listenErr != nil {
+				log.Error("worker metrics listener failed", "err", listenErr)
+				os.Exit(1)
+			}
+			metricsServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+			go func() {
+				if serveErr := metricsServer.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && ctx.Err() == nil {
+					log.Error("worker metrics listener stopped", "err", serveErr)
+					stop()
+				}
+			}()
+			defer func() {
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutdownCancel()
+				if shutdownErr := metricsServer.Shutdown(shutdownCtx); shutdownErr != nil {
+					log.Warn("worker metrics shutdown failed", "err", shutdownErr)
+				}
+			}()
+			log.Info("private worker notification metrics enabled", "addr", cfg.MetricsAddr)
 		}
 		handlers[notificationuc.JobKind] = notificationJobHandler{svc: notificationService}
 		contactService, contactErr := usercontacts.NewService(postgres.NewUserContactStore(pool), postgres.NewUserRepository(pool), vaultCipher, sender, ids, clock, usercontacts.DeriveVerifierKey(cfg.VaultMasterKey), cfg.NotificationSMTPHost != "" && cfg.NotificationSMTPFrom != "")
@@ -1160,7 +1195,33 @@ func main() {
 	)
 
 	// SIEM export runs on every replica. Leases, not leader election, decide
-	// which worker may commit a partition.
+	// which worker may commit a partition. Its counters share the worker
+	// /metrics listener instead of binding the address a second time.
+	if cfg.SIEMEnabled && cfg.MetricsEnabled && workerMetricsRegistry == nil {
+		workerMetricsRegistry = prometheus.NewRegistry()
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", promhttp.HandlerFor(workerMetricsRegistry, promhttp.HandlerOpts{}))
+		listener, listenErr := net.Listen("tcp", cfg.MetricsAddr)
+		if listenErr != nil {
+			log.Error("worker metrics listener failed", "err", listenErr)
+			os.Exit(1)
+		}
+		metricsServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			if serveErr := metricsServer.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && ctx.Err() == nil {
+				log.Error("worker metrics listener stopped", "err", serveErr)
+				stop()
+			}
+		}()
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			if shutdownErr := metricsServer.Shutdown(shutdownCtx); shutdownErr != nil {
+				log.Warn("worker metrics shutdown failed", "err", shutdownErr)
+			}
+		}()
+		log.Info("private worker metrics enabled", "addr", cfg.MetricsAddr)
+	}
 	if cfg.SIEMEnabled {
 		go func() {
 			repository := postgres.NewSIEMRepository(pool)
@@ -1177,15 +1238,7 @@ func main() {
 				return
 			}
 			if cfg.MetricsEnabled {
-				registry := prometheus.NewRegistry()
-				service.SetMetrics(observability.NewSIEMMetrics(registry))
-				mux := http.NewServeMux()
-				mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-				go func() {
-					if err := httpserver.Run(ctx, cfg.MetricsAddr, mux, log); err != nil && ctx.Err() == nil {
-						log.Error("siem worker metrics listener failed", "err", err)
-					}
-				}()
+				service.SetMetrics(observability.NewSIEMMetrics(workerMetricsRegistry))
 			}
 			workerID := "siem-" + ids.NewID().String()
 			ticker := time.NewTicker(15 * time.Second)

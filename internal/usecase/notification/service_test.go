@@ -14,11 +14,13 @@ import (
 
 type fakeRepo struct {
 	ports.NotificationRepository
-	work      ports.NotificationWork
-	relevant  bool
-	cancelled bool
-	finished  string
-	next      *time.Time
+	work             ports.NotificationWork
+	relevant         bool
+	cancelled        bool
+	finished         string
+	next             *time.Time
+	publishedEvent   domain.Event
+	publishedChannel shared.ID
 }
 
 func (f *fakeRepo) LoadWork(context.Context, shared.ID, shared.ID) (ports.NotificationWork, error) {
@@ -39,8 +41,8 @@ func (f *fakeRepo) CancelDelivery(context.Context, shared.ID, shared.ID, string,
 	f.cancelled = true
 	return nil
 }
-func (f *fakeRepo) DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) error {
-	return nil
+func (f *fakeRepo) DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) (bool, error) {
+	return false, nil
 }
 
 type fakeProtector struct{ raw []byte }
@@ -65,6 +67,48 @@ func (f *fakeIDs) NewID() shared.ID { f.n++; return shared.ID("id" + string(rune
 type fakeAudit struct{}
 
 func (fakeAudit) Record(context.Context, ports.AuditEntry) error { return nil }
+
+func (f *fakeRepo) ListChannels(_ context.Context, tenant shared.ID) ([]domain.Channel, error) {
+	return []domain.Channel{{TenantID: tenant, ID: "channel", Name: "Channel"}}, nil
+}
+
+func (f *fakeRepo) PublishToChannel(_ context.Context, event domain.Event, channel shared.ID) (shared.ID, error) {
+	f.publishedEvent = event
+	f.publishedChannel = channel
+	return "delivery", nil
+}
+
+// The API serves notification administration without the worker's delivery sender.
+func TestAdministrationWithoutDeliverySender(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, err := NewService(repo, fakeProtector{}, nil, fakeAudit{}, fakeClock{time.Unix(1700000000, 0).UTC()}, &fakeIDs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := shared.WithTenant(context.Background(), "tenant")
+	channels, err := svc.ListChannels(ctx)
+	if err != nil || len(channels) != 1 || channels[0].ID != "channel" {
+		t.Fatalf("channels=%v, err=%v", channels, err)
+	}
+	id, err := svc.TestChannel(ctx, "admin", "channel")
+	if err != nil || id != "delivery" || repo.publishedChannel != "channel" {
+		t.Fatalf("test channel: id=%q, target=%q, err=%v", id, repo.publishedChannel, err)
+	}
+	if repo.publishedEvent.TenantID != "tenant" || repo.publishedEvent.Type != domain.EventTest {
+		t.Fatalf("wrong tenant or event type: %+v", repo.publishedEvent)
+	}
+	if err := repo.publishedEvent.Validate(); err != nil {
+		t.Fatalf("invalid test event: %v", err)
+	}
+	if _, err := svc.TestChannel(context.Background(), "admin", "channel"); err == nil {
+		t.Fatal("test channel accepted a missing tenant context")
+	}
+	err = svc.HandleJob(context.Background(), ports.QueuedJob{})
+	var deliveryErr *DeliveryError
+	if !errors.As(err, &deliveryErr) || !deliveryErr.Terminal() {
+		t.Fatalf("API must not handle delivery jobs without a sender: %v", err)
+	}
+}
 
 func TestHandleJobPersistsRetryWithoutSleeping(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
