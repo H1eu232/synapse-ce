@@ -7,6 +7,10 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+### Added
+
+- **A code-quality project can be deleted from the console.** `DELETE /api/v1/projects/{key}` has existed since the route table was written, and nothing in the dashboard called it, so a project could be created and never removed. The control is on the project detail page rather than on a card in the grid, because a delete takes the project's analyses and their history with it; it confirms with the project key and is disabled while an analysis is running.
+
 ### Fixed
 
 - **Every deep link in the dashboard 404s on reload.** The published `synapse-web` image shipped nginx's own sample `default.conf`, PHP comments and all, because the `production` stage of `deploy/Dockerfile.web` copied the built SPA and never replaced the config; `deploy/nginx/compose-dashboard.conf`, which does carry the `try_files` fallback, only reached the `compose` stage. Reloading `/settings/team`, or pasting the link, therefore returned nginx's 404 for every route except `/`. The stage now ships `deploy/nginx/dashboard.conf`: `try_files $uri $uri/ /index.html` for routes, a separate `/assets/` location that answers a missing hashed asset with a real 404 instead of HTML, immutable caching for those hashed files, and `no-cache` on the shell so a deploy is picked up.
