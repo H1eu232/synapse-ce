@@ -40,6 +40,7 @@ import (
 	reconuc "github.com/KKloudTarus/synapse-ce/internal/usecase/recon"
 	reportuc "github.com/KKloudTarus/synapse-ce/internal/usecase/report"
 	scauc "github.com/KKloudTarus/synapse-ce/internal/usecase/sca"
+	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/slauc"
 	transferuc "github.com/KKloudTarus/synapse-ce/internal/usecase/transfer"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/usercontacts"
@@ -161,6 +162,7 @@ type Router struct {
 	responseObservers        responseObserverAdmin       // optional; nil ⇒ response-observer assignment route is not registered
 	notifications            *notificationuc.Service     // optional; nil ⇒ tenant notification management routes are not registered
 	inbox                    *inboxuc.Service
+	siem                     *siemuc.Service
 }
 
 // findingVerifier is the narrow slice of the exploitation use-case the verify endpoint needs:
@@ -338,6 +340,9 @@ func (rt *Router) SetSLA(service *slauc.Service) { rt.sla = service }
 // SetNotifications wires tenant-managed channels, rules, and delivery history.
 func (rt *Router) SetNotifications(service *notificationuc.Service) { rt.notifications = service }
 
+// SetSIEM wires tenant SIEM sink management. Nil leaves the routes unregistered.
+func (rt *Router) SetSIEM(service *siemuc.Service) { rt.siem = service }
+
 // SetIntegrations wires the CI/CD integration API.
 func (rt *Router) SetIntegrations(service *integrationuc.Service) { rt.integrations = service }
 
@@ -508,6 +513,21 @@ func (rt *Router) routes() *http.ServeMux {
 		mux.HandleFunc("GET /api/v1/notifications/deliveries", rt.authz(userdom.PermAdminister, rt.listNotificationDeliveries))
 		mux.HandleFunc("GET /api/v1/notifications/deliveries/{nid}", rt.authz(userdom.PermAdminister, rt.getNotificationDelivery))
 		mux.HandleFunc("GET /api/v1/notifications/deliveries/{nid}/attempts", rt.authz(userdom.PermAdminister, rt.listNotificationAttempts))
+	}
+	if rt.siem != nil {
+		// Tenant SIEM configuration is admin-only until integration_admin exists.
+		// Creating a destination, changing its host, or raising its data class
+		// stays on this gate. Machine roles fail it because they have no permission.
+		mux.HandleFunc("GET /api/v1/siem/sinks", rt.authz(userdom.PermAdminister, rt.listSIEMSinks))
+		mux.HandleFunc("POST /api/v1/siem/sinks", rt.authz(userdom.PermAdminister, rt.createSIEMSink))
+		mux.HandleFunc("GET /api/v1/siem/sinks/{id}", rt.authz(userdom.PermAdminister, rt.getSIEMSink))
+		mux.HandleFunc("PATCH /api/v1/siem/sinks/{id}", rt.authz(userdom.PermAdminister, rt.updateSIEMSink))
+		mux.HandleFunc("POST /api/v1/siem/sinks/{id}/secret", rt.authz(userdom.PermAdminister, rt.rotateSIEMSecret))
+		mux.HandleFunc("POST /api/v1/siem/sinks/{id}/origin", rt.authz(userdom.PermAdminister, rt.changeSIEMOrigin))
+		mux.HandleFunc("POST /api/v1/siem/sinks/{id}/pause", rt.authz(userdom.PermAdminister, rt.pauseSIEMSink))
+		mux.HandleFunc("POST /api/v1/siem/sinks/{id}/resume", rt.authz(userdom.PermAdminister, rt.resumeSIEMSink))
+		mux.HandleFunc("POST /api/v1/siem/sinks/{id}/test", rt.authz(userdom.PermAdminister, rt.testSIEMSink))
+		mux.HandleFunc("GET /api/v1/siem/sinks/{id}/status", rt.authz(userdom.PermAdminister, rt.siemSinkStatus))
 	}
 	if rt.inbox != nil {
 		mux.HandleFunc("GET /api/v1/me/inbox", rt.authz(userdom.PermView, rt.listMyInbox))

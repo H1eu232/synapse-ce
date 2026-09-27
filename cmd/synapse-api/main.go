@@ -39,6 +39,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/domain/offensivepolicy"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/riskassessment"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/symbolcanon"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/taint"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/vulnerabilityreconcile"
@@ -68,6 +69,9 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/rulecatalog"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sandbox"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/scmdecoration"
+	elastic "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/elastic"
+	siemseal "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/seal"
+	splunk "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/splunk"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/signing"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sourceartifact"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sourceupload"
@@ -207,6 +211,7 @@ import (
 	scauc "github.com/KKloudTarus/synapse-ce/internal/usecase/sca"
 	scanrunuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scanrun"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/scmconnectoruc"
+	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/slauc"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/srcreach"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/symreach"
@@ -1502,6 +1507,21 @@ func main() {
 		router.SetInbox(inboxService)
 		log.Info("tenant notification management ENABLED")
 	}
+	var siemService *siemuc.Service
+	if databasePool != nil {
+		siemRepository := postgres.NewSIEMRepository(databasePool)
+		var siemErr error
+		siemService, siemErr = siemuc.NewService(siemRepository, siemRepository, siemRepository, siemseal.Vault{Cipher: vaultCipher}, map[siem.Provider]ports.SIEMDriver{
+			siem.ProviderSplunk:        splunk.New(5*time.Second, true),
+			siem.ProviderElasticsearch: elastic.New(5 * time.Second),
+		}, auditLog, clock, ids)
+		if siemErr != nil {
+			log.Error("siem service init failed", "err", siemErr)
+			os.Exit(1)
+		}
+		router.SetSIEM(siemService)
+		log.Info("siem streams enabled")
+	}
 	router.SetIntegrations(integrationService)
 	if summaries, ok := findingRepo.(ports.FindingSummaryReader); ok {
 		router.SetFindingSummaries(summaries)
@@ -1741,6 +1761,9 @@ func main() {
 			os.Exit(1)
 		}
 		metrics = observability.New(queueReader, postgres.NewPoolStatsSource(databasePool))
+		if siemService != nil {
+			siemService.SetMetrics(observability.NewSIEMMetrics(metrics.Registry()))
+		}
 		if cfg.NotificationEnabled {
 			metrics.EnableNotifications()
 		}

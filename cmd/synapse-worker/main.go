@@ -27,6 +27,7 @@ import (
 	integrationdom "github.com/KKloudTarus/synapse-ce/internal/domain/integration"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/judgment"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/vulnerabilityreconcile"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/accuracyprobe"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/blob"
@@ -41,6 +42,9 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/persistence/postgres"
 	recontools "github.com/KKloudTarus/synapse-ce/internal/infrastructure/recon"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sandbox"
+	elastic "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/elastic"
+	siemseal "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/seal"
+	splunk "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/splunk"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/signing"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sourceartifact"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sourceupload"
@@ -91,6 +95,7 @@ import (
 	reconuc "github.com/KKloudTarus/synapse-ce/internal/usecase/recon"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/safety"
 	scauc "github.com/KKloudTarus/synapse-ce/internal/usecase/sca"
+	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/slauc"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/usercontacts"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/vulnerabilitycorrelation"
@@ -1148,6 +1153,36 @@ func main() {
 			}
 		},
 	)
+
+	// SIEM export runs on every replica. Leases, not leader election, decide
+	// which worker may commit a partition.
+	go func() {
+		repository := postgres.NewSIEMRepository(pool)
+		service, serviceErr := siemuc.NewService(repository, repository, repository, siemseal.Vault{Cipher: vaultCipher}, map[siem.Provider]ports.SIEMDriver{
+			siem.ProviderSplunk:        splunk.New(5*time.Second, true),
+			siem.ProviderElasticsearch: elastic.New(5 * time.Second),
+		}, auditLog, clock, ids)
+		if serviceErr != nil {
+			log.Error("siem worker init failed", "err", serviceErr)
+			return
+		}
+		workerID := "siem-" + ids.NewID().String()
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			stats, tickErr := service.Tick(ctx, workerID, siemuc.TickBudget{MaxPartitions: 8, Deadline: clock.Now().Add(5 * time.Second)})
+			if tickErr != nil && ctx.Err() == nil {
+				log.Warn("siem tick failed", "err", tickErr)
+			} else if stats.Sent > 0 || stats.Blocked > 0 {
+				log.Info("siem tick", "sent", stats.Sent, "blocked", stats.Blocked)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
 	runWorkerRuntime(ctx, cfg, queue, handlers, maintenanceTasks, leaderStore, auditLog, clock, ids, visibility, log)
 }
