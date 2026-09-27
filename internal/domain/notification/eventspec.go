@@ -75,9 +75,11 @@ func (s EventSpec) Allows(f Filter) bool {
 	return false
 }
 
-// clone keeps callers from mutating the shared catalog through its slices.
+// clone keeps callers from mutating the shared catalog through its slices. The copies are never
+// nil, so a spec without filters or variables marshals as [] rather than null, which is what the
+// event-type API schema declares.
 func (s EventSpec) clone() EventSpec {
-	s.Filters = append([]Filter(nil), s.Filters...)
-	s.Variables = append([]Variable(nil), s.Variables...)
+	s.Filters = append(make([]Filter, 0, len(s.Filters)), s.Filters...)
+	s.Variables = append(make([]Variable, 0, len(s.Variables)), s.Variables...)
 	return s
 }

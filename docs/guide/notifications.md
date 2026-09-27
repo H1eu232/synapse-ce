@@ -85,7 +85,7 @@ with any other filter is rejected when it is saved:
 | `quality_gate.failed` | none |
 | `sla.approaching_deadline` | engagements, lead time (24 hours by default) |
 | `fleet.agent.offline` | none |
-| `incident.created` | severity floor, engagements |
+| `incident.created` | severity floor, engagements (when the incident has one) |
 | `finding.ownership_changed` | engagements, teams (required) |
 | `notification.destination_changed` | none; operator-driven, and a rule cannot target it |
 
@@ -94,6 +94,10 @@ so an engagement scope on them could never match. Rules of that shape saved befo
 this check were disabled on upgrade with `disabled_reason: engagement_filter_unsupported`;
 their engagement list is kept so you can see what was intended. Remove the engagement
 scope and save the rule to enable it again.
+
+An incident carries the engagement its fleet correlation was scoped to. Incidents recorded
+before correlation was scoped to an engagement may carry none, and an engagement-scoped
+incident rule does not see them. Leave the scope empty to receive every incident.
 
 Engagement and team scope use searchable pickers over the existing engagement
 list and ownership team pages. Each choice keeps its stable ID beside the
