@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/KKloudTarus/synapse-ce/internal/domain/consolelink"
 )
 
 const (
@@ -50,12 +52,14 @@ type Config struct {
 	// APIToken protects all API + UI routes; required (no anonymous access).
 	APIToken string
 	// OIDCEnabled enables the browser-based OIDC authorization-code BFF flow.
-	OIDCEnabled          bool
-	OIDCIssuer           string
-	OIDCClientID         string
-	OIDCClientSecret     string
-	OIDCRedirectURL      string
-	OIDCFrontendURL      string
+	OIDCEnabled      bool
+	OIDCIssuer       string
+	OIDCClientID     string
+	OIDCClientSecret string
+	OIDCRedirectURL  string
+	OIDCFrontendURL  string
+	// PublicBaseURL is the trusted console URL for outbound links, independent of OIDC enablement.
+	PublicBaseURL        string
 	OIDCTenantID         string
 	OIDCGroupRoleMapping []string
 	OIDCTransactionTTL   time.Duration
@@ -845,6 +849,7 @@ func Load() Config {
 		OIDCClientSecret:                 getenv("SYNAPSE_OIDC_CLIENT_SECRET", ""),
 		OIDCRedirectURL:                  getenv("SYNAPSE_OIDC_REDIRECT_URL", ""),
 		OIDCFrontendURL:                  getenv("SYNAPSE_OIDC_FRONTEND_URL", ""),
+		PublicBaseURL:                    getenv("SYNAPSE_PUBLIC_BASE_URL", getenv("SYNAPSE_OIDC_FRONTEND_URL", "")),
 		OIDCTenantID:                     getenv("SYNAPSE_OIDC_TENANT_ID", ""),
 		OIDCGroupRoleMapping:             splitList(getenv("SYNAPSE_OIDC_GROUP_ROLE_MAPPING", "")),
 		OIDCTransactionTTL:               getduration("SYNAPSE_OIDC_TRANSACTION_TTL", 10*time.Minute),
@@ -1680,6 +1685,27 @@ func (c Config) ValidateOIDCPosture() error {
 	}
 	if !validOIDCFrontendURL(c.OIDCFrontendURL) {
 		return errors.New("OIDC requires an absolute HTTPS SYNAPSE_OIDC_FRONTEND_URL without query or fragment")
+	}
+	return nil
+}
+
+// EffectivePublicBaseURL resolves the console origin even when OIDC is disabled.
+func (c Config) EffectivePublicBaseURL() string {
+	if c.PublicBaseURL != "" {
+		return c.PublicBaseURL
+	}
+	return c.OIDCFrontendURL
+}
+
+// ValidatePublicBaseURL rejects unsafe origins without echoing credential-bearing input.
+// An unset base is permitted until an outbound deep-link consumer is configured.
+func (c Config) ValidatePublicBaseURL() error {
+	base := c.EffectivePublicBaseURL()
+	if base == "" {
+		return nil
+	}
+	if _, err := consolelink.NewBuilder(base); err != nil {
+		return errors.New("SYNAPSE_PUBLIC_BASE_URL must be an absolute HTTPS console URL without credentials, query, or fragment")
 	}
 	return nil
 }

@@ -355,6 +355,10 @@ func main() {
 		log.Error("vulnerability maintenance configuration invalid", "err", err)
 		os.Exit(1)
 	}
+	if err := cfg.ValidatePublicBaseURL(); err != nil {
+		log.Error("console link configuration invalid", "err", err)
+		os.Exit(1)
+	}
 	if err := cfg.ValidateOIDCPosture(); err != nil {
 		log.Error("OIDC posture invalid", "err", err)
 		os.Exit(1)

@@ -112,6 +112,10 @@ import (
 func main() {
 	cfg := config.Load()
 	log := logging.New(cfg.LogLevel)
+	if err := cfg.ValidatePublicBaseURL(); err != nil {
+		log.Error("console link configuration invalid", "err", err)
+		os.Exit(1)
+	}
 	if cfg.OwnershipMode != "off" && cfg.OwnershipMode != "observe" && cfg.OwnershipMode != "enforce" {
 		log.Error("SYNAPSE_OWNERSHIP_MODE must be off, observe or enforce")
 		os.Exit(1)

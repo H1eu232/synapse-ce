@@ -947,6 +947,55 @@ func TestValidateOIDCPosture(t *testing.T) {
 	}
 }
 
+func TestPublicBaseURLLoadAndValidation(t *testing.T) {
+	t.Setenv("SYNAPSE_OIDC_FRONTEND_URL", "https://console.example/app/")
+	t.Setenv("SYNAPSE_PUBLIC_BASE_URL", "")
+	cfg := Load()
+	if cfg.PublicBaseURL != "https://console.example/app/" || cfg.EffectivePublicBaseURL() != cfg.OIDCFrontendURL {
+		t.Fatalf("public base did not default to OIDC frontend: %q", cfg.PublicBaseURL)
+	}
+	if err := cfg.ValidatePublicBaseURL(); err != nil {
+		t.Fatalf("valid fallback rejected: %v", err)
+	}
+	t.Setenv("SYNAPSE_PUBLIC_BASE_URL", "https://public.example/console")
+	cfg = Load()
+	if cfg.PublicBaseURL != "https://public.example/console" || cfg.EffectivePublicBaseURL() != cfg.PublicBaseURL {
+		t.Fatalf("explicit base did not override the frontend: %q", cfg.PublicBaseURL)
+	}
+	if err := cfg.ValidatePublicBaseURL(); err != nil {
+		t.Fatalf("valid override rejected: %v", err)
+	}
+}
+
+func TestValidatePublicBaseURLRejectsUnsafeOrigins(t *testing.T) {
+	for _, input := range []string{
+		"http://console.example", "/engagements/eng-1", "//console.example",
+		"https://user:password@console.example", "https://console.example/?return=attacker",
+		"https://console.example/#fragment", "https://console.example/?",
+		"https://console.example/%0a", "https://console.example/../admin", "https://console.example/%252e%252e/admin",
+		"https://console.example:65536/path", "https://console.example:0/path",
+		"https://exa\u202emple.com", "https://ex\u200bample.com",
+		"https://exa%E2%80%AEple.com", "https://exa%C2%A0ple.com",
+		" https://console.example", "https://console.example\\evil",
+	} {
+		t.Run(input, func(t *testing.T) {
+			err := (Config{PublicBaseURL: input}).ValidatePublicBaseURL()
+			if err == nil {
+				t.Fatal("unsafe console base accepted")
+			}
+			if strings.Contains(err.Error(), "password") {
+				t.Fatal("validation leaked credentials")
+			}
+		})
+	}
+	if err := (Config{}).ValidatePublicBaseURL(); err != nil {
+		t.Fatalf("unset optional base rejected: %v", err)
+	}
+	if err := (Config{OIDCFrontendURL: "http://insecure.example"}).ValidatePublicBaseURL(); err == nil {
+		t.Fatal("unsafe fallback accepted")
+	}
+}
+
 func TestProductionOIDCRequiresPostgres(t *testing.T) {
 	cfg := Config{Environment: "production", OIDCEnabled: true, DBAutoMigrate: false}
 	if err := cfg.ValidateMigrationPosture(); err == nil {
