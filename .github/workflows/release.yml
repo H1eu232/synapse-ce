@@ -56,6 +56,12 @@ jobs:
   action-major-tag:
     name: action major tag
     runs-on: ubuntu-latest
+    # MUST wait for goreleaser. Moving v1 onto the release commit while goreleaser is still starting makes
+    # goreleaser resolve the current tag as v1 rather than the release tag, because both then point at the
+    # same commit and v1 was created later. v0.2.2 published as a release named "v1" carrying
+    # synapse-ce_1_linux_amd64.tar.gz that way. Ordering it after the release also matches what the tag
+    # means: v1 should name a release that exists.
+    needs: goreleaser
     # The README, docs/guide/cli.md and the Marketplace listing all tell people to write
     # `uses: KKloudTarus/synapse-ce@v1`, and that tag never existed, so every copied snippet failed with
     # "Unable to resolve action". An Action's major tag is its INTERFACE version and is independent of the
