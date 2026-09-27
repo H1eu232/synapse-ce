@@ -7,7 +7,13 @@
 #   --target dev         Vite dev server. Not used by any Compose stack in this repository; see
 #                        the note on the stage.
 
-FROM node:22-alpine AS build
+# Pinned to the BUILD platform. This stage's output is /app/dist, a tree of static files with no
+# architecture in it, and the production stage only copies it. Leaving the stage unpinned made buildx run
+# `pnpm install` and `pnpm build` once per requested platform, so a linux/arm64 leg emulated Node under
+# QEMU: the v0.2.2 release's web image build passed an hour that way and had to be cancelled, after the
+# same build took two minutes when the emulated leg happened to go through. Pinning it means Node runs
+# natively once and only the nginx layer differs per architecture, which is what Dockerfile.cli does for Go.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
 COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
