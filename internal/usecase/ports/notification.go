@@ -43,10 +43,26 @@ type NotificationChannelConfig struct {
 }
 
 type NotificationSendResult struct {
-	StatusCode int
-	ErrorCode  string
-	Retryable  bool
-	RetryAfter time.Duration
+	StatusCode       int
+	ErrorCode        string
+	Retryable        bool
+	RetryAfter       time.Duration
+	// TemplateFallback is true only when the sender rendered built-in fallback
+	// content rather than the preferred event fields/template.
+	TemplateFallback bool
+}
+
+// NotificationDeliveryObserver is optional worker-only instrumentation. Every
+// callback follows a committed delivery transition, never a speculative send.
+type NotificationDeliveryObserver interface {
+	ObserveNotificationAttempt(notification.ChannelType, time.Duration, bool, bool)
+	ObserveNotificationDeadLetter(notification.ChannelType)
+}
+
+// NotificationPendingMetricsReader returns the oldest pending/retrying delivery
+// by channel family across every tenant without exposing tenant identifiers.
+type NotificationPendingMetricsReader interface {
+	NotificationOldestPending(context.Context) (map[notification.ChannelType]time.Time, error)
 }
 
 type NotificationSender interface {
@@ -78,7 +94,9 @@ type NotificationRepository interface {
 	BeginAttempt(context.Context, shared.ID, shared.ID, string, int64, shared.ID, time.Time) (notification.Attempt, error)
 	FinishAttempt(context.Context, shared.ID, shared.ID, string, int64, shared.ID, time.Time, string, int, string, *time.Time) error
 	CancelDelivery(context.Context, shared.ID, shared.ID, string, int64, string) error
-	DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) error
+	// DeadLetterDelivery reports whether this call durably transitioned a pending
+	// delivery to dead_letter. Concurrent or repeated callbacks return false.
+	DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) (bool, error)
 }
 
 // NotificationSource scans durable source state and publishes due events. It is

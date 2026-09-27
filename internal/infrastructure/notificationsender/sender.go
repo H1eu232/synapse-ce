@@ -92,15 +92,17 @@ func (s *Sender) sendWebhook(ctx context.Context, w ports.NotificationWork, cfg 
 }
 
 func (s *Sender) sendSlack(ctx context.Context, w ports.NotificationWork, cfg ports.NotificationChannelConfig) ports.NotificationSendResult {
-	title, summary := eventText(w)
+	title, summary, fallback := eventText(w)
 	body, _ := json.Marshal(map[string]any{"text": title, "blocks": []map[string]any{{"type": "header", "text": map[string]string{"type": "plain_text", "text": limit(title, 150)}}, {"type": "section", "text": map[string]string{"type": "mrkdwn", "text": escapeSlack(limit(summary, 2500))}}, {"type": "context", "elements": []map[string]string{{"type": "mrkdwn", "text": "Event `" + string(w.Event.Type) + "` · `" + w.Event.ID.String() + "`"}}}}})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, bytes.NewReader(body))
 	if err != nil {
-		return ports.NotificationSendResult{ErrorCode: "request_invalid"}
+		return ports.NotificationSendResult{ErrorCode: "request_invalid", TemplateFallback: fallback}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "synapse-notifications/1")
-	return s.do(req)
+	result := s.do(req)
+	result.TemplateFallback = fallback
+	return result
 }
 
 func (s *Sender) do(req *http.Request) ports.NotificationSendResult {
@@ -128,8 +130,10 @@ func (s *Sender) do(req *http.Request) ports.NotificationSendResult {
 }
 
 func (s *Sender) sendEmail(ctx context.Context, w ports.NotificationWork, _ ports.NotificationChannelConfig) ports.NotificationSendResult {
-	title, summary := eventText(w)
-	return s.sendSMTP(ctx, w.Delivery.Recipient, title, summary, w.Delivery.ID)
+	title, summary, fallback := eventText(w)
+	result := s.sendSMTP(ctx, w.Delivery.Recipient, title, summary, w.Delivery.ID)
+	result.TemplateFallback = fallback
+	return result
 }
 
 // SendContactVerification shares the SMTP transport and retry classification with
@@ -228,18 +232,24 @@ func parseRetryAfter(v string, now time.Time) time.Duration {
 	}
 	return 0
 }
-func eventText(w ports.NotificationWork) (string, string) {
+// eventText supplies safe built-in content when the preferred title/summary
+// fields are missing. That fallback is reported by the sender, not inferred
+// from the transport result or from untrusted event payload fields.
+func eventText(w ports.NotificationWork) (string, string, bool) {
 	var data map[string]any
 	_ = json.Unmarshal(w.Event.Data, &data)
+	fallback := false
 	title := fmt.Sprint(data["title"])
 	if title == "<nil>" || strings.TrimSpace(title) == "" {
 		title = "Synapse: " + string(w.Event.Type)
+		fallback = true
 	}
 	summary := fmt.Sprint(data["summary"])
 	if summary == "<nil>" || strings.TrimSpace(summary) == "" {
 		summary = "A " + string(w.Event.Type) + " event occurred at " + w.Event.OccurredAt.UTC().Format(time.RFC3339)
+		fallback = true
 	}
-	return safeHeader(title), summary
+	return safeHeader(title), summary, fallback
 }
 func safeHeader(v string) string {
 	return strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(limit(v, 180)))

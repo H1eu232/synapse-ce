@@ -39,8 +39,8 @@ func (f *fakeRepo) CancelDelivery(context.Context, shared.ID, shared.ID, string,
 	f.cancelled = true
 	return nil
 }
-func (f *fakeRepo) DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) error {
-	return nil
+func (f *fakeRepo) DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) (bool, error) {
+	return false, nil
 }
 
 type fakeProtector struct{ raw []byte }
