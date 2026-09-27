@@ -298,23 +298,6 @@ func (s *Service) ListAttempts(ctx context.Context, did shared.ID) ([]domain.Att
 	}
 	return s.repo.ListAttempts(ctx, tenant, did)
 }
-func (s *Service) Publish(ctx context.Context, e domain.Event) ([]shared.ID, error) {
-	tenant, err := tenantFrom(ctx)
-	if err != nil {
-		return nil, err
-	}
-	e.TenantID = tenant
-	if e.ID.IsZero() {
-		e.ID = s.ids.NewID()
-	}
-	if e.SchemaVersion == 0 {
-		e.SchemaVersion = 1
-	}
-	if e.OccurredAt.IsZero() {
-		e.OccurredAt = s.clock.Now().UTC()
-	}
-	return s.repo.Publish(ctx, e)
-}
 
 func (s *Service) seal(tenant, id shared.ID, version int, cfg ports.NotificationChannelConfig) (string, error) {
 	//nolint:gosec // The secret-bearing configuration is immediately sealed and is never persisted or logged as plaintext.

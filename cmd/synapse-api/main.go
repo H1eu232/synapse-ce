@@ -1474,19 +1474,20 @@ func main() {
 			log.Error("SYNAPSE_NOTIFICATIONS_ENABLED requires SYNAPSE_VAULT_MASTER_KEY shared by API and worker")
 			os.Exit(1)
 		}
-		notificationSender := notificationsender.New(notificationsender.SMTPConfig{
-			Host: cfg.NotificationSMTPHost, Port: cfg.NotificationSMTPPort, From: cfg.NotificationSMTPFrom,
-			Username: cfg.NotificationSMTPUsername, Password: cfg.NotificationSMTPPassword, RequireTLS: cfg.NotificationSMTPRequireTLS,
-		}, 10*time.Second)
 		notificationRepository := postgres.NewNotificationRepository(databasePool)
 		notificationRepository.EnableDestinationNotices()
-		notificationService, notificationErr := notificationuc.NewService(notificationRepository, vaultCipher, notificationSender, auditLog, clock, ids)
+		notificationService, notificationErr := notificationuc.NewService(notificationRepository, vaultCipher, nil, auditLog, clock, ids)
 		if notificationErr != nil {
 			log.Error("notification service init failed", "err", notificationErr)
 			os.Exit(1)
 		}
 		notificationService.SetTransactionRunner(postgres.NewTenantTransactionRunner(databasePool))
 		router.SetNotifications(notificationService)
+		// The API still needs SMTP for contact verification and personal inbox mail.
+		notificationSender := notificationsender.New(notificationsender.SMTPConfig{
+			Host: cfg.NotificationSMTPHost, Port: cfg.NotificationSMTPPort, From: cfg.NotificationSMTPFrom,
+			Username: cfg.NotificationSMTPUsername, Password: cfg.NotificationSMTPPassword, RequireTLS: cfg.NotificationSMTPRequireTLS,
+		}, 10*time.Second)
 		userContactService, notificationErr = usercontacts.NewService(postgres.NewUserContactStore(databasePool), userRepo, vaultCipher, notificationSender, ids, clock, usercontacts.DeriveVerifierKey(cfg.VaultMasterKey), cfg.NotificationSMTPHost != "" && cfg.NotificationSMTPFrom != "")
 		if notificationErr != nil {
 			log.Error("user contact service init failed", "err", notificationErr)
