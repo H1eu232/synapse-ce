@@ -15,6 +15,7 @@ export { type SLAPoliciesView, type SLAPolicy, type SLAConfig, type SLAWeights, 
 export { type OffensivePolicy, type OffensiveTechnique, type OffensiveLegalReview } from './offensivepolicy'
 export { type AlertTestResult, type AlertTestOutcome, AlertNotEnabledError } from './alerting'
 export { type NotificationChannel, type NotificationChannelInput, type NotificationChannelType, type NotificationRule, type NotificationRuleInput, type NotificationEventType, type NotificationDelivery, type NotificationDeliveryState, type NotificationAttempt } from './notifications'
+export { type SIEMSink, type SIEMSinkInput, type SIEMProvider, type SIEMDataClass, type SIEMAckMode, type SIEMReplay, type SIEMStatus, type SIEMPartition } from './siem'
 export { type UserContact } from './user-contacts'
 export { type InboxItem, type InboxPreference } from './inbox'
 export { type EngagementCredential } from './engagements'
@@ -52,6 +53,7 @@ import { slaApi } from './sla'
 import { offensivePolicyApi } from './offensivepolicy'
 import { alertingApi } from './alerting'
 import { notificationsApi } from './notifications'
+import { siemApi } from './siem'
 import { ownershipApi } from './ownership'
 import { userContactsApi } from './user-contacts'
 import { inboxApi } from './inbox'
@@ -107,6 +109,7 @@ export const api = {
   ...offensivePolicyApi,
   ...alertingApi,
   ...notificationsApi,
+  ...siemApi,
   ...privacyApi,
   ...writeupApi,
   ...cspmApi,
