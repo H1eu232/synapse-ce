@@ -15,9 +15,9 @@ import (
 func TestEventTextFallbackFlagOnlyForMissingContent(t *testing.T) {
 	w := ports.NotificationWork{
 		Event: notification.Event{
-			Type: notification.EventTest,
+			Type:       notification.EventTest,
 			OccurredAt: time.Unix(1_700_000_000, 0).UTC(),
-			Data: json.RawMessage(`{}`),
+			Data:       json.RawMessage(`{}`),
 		},
 	}
 	title, summary, fallback := eventText(w)
@@ -39,9 +39,9 @@ func TestSlackSenderReportsActualFallback(t *testing.T) {
 	s := New(SMTPConfig{}, time.Second)
 	s.http = srv.Client() // bypass network-origin restrictions only in this local transport test
 	work := ports.NotificationWork{
-		Channel: notification.Channel{Type: notification.ChannelSlack},
+		Channel:  notification.Channel{Type: notification.ChannelSlack},
 		Delivery: notification.Delivery{ID: "delivery"},
-		Event: notification.Event{ID: "event", Type: notification.EventTest, OccurredAt: time.Now().UTC(), Data: json.RawMessage(`{}`)},
+		Event:    notification.Event{ID: "event", Type: notification.EventTest, OccurredAt: time.Now().UTC(), Data: json.RawMessage(`{}`)},
 	}
 	config := ports.NotificationChannelConfig{URL: srv.URL}
 	if got := s.Send(context.Background(), work, config); got.StatusCode != 200 || !got.TemplateFallback {

@@ -232,6 +232,7 @@ func parseRetryAfter(v string, now time.Time) time.Duration {
 	}
 	return 0
 }
+
 // eventText supplies safe built-in content when the preferred title/summary
 // fields are missing. That fallback is reported by the sender, not inferred
 // from the transport result or from untrusted event payload fields.

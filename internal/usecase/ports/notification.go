@@ -43,10 +43,10 @@ type NotificationChannelConfig struct {
 }
 
 type NotificationSendResult struct {
-	StatusCode       int
-	ErrorCode        string
-	Retryable        bool
-	RetryAfter       time.Duration
+	StatusCode int
+	ErrorCode  string
+	Retryable  bool
+	RetryAfter time.Duration
 	// TemplateFallback is true only when the sender rendered built-in fallback
 	// content rather than the preferred event fields/template.
 	TemplateFallback bool

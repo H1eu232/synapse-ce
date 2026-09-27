@@ -72,7 +72,7 @@ func NewWorkerNotificationMetrics(reader ports.NotificationPendingMetricsReader)
 		}, labels),
 		latency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "synapse", Subsystem: subsystem, Name: "delivery_duration_seconds",
-			Help: "Duration of a committed delivery attempt, excluding time waiting in the queue.",
+			Help:    "Duration of a committed delivery attempt, excluding time waiting in the queue.",
 			Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
 		}, labels),
 		fallbacks: prometheus.NewCounterVec(prometheus.CounterOpts{

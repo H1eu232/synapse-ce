@@ -15,7 +15,7 @@ import (
 
 type notificationMetricSpy struct {
 	sent, failed, dead, fallback int
-	channel domain.ChannelType
+	channel                      domain.ChannelType
 }
 
 func (m *notificationMetricSpy) ObserveNotificationAttempt(channel domain.ChannelType, _ time.Duration, delivered, fallback bool) {
@@ -76,8 +76,8 @@ func (r *metricsDeliveryRepo) DeadLetterDelivery(context.Context, shared.ID, sha
 func metricTestWork() ports.NotificationWork {
 	return ports.NotificationWork{
 		Delivery: domain.Delivery{ID: "delivery", ChannelType: domain.ChannelSlack, State: domain.DeliveryPending},
-		Event: domain.Event{TenantID: "tenant", ID: "event", Type: domain.EventTest, Data: json.RawMessage(`{}`)},
-		Channel: domain.Channel{ID: "channel", Type: domain.ChannelSlack, Enabled: true, SecretVersion: 1},
+		Event:    domain.Event{TenantID: "tenant", ID: "event", Type: domain.EventTest, Data: json.RawMessage(`{}`)},
+		Channel:  domain.Channel{ID: "channel", Type: domain.ChannelSlack, Enabled: true, SecretVersion: 1},
 	}
 }
 
