@@ -93,19 +93,19 @@ func pushEngagementSARIF(ctx context.Context, client *http.Client, target pushTa
 // reportEngagementIngest prints what the server accepted. A coverage note or a refusal is the part an
 // operator needs to see, so neither is folded into the count.
 func reportEngagementIngest(w io.Writer, engagementID string, result engagementIngest) {
-	fmt.Fprintf(w, "Engagement %s: %d finding(s) accepted", engagementID, result.Accepted)
+	summary := fmt.Sprintf("Engagement %s: %d finding(s) accepted", engagementID, result.Accepted)
 	if result.Deduplicated > 0 {
-		fmt.Fprintf(w, ", %d deduplicated", result.Deduplicated)
+		summary += fmt.Sprintf(", %d deduplicated", result.Deduplicated)
 	}
 	if result.Matched > 0 {
-		fmt.Fprintf(w, ", %d matched an existing first-party finding", result.Matched)
+		summary += fmt.Sprintf(", %d matched an existing first-party finding", result.Matched)
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, summary)
 	for _, refusal := range result.Refused {
-		fmt.Fprintf(w, "  refused %s: %s\n", refusal.Rule, refusal.Reason)
+		_, _ = fmt.Fprintf(w, "  refused %s: %s\n", refusal.Rule, refusal.Reason)
 	}
 	for _, note := range result.Coverage {
-		fmt.Fprintf(w, "  coverage: %s\n", note)
+		_, _ = fmt.Fprintf(w, "  coverage: %s\n", note)
 	}
 }
 
