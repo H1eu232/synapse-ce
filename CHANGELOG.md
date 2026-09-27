@@ -7,6 +7,8 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-27
+
 ### Added
 
 - **A source-repository benchmark is published.** `docs/guide/source-repository-benchmark.md` records what Synapse, Trivy, gitleaks and OSV-Scanner each find on seven public repositories across six ecosystems, the normalisations that make the counts comparable, and the one measured gap that is not closed.
