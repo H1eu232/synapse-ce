@@ -45,6 +45,11 @@ spec:
           image: {{ include "synapse.image" .Values.image | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/opt/synapse/synapse-worker"]
+          {{- if .Values.worker.metrics.enabled }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.worker.metrics.port }}
+          {{- end }}
           securityContext:
             {{- include "synapse.containerSecurityContext" . | nindent 12 }}
           env:
@@ -61,7 +66,11 @@ spec:
             - name: SYNAPSE_INTEGRATION_SCHEDULER_MAX_QUEUE_DEPTH
               value: {{ .Values.worker.integrationScheduler.maxQueueDepth | quote }}
             - name: SYNAPSE_METRICS_ENABLED
-              value: "false"
+              value: {{ .Values.worker.metrics.enabled | quote }}
+            {{- if .Values.worker.metrics.enabled }}
+            - name: SYNAPSE_METRICS_ADDR
+              value: {{ printf "0.0.0.0:%d" (.Values.worker.metrics.port | int) | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
           startupProbe:

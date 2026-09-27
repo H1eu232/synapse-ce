@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/KKloudTarus/synapse-ce/internal/adapter/observability"
 	"github.com/KKloudTarus/synapse-ce/internal/composition/scacompose"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/agent"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/cloudposture"
@@ -654,6 +657,34 @@ func main() {
 		if notificationErr != nil {
 			log.Error("notification service init failed", "err", notificationErr)
 			os.Exit(1)
+		}
+		// Delivery metrics are emitted by this worker only: the API exposes
+		// aggregate queue health but never observes worker transport outcomes.
+		if cfg.MetricsEnabled {
+			workerMetrics := observability.NewWorkerNotificationMetrics(postgres.NewNotificationRepository(pool))
+			notificationService.SetDeliveryObserver(workerMetrics)
+			mux := http.NewServeMux()
+			mux.Handle("GET /metrics", workerMetrics.Handler())
+			listener, listenErr := net.Listen("tcp", cfg.MetricsAddr)
+			if listenErr != nil {
+				log.Error("worker metrics listener failed", "err", listenErr)
+				os.Exit(1)
+			}
+			metricsServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+			go func() {
+				if serveErr := metricsServer.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && ctx.Err() == nil {
+					log.Error("worker metrics listener stopped", "err", serveErr)
+					stop()
+				}
+			}()
+			defer func() {
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutdownCancel()
+				if shutdownErr := metricsServer.Shutdown(shutdownCtx); shutdownErr != nil {
+					log.Warn("worker metrics shutdown failed", "err", shutdownErr)
+				}
+			}()
+			log.Info("private worker notification metrics enabled", "addr", cfg.MetricsAddr)
 		}
 		handlers[notificationuc.JobKind] = notificationJobHandler{svc: notificationService}
 		contactService, contactErr := usercontacts.NewService(postgres.NewUserContactStore(pool), postgres.NewUserRepository(pool), vaultCipher, sender, ids, clock, usercontacts.DeriveVerifierKey(cfg.VaultMasterKey), cfg.NotificationSMTPHost != "" && cfg.NotificationSMTPFrom != "")
