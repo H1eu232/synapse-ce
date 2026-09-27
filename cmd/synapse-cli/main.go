@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 
 	"golang.org/x/mod/modfile"
 
+	"github.com/KKloudTarus/synapse-ce/internal/composition/exportcompose"
 	"github.com/KKloudTarus/synapse-ce/internal/composition/scacompose"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/agent"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/engagement"
@@ -99,6 +101,15 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		usage()
+	}
+	// --help anywhere prints the usage and exits 0. Without this, `synapse-cli scan --help` took --help as
+	// the path to scan and failed with a confusing lstat error, and there was no way to ask the binary what
+	// flags it supports.
+	for _, arg := range os.Args[1:] {
+		if arg == "--help" || arg == "-h" || arg == "help" {
+			usageTo(os.Stdout)
+			os.Exit(0)
+		}
 	}
 	switch os.Args[1] {
 	case "doctor":
@@ -558,7 +569,11 @@ func runQualityTo(w io.Writer, args []string) error {
 	findings := qualityReport.Findings
 
 	if sarifOut {
-		out, merr := exportuc.MarshalSARIF(findings, buildinfo.App(), exportuc.SARIFOptions{})
+		ruleMeta, rerr := exportcompose.SARIFRuleMeta(context.Background())
+		if rerr != nil {
+			return fmt.Errorf("load rule catalog for sarif: %w", rerr)
+		}
+		out, merr := exportuc.MarshalSARIF(findings, buildinfo.App(), exportuc.SARIFOptions{RuleMeta: ruleMeta})
 		if merr != nil {
 			return fmt.Errorf("encode sarif: %w", merr)
 		}
@@ -616,6 +631,20 @@ func runQualityTo(w io.Writer, args []string) error {
 // runRating computes the deterministic A-E health grades (security / reliability / maintainability) and
 // the technical-debt estimate for a local source tree, from the code-quality findings + first-party SAST
 // + the code-size inventory. Read-only, no DB.
+// sastAnalyzer builds the pattern SAST analyzer, honouring SYNAPSE_SAST_SOURCE_BUDGET_BYTES. The default
+// retained-source budget never binds on an ordinary repository but does on a monorepo, where the unretained
+// part of the tree is scanned by no rule; the scan says how many files that was, and this is the knob that
+// closes it for an operator willing to pay the memory.
+func sastAnalyzer() *sast.Analyzer {
+	a := sast.New()
+	if raw := strings.TrimSpace(os.Getenv("SYNAPSE_SAST_SOURCE_BUDGET_BYTES")); raw != "" {
+		if bytes, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			a = a.WithSourceBudget(bytes)
+		}
+	}
+	return a
+}
+
 func runRating(args []string) error {
 	dir := args[0]
 	if strings.HasPrefix(dir, "-") {
@@ -659,7 +688,7 @@ func runRating(args []string) error {
 	}
 	// First-party security signal for the security grade (SCA dep vulns fold in when rating runs over a
 	// full scan's findings; this standalone command uses the SAST analyzer).
-	sastRaws, err := sast.New().AnalyzeSource(ctx, dir)
+	sastRaws, err := sastAnalyzer().AnalyzeSource(ctx, dir)
 	if err != nil {
 		return fmt.Errorf("sast: %w", err)
 	}
@@ -767,7 +796,7 @@ func runGate(args []string) error {
 		return fmt.Errorf("code quality: %w", err)
 	}
 	findings := qualityReport.Findings
-	sastRaws, err := sast.New().AnalyzeSource(ctx, dir)
+	sastRaws, err := sastAnalyzer().AnalyzeSource(ctx, dir)
 	if err != nil {
 		return fmt.Errorf("sast: %w", err)
 	}
@@ -1082,32 +1111,43 @@ func gradeNum(g rating.Grade) float64 {
 	return 0
 }
 
+// usageTo writes the usage to w. --help writes it to stdout and exits 0; a wrong invocation writes it
+// to stderr and exits 2.
+func usageTo(w io.Writer) {
+	// The usage text is best-effort output; a write error on it is not actionable and must not
+	// shadow the exit code the caller already decided.
+	out := func(line string) { _, _ = fmt.Fprintln(w, line) }
+	out("usage:")
+	out("  synapse-cli doctor [path] [--json]       # offline pre-scan readiness: toolchain, markers, and dimension coverage")
+	out("  synapse-cli scan <path|image-ref> [--image] [--offline] [--json] [--sarif] [--sarif-out FILE] [--mode full|vulnerabilities|licenses] [--fail-on critical|high|medium|low|info] [--min-confidence low|medium|high|very_high] [--base REF] [--include-test] [--verify-secrets] [--ignore-unfixed] [--detection-priority comprehensive|precise] [--server URL --project KEY [--branch REF] [--run-url URL] [--ci-provider NAME] [--insecure-http]]")
+	out("      --server   record the result on a Synapse server as the project's next analysis (token from SYNAPSE_API_TOKEN); the history, trend and managed gate in the console pick it up")
+	out("      --insecure-http   allow a plain-http --server that is not loopback (the token then travels in the clear)")
+	out("      --sarif    write a SARIF 2.1.0 report to stdout (for GitHub code-scanning upload); --fail-on still sets the exit code")
+	out("      --sarif-out FILE  write the SARIF report to FILE and keep the human report on stdout, so a CI log still shows what was found")
+	out("      --image    treat the argument as a container image reference (pulled daemonlessly, in-process) instead of a local path")
+	out("      --offline  no network egress: skip live OSV, every registry resolver (npm/composer/poetry/bundler/maven/gradle), KEV/EPSS, online NVD, license metadata and AI triage; detect with the local sources only – the owned advisory store, plus Grype's pre-synced DB when SYNAPSE_DETECTION_SOURCES lists it (air-gapped / fast)")
+	out("      --include-test  also fail the gate on findings in test/fixture/example paths (default: reported but exempt)")
+	out("      --verify-secrets  actively confirm each detected credential is live via one read-only provider call (opt-in; sends the secret to its issuing provider; default off)")
+	out("  synapse-cli publish-source [path] --server URL --project KEY --analysis ID  # stream server-inventoried source; token from SYNAPSE_API_TOKEN")
+	out("  synapse-cli inventory <path>             # per-language code-size inventory (files, code/comment/blank lines, functions) – no DB")
+	out("  synapse-cli metrics <path> [--fail-on-complexity N] [--top N]  # per-function cyclomatic+cognitive complexity (needs the synapse-ast sidecar)")
+	out("  synapse-cli duplication <path> [--min-tokens N] [--fail-on-duplication PCT] [--top N]  # copy-paste detection (blocks, lines, density) – no DB")
+	out("  synapse-cli quality <path> [--fail-on SEV] [--min-complexity N] [--include-test-smells] [--sarif]  # maintainability + reliability findings (+ duplication, + complexity via synapse-ast) – no DB")
+	out("      --include-test-smells  also report info-severity smells in test code (suppressed by default)")
+	out("  synapse-cli rating <path> [--json] [--fail-below GRADE]  # A-E health grades (security/reliability/maintainability) + technical debt – no DB")
+	out("  synapse-cli gate <path> [--new-code-only] [--base REF] [--gate FILE] [--rules FILE] [--coverage FILE] [--format text|markdown]  # Clean-as-You-Code quality gate")
+	out("  synapse-cli coverage <lcov|cobertura|jacoco file> [--fail-below PCT] [--top N]  # parse a coverage report (auto-detected)")
+	out("  synapse-cli rulepack verify|replay|gate ...  # signed detection RulePack verification, fixture replay, and promotion gates")
+	out("  synapse-cli sync-advisories <dir>        # ingest a local OSV dump into the owned advisory store (requires SYNAPSE_DB_DSN)")
+	out("  synapse-cli sync-advisories --remote     # fetch + ingest app ecosystems from the OSV bulk bucket (requires SYNAPSE_DB_DSN)")
+	out("  synapse-cli sync-advisories --remote-distros # fetch + ingest OS-package advisories (Debian/Alpine) from OSV (large; requires SYNAPSE_DB_DSN)")
+	out("  synapse-cli sync-advisories --remote-secdb   # fetch + ingest Alpine's own secdb, which covers current apk branches far better than the OSV mirror (small; requires SYNAPSE_DB_DSN)")
+	out("  synapse-cli sync-advisories --csaf <dir> # ingest a local CSAF 2.0 advisory dump (requires SYNAPSE_DB_DSN)")
+	out("  synapse-cli build-cvss-db <out.jsonl[.gz]> <nvd-*.json[.gz]...>  # build an OFFLINE CVSS DB from NVD JSON feeds; use it via SYNAPSE_NVD_CVSS_DB to backfill CVSS with no network/rate-limit")
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  synapse-cli doctor [path] [--json]       # offline pre-scan readiness: toolchain, markers, and dimension coverage")
-	fmt.Fprintln(os.Stderr, "  synapse-cli scan <path|image-ref> [--image] [--offline] [--json] [--sarif] [--mode full|vulnerabilities|licenses] [--fail-on critical|high|medium|low|info] [--min-confidence low|medium|high|very_high] [--base REF] [--include-test] [--verify-secrets] [--ignore-unfixed] [--detection-priority comprehensive|precise] [--server URL --project KEY [--branch REF] [--run-url URL] [--ci-provider NAME] [--insecure-http]]")
-	fmt.Fprintln(os.Stderr, "      --server   record the result on a Synapse server as the project's next analysis (token from SYNAPSE_API_TOKEN); the history, trend and managed gate in the console pick it up")
-	fmt.Fprintln(os.Stderr, "      --insecure-http   allow a plain-http --server that is not loopback (the token then travels in the clear)")
-	fmt.Fprintln(os.Stderr, "      --sarif    write a SARIF 2.1.0 report to stdout (for GitHub code-scanning upload); --fail-on still sets the exit code")
-	fmt.Fprintln(os.Stderr, "      --image    treat the argument as a container image reference (pulled daemonlessly, in-process) instead of a local path")
-	fmt.Fprintln(os.Stderr, "      --offline  no network egress: skip live OSV, every registry resolver (npm/composer/poetry/bundler/maven/gradle), KEV/EPSS, online NVD, license metadata and AI triage; detect with the local sources only – the owned advisory store, plus Grype's pre-synced DB when SYNAPSE_DETECTION_SOURCES lists it (air-gapped / fast)")
-	fmt.Fprintln(os.Stderr, "      --include-test  also fail the gate on findings in test/fixture/example paths (default: reported but exempt)")
-	fmt.Fprintln(os.Stderr, "      --verify-secrets  actively confirm each detected credential is live via one read-only provider call (opt-in; sends the secret to its issuing provider; default off)")
-	fmt.Fprintln(os.Stderr, "  synapse-cli publish-source [path] --server URL --project KEY --analysis ID  # stream server-inventoried source; token from SYNAPSE_API_TOKEN")
-	fmt.Fprintln(os.Stderr, "  synapse-cli inventory <path>             # per-language code-size inventory (files, code/comment/blank lines, functions) – no DB")
-	fmt.Fprintln(os.Stderr, "  synapse-cli metrics <path> [--fail-on-complexity N] [--top N]  # per-function cyclomatic+cognitive complexity (needs the synapse-ast sidecar)")
-	fmt.Fprintln(os.Stderr, "  synapse-cli duplication <path> [--min-tokens N] [--fail-on-duplication PCT] [--top N]  # copy-paste detection (blocks, lines, density) – no DB")
-	fmt.Fprintln(os.Stderr, "  synapse-cli quality <path> [--fail-on SEV] [--min-complexity N] [--include-test-smells] [--sarif]  # maintainability + reliability findings (+ duplication, + complexity via synapse-ast) – no DB")
-	fmt.Fprintln(os.Stderr, "      --include-test-smells  also report info-severity smells in test code (suppressed by default)")
-	fmt.Fprintln(os.Stderr, "  synapse-cli rating <path> [--json] [--fail-below GRADE]  # A-E health grades (security/reliability/maintainability) + technical debt – no DB")
-	fmt.Fprintln(os.Stderr, "  synapse-cli gate <path> [--new-code-only] [--base REF] [--gate FILE] [--rules FILE] [--coverage FILE] [--format text|markdown]  # Clean-as-You-Code quality gate")
-	fmt.Fprintln(os.Stderr, "  synapse-cli coverage <lcov|cobertura|jacoco file> [--fail-below PCT] [--top N]  # parse a coverage report (auto-detected)")
-	fmt.Fprintln(os.Stderr, "  synapse-cli rulepack verify|replay|gate ...  # signed detection RulePack verification, fixture replay, and promotion gates")
-	fmt.Fprintln(os.Stderr, "  synapse-cli sync-advisories <dir>        # ingest a local OSV dump into the owned advisory store (requires SYNAPSE_DB_DSN)")
-	fmt.Fprintln(os.Stderr, "  synapse-cli sync-advisories --remote     # fetch + ingest app ecosystems from the OSV bulk bucket (requires SYNAPSE_DB_DSN)")
-	fmt.Fprintln(os.Stderr, "  synapse-cli sync-advisories --remote-distros # fetch + ingest OS-package advisories (Debian/Alpine) from OSV (large; requires SYNAPSE_DB_DSN)")
-	fmt.Fprintln(os.Stderr, "  synapse-cli sync-advisories --csaf <dir> # ingest a local CSAF 2.0 advisory dump (requires SYNAPSE_DB_DSN)")
-	fmt.Fprintln(os.Stderr, "  synapse-cli build-cvss-db <out.jsonl[.gz]> <nvd-*.json[.gz]...>  # build an OFFLINE CVSS DB from NVD JSON feeds; use it via SYNAPSE_NVD_CVSS_DB to backfill CVSS with no network/rate-limit")
+	usageTo(os.Stderr)
 	os.Exit(2)
 }
 
@@ -1123,6 +1163,7 @@ func runScan() {
 	offline := false
 	jsonOut := false
 	sarifOut := false
+	sarifPath := ""
 	sbomOut := false
 	includeTest := false
 	verifySecrets := false
@@ -1179,6 +1220,12 @@ func runScan() {
 			jsonOut = true
 		case os.Args[i] == "--sarif":
 			sarifOut = true
+		// --sarif-out keeps stdout for the human report and puts the SARIF in a file. --sarif alone
+		// takes stdout, so a pipeline that redirects it to a file loses every line a developer reads
+		// and the job shows only the gate's exit code.
+		case os.Args[i] == "--sarif-out" && i+1 < len(os.Args):
+			sarifOut, sarifPath = true, os.Args[i+1]
+			i++
 		case os.Args[i] == "--sbom":
 			sbomOut = true
 		default:
@@ -1239,7 +1286,7 @@ func runScan() {
 		fmt.Fprintln(os.Stderr, "synapse-cli: choose only one of --json, --sarif or --sbom")
 		os.Exit(2)
 	}
-	if err := run(os.Args[2], failOn, mode, priority, minConfidence, baseRef, baseExplicit, ignoreUnfixed, image, offline, jsonOut, sarifOut, sbomOut, includeTest, verifySecrets, push); err != nil {
+	if err := run(os.Args[2], failOn, mode, priority, minConfidence, baseRef, baseExplicit, ignoreUnfixed, image, offline, jsonOut, sarifOut, sarifPath, sbomOut, includeTest, verifySecrets, push); err != nil {
 		fmt.Fprintln(os.Stderr, "synapse-cli:", err)
 		os.Exit(1)
 	}
@@ -1251,7 +1298,7 @@ func runScan() {
 // over the dump directory streams every parseable advisory into the store via the narrow AdvisoryWriter.
 func syncAdvisories(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: synapse-cli sync-advisories <dir>|--remote|--remote-distros|--csaf <dir> (requires SYNAPSE_DB_DSN)")
+		return fmt.Errorf("usage: synapse-cli sync-advisories <dir>|--remote|--remote-distros|--remote-secdb|--csaf <dir> (requires SYNAPSE_DB_DSN)")
 	}
 	if args[0] == "--oval" {
 		if len(args) < 2 {
@@ -1301,6 +1348,12 @@ func syncAdvisories(args []string) error {
 		}
 		feed = ownadvisory.NewSecdbDirFeed(args[1])
 		src, bulkAdapter, sourceKey, sourceName = "apk secdb dir "+args[1], "osv", "cli-secdb-bulk", "CLI apk secdb bulk ingest"
+	case args[0] == "--remote-secdb":
+		// Alpine's own secdb, which is materially richer than the OSV mirror of it for the branches people
+		// run: OSV carried 128 advisories for Alpine:v3.19 and a scan of alpine:3.19 matched 4 CVEs where
+		// Trivy matched 10. The documents are tens of kilobytes each, so this is a fast sync.
+		feed = ownadvisory.NewRemoteSecdbFeed(cfg.AlpineSecdbURL, nil)
+		src, bulkAdapter, sourceKey, sourceName = "Alpine secdb", "osv", "cli-secdb-bulk", "CLI apk secdb bulk ingest"
 	default:
 		feed = ownadvisory.NewDirFeed(args[0])
 		src, bulkAdapter, sourceKey, sourceName = args[0], "osv", "cli-osv-bulk", "CLI OSV bulk ingest"
@@ -1465,14 +1518,21 @@ func selectSBOMGenerator(cfg config.Config) (ports.SBOMGenerator, error) {
 	if kind == scacompose.SBOMProducerSyft {
 		return syft.New(cfg.SyftBin), nil
 	}
-	reg, rerr := ownsbom.DefaultRegistry()
+	// A CI runner has neither ~/.m2 nor mvn, so without POM fetching a Spring project's transitive tree
+	// resolves to almost nothing. --offline leaves the fetcher nil, which the flag already promises for every
+	// registry resolver.
+	opts := ownsbom.RegistryOptions{}
+	if !cfg.Offline {
+		opts.MavenPOMFetcher = ownsbom.NewHTTPPOMFetcher(ownsbom.DefaultPOMCacheDir())
+	}
+	reg, rerr := ownsbom.DefaultRegistryWith(opts)
 	if rerr != nil {
 		return nil, fmt.Errorf("build ownsbom SBOM producer: %w", rerr)
 	}
 	return reg, nil
 }
 
-func run(path string, failOn shared.Severity, mode, priority, minConfidence, baseRef string, baseExplicit, ignoreUnfixed, image, offline, jsonOut, sarifOut, sbomOut, includeTest, verifySecrets bool, push pushTarget) error {
+func run(path string, failOn shared.Severity, mode, priority, minConfidence, baseRef string, baseExplicit, ignoreUnfixed, image, offline, jsonOut, sarifOut bool, sarifPath string, sbomOut, includeTest, verifySecrets bool, push pushTarget) error {
 	// An image target is an OCI reference (acquired in-process into an OCI layout); a local
 	// target is a filesystem path that must be absolute for the scope check.
 	target := strings.TrimSpace(path)
@@ -1676,7 +1736,7 @@ func run(path string, failOn shared.Severity, mode, priority, minConfidence, bas
 		sca.SetJVMReachability(jvmreach.New())
 	}
 	if cfg.SASTEnabled && !image {
-		sca.SetSASTAnalyzer(sast.New()) // deterministic pattern-SAST (CI-friendly)
+		sca.SetSASTAnalyzer(sastAnalyzer()) // deterministic pattern-SAST (CI-friendly)
 	} else if cfg.SASTEnabled && image {
 		// Source SAST over an assembled image rootfs is low-value (compiled artifacts, vendored trees)
 		// and scans the whole filesystem, which times out on large images. Scan SAST at the SOURCE repo.
@@ -1932,11 +1992,24 @@ func run(path string, failOn shared.Severity, mode, priority, minConfidence, bas
 			exemption, ok := fpGateExemptions[strings.TrimSpace(f.DedupKey)]
 			return exemption, ok
 		}
+		ruleMeta, rerr := exportcompose.SARIFRuleMeta(ctx)
+		if rerr != nil {
+			return fmt.Errorf("load rule catalog for sarif: %w", rerr)
+		}
 		out, err := exportuc.MarshalSARIF(res.Findings, res.ToolVersions["synapse"], exportuc.SARIFOptions{
-			Manifest: manifestFor, Fix: fixFor, AIGateExemption: exemptionFor,
+			Manifest: manifestFor, Fix: fixFor, AIGateExemption: exemptionFor, RuleMeta: ruleMeta,
 		})
 		if err != nil {
 			return fmt.Errorf("encode sarif: %w", err)
+		}
+		if sarifPath != "" {
+			// 0o644: a code-scanning uploader in the same job reads it, and it carries no secret.
+			if err := os.WriteFile(sarifPath, append(out, '\n'), 0o644); err != nil {
+				return fmt.Errorf("write sarif %s: %w", sarifPath, err)
+			}
+			printReport(target, res)
+			fmt.Printf("  sarif: %s\n", sarifPath)
+			break
 		}
 		if _, err := os.Stdout.Write(append(out, '\n')); err != nil {
 			return fmt.Errorf("write sarif: %w", err)
@@ -2005,14 +2078,84 @@ func run(path string, failOn shared.Severity, mode, priority, minConfidence, bas
 	return nil
 }
 
+// formatToolVersions renders the tool-version map as a stable, readable list. Printing the map with %v
+// gave Go's own map syntax in the report ("map[ownsbom:0.2.1 ...]"), in an unspecified order, which is
+// noise in a CI log and unusable for anyone diffing two runs.
+func formatToolVersions(versions map[string]string) string {
+	if len(versions) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(versions))
+	for name := range versions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		version := strings.TrimSpace(versions[name])
+		if version == "" {
+			version = "unknown" // an absent version is stated, never printed as an empty gap
+		}
+		parts = append(parts, name+" "+version)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatLockfiles renders the resolved dependency sources as a comma-separated list rather than Go's
+// slice syntax.
+func formatLockfiles(lockfiles []string) string {
+	if len(lockfiles) == 0 {
+		return "none"
+	}
+	return strings.Join(lockfiles, ", ")
+}
+
+// formatFindingKinds breaks the promoted count down into the security kinds and the code-quality ones, so
+// a reader is not left judging a security result by a single number that a few hundred maintainability
+// findings dominate. Both are reported; only the split is stated.
+func formatFindingKinds(findings []finding.Finding) string {
+	byKind := map[finding.Kind]int{}
+	for _, f := range findings {
+		kind := f.Kind
+		if kind == "" {
+			kind = finding.KindSCA // the legacy empty kind is SCA
+		}
+		byKind[kind]++
+	}
+	count := func(kinds ...finding.Kind) (int, []string) {
+		total := 0
+		var parts []string
+		for _, k := range kinds {
+			if n := byKind[k]; n > 0 {
+				total += n
+				parts = append(parts, fmt.Sprintf("%s %d", k, n))
+			}
+		}
+		return total, parts
+	}
+	secTotal, secParts := count(finding.KindSCA, finding.KindSAST, finding.KindSecret, finding.KindMisconfig)
+	cqTotal, cqParts := count(finding.KindQuality, finding.KindReliability)
+	if secTotal == 0 && cqTotal == 0 {
+		return ""
+	}
+	var groups []string
+	if secTotal > 0 {
+		groups = append(groups, fmt.Sprintf("security %d [%s]", secTotal, strings.Join(secParts, ", ")))
+	}
+	if cqTotal > 0 {
+		groups = append(groups, fmt.Sprintf("code quality %d [%s]", cqTotal, strings.Join(cqParts, ", ")))
+	}
+	return " – " + strings.Join(groups, " · ")
+}
+
 func printReport(target string, res *scauc.ScanResult) {
-	fmt.Printf("\nSynapse SCA dogfood – %s\n", target)
-	fmt.Printf("  tools: %v · vuln-db: %s\n", res.ToolVersions, res.VulnDBSnapshot)
+	fmt.Printf("\nSynapse scan – %s\n", target)
+	fmt.Printf("  tools: %s · vuln-db: %s\n", formatToolVersions(res.ToolVersions), res.VulnDBSnapshot)
 	if w := res.Completeness.Warning; w != "" {
 		fmt.Printf("  ! INCOMPLETE SCAN: %s\n", w)
 	} else {
-		fmt.Printf("  completeness: confident (%d/%d components resolved; lockfiles %v)\n",
-			res.Completeness.ComponentsResolved, res.Completeness.ComponentsTotal, res.Completeness.Lockfiles)
+		fmt.Printf("  completeness: confident (%d/%d components resolved; lockfiles %s)\n",
+			res.Completeness.ComponentsResolved, res.Completeness.ComponentsTotal, formatLockfiles(res.Completeness.Lockfiles))
 	}
 	if res.SBOM != nil {
 		fmt.Printf("  components: %d\n", len(res.SBOM.Components))
@@ -2085,7 +2228,7 @@ func printReport(target string, res *scauc.ScanResult) {
 	if reach, unref := countReachability(res.SBOM.Components); reach+unref > 0 {
 		fmt.Printf("  reachability (JVM, coarse): %d referenced, %d unreferenced by app code\n", reach, unref)
 	}
-	fmt.Printf("  findings (promoted): %d\n", len(res.Findings))
+	fmt.Printf("  findings (promoted): %d%s\n", len(res.Findings), formatFindingKinds(res.Findings))
 	if len(res.SLAs) > 0 {
 		overdue := 0
 		for _, item := range res.SLAs {

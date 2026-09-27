@@ -34,6 +34,7 @@ const (
 	EventFleetAgentOffline   EventType = "fleet.agent.offline"
 	EventIncidentCreated     EventType = "incident.created"
 	EventOwnershipChanged    EventType = "finding.ownership_changed"
+	EventDestinationChanged  EventType = "notification.destination_changed"
 	EventTest                EventType = "notification.test"
 )
 

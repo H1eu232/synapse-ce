@@ -13,14 +13,14 @@ import (
 	"github.com/KKloudTarus/synapse-ce/migrations"
 )
 
-// TestMigration0181DisablesRulesThatCanNeverMatch seeds rules at version 180, applies 0181 and
+// TestMigration0185DisablesRulesThatCanNeverMatch seeds rules at version 184, applies 0185 and
 // checks that only engagement-scoped rules for event types without an engagement were disabled.
-func TestMigration0181DisablesRulesThatCanNeverMatch(t *testing.T) {
+func TestMigration0185DisablesRulesThatCanNeverMatch(t *testing.T) {
 	sharedDSN := os.Getenv("SYNAPSE_TEST_DB_DSN")
 	if sharedDSN == "" {
 		t.Skip("set SYNAPSE_TEST_DB_DSN to run the postgres integration test")
 	}
-	dsn := isolatedMigrationDSN(t, sharedDSN, "0181")
+	dsn := isolatedMigrationDSN(t, sharedDSN, "0185")
 	ctx := context.Background()
 	if err := MigrateLocked(ctx, dsn); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -31,8 +31,8 @@ func TestMigration0181DisablesRulesThatCanNeverMatch(t *testing.T) {
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("dialect: %v", err)
 	}
-	if err := goose.DownTo(db, ".", 180); err != nil {
-		t.Fatalf("down to 180: %v", err)
+	if err := goose.DownTo(db, ".", 184); err != nil {
+		t.Fatalf("down to 184: %v", err)
 	}
 	pool, err := Connect(ctx, dsn)
 	if err != nil {
@@ -40,7 +40,7 @@ func TestMigration0181DisablesRulesThatCanNeverMatch(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	const tenant = "t-migration-0181"
+	const tenant = "t-migration-0185"
 	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id, name) VALUES ($1,$1)`, tenant); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
@@ -61,8 +61,8 @@ func TestMigration0181DisablesRulesThatCanNeverMatch(t *testing.T) {
 		}
 	}
 
-	if err := goose.UpTo(db, ".", 181); err != nil {
-		t.Fatalf("up to 181: %v", err)
+	if err := goose.UpTo(db, ".", 185); err != nil {
+		t.Fatalf("up to 185: %v", err)
 	}
 
 	want := map[string]struct {
@@ -106,8 +106,8 @@ func TestMigration0181DisablesRulesThatCanNeverMatch(t *testing.T) {
 		t.Fatal("notification_rules lost FORCE ROW LEVEL SECURITY")
 	}
 
-	if err := goose.DownTo(db, ".", 180); err != nil {
-		t.Fatalf("down to 180 after apply: %v", err)
+	if err := goose.DownTo(db, ".", 184); err != nil {
+		t.Fatalf("down to 184 after apply: %v", err)
 	}
 	if err := goose.Up(db, "."); err != nil {
 		t.Fatalf("up after down: %v", err)

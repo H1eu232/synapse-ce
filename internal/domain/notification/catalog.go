@@ -43,6 +43,10 @@ var catalog = map[EventType]EventSpec{
 		Filters:      []Filter{FilterEngagements, FilterTeams},
 		MaxDataClass: DataClassDetail,
 	},
+	EventDestinationChanged: {
+		Type: EventDestinationChanged, SchemaVersion: 1, SubjectKind: "user_contact",
+		MaxDataClass: DataClassSummary, OperatorOnly: true,
+	},
 	EventTest: {
 		Type: EventTest, SchemaVersion: 1, SubjectKind: "channel",
 		MaxDataClass: DataClassSignal, OperatorOnly: true,

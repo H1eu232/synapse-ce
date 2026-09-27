@@ -15,22 +15,28 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/synapse-api ./cmd/synapse-api \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-worker ./cmd/synapse-worker \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-egress-broker ./cmd/synapse-egress-broker \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-sandbox-check ./cmd/synapse-sandbox-check \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-migrate ./cmd/synapse-migrate \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-assessment-backfill ./cmd/synapse-assessment-backfill \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-assessment-snapshot-backfill ./cmd/synapse-assessment-snapshot-backfill \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-assessment-comparison-backfill ./cmd/synapse-assessment-comparison-backfill \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-assessment-rollout-gate ./cmd/synapse-assessment-rollout-gate \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-finding-lineage-backfill ./cmd/synapse-finding-lineage-backfill \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-assessment-integrity ./cmd/synapse-assessment-integrity \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-dast-helper ./cmd/synapse-dast-helper \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-callgraph ./cmd/synapse-callgraph \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-cspm ./cmd/synapse-cspm \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-cli ./cmd/synapse-cli \
-    && CGO_ENABLED=0 go build -trimpath -o /out/synapse-verify-restore ./cmd/synapse-verify-restore \
+# VERSION is the release tag. Embedding it is what makes the control plane report the release it is
+# actually running: the fleet agents compare their own version against the server's for skew, and an
+# image that reported the build-time default made that comparison meaningless. It sits after
+# `go mod download` so changing the tag does not invalidate the module layer.
+ARG VERSION=dev
+ENV SYNAPSE_LDFLAGS="-s -w -X github.com/KKloudTarus/synapse-ce/internal/platform/buildinfo.version=${VERSION}"
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-api ./cmd/synapse-api \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-worker ./cmd/synapse-worker \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-egress-broker ./cmd/synapse-egress-broker \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-sandbox-check ./cmd/synapse-sandbox-check \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-migrate ./cmd/synapse-migrate \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-assessment-backfill ./cmd/synapse-assessment-backfill \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-assessment-snapshot-backfill ./cmd/synapse-assessment-snapshot-backfill \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-assessment-comparison-backfill ./cmd/synapse-assessment-comparison-backfill \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-assessment-rollout-gate ./cmd/synapse-assessment-rollout-gate \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-finding-lineage-backfill ./cmd/synapse-finding-lineage-backfill \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-assessment-integrity ./cmd/synapse-assessment-integrity \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-dast-helper ./cmd/synapse-dast-helper \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-callgraph ./cmd/synapse-callgraph \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-cspm ./cmd/synapse-cspm \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-cli ./cmd/synapse-cli \
+    && CGO_ENABLED=0 go build -trimpath -ldflags "$SYNAPSE_LDFLAGS" -o /out/synapse-verify-restore ./cmd/synapse-verify-restore \
     && mkdir -p /out/project-uploads /out/project-source-artifacts /out/engagement-sources
 
 # The tree-sitter helper is CGO-linked, so build it against Debian glibc for the
