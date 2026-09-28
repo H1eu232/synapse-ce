@@ -6,6 +6,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io/fs"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver for goose
 	"github.com/pressly/goose/v3"
@@ -500,8 +502,32 @@ func GrantRuntimePrivileges(ctx context.Context, adminDSN, runtimeDSN string, ha
 	for _, statement := range statements {
 		// #nosec G701 -- SQL is fixed apart from quoteIdentifier-escaped DSN identifiers; PostgreSQL cannot bind identifiers as parameters.
 		if _, err := adminDB.ExecContext(ctx, statement); err != nil {
+			// ALTER ROLE and REVOKE on another role need more than schema ownership. PostgreSQL 16 lets a
+			// non-superuser alter a role only when it holds CREATEROLE and ADMIN OPTION on that role, and
+			// following the documented setup (owner role for migrations, separate runtime role, both created
+			// by the superuser) leaves admin with the superuser. The bare "permission denied to alter role"
+			// arrives after the schema has already applied, which reads far worse than it is, so name the
+			// grants the migration identity is missing.
+			if isInsufficientPrivilege(err) {
+				return fmt.Errorf("grant runtime privileges: %w: the migration role must hold CREATEROLE and "+
+					"ADMIN OPTION on the runtime role. Run, as the database superuser: "+
+					"ALTER ROLE <migration_role> CREATEROLE; GRANT <runtime_role> TO <migration_role> WITH ADMIN OPTION; "+
+					"and the same GRANT for the halt-writer role when response execution is enabled. "+
+					"The schema is already applied at this point; only the role grants are missing", err)
+			}
 			return fmt.Errorf("grant runtime privileges: %w", err)
 		}
 	}
 	return nil
+}
+
+// isInsufficientPrivilege reports whether err is PostgreSQL's 42501. The grant loop uses it to turn
+// "permission denied to alter role" into a message naming the grants the migration role is missing.
+func isInsufficientPrivilege(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "42501"
+	}
+	// goose drives these statements through database/sql, which can flatten the driver error.
+	return strings.Contains(err.Error(), "SQLSTATE 42501") || strings.Contains(err.Error(), "permission denied to alter role")
 }

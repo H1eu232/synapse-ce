@@ -1,13 +1,4 @@
 -- +goose Up
--- 0187 is still unshipped, but this branch already published a draft of it.
--- These statements make a database that applied that draft match the final
--- 0187 definition. Fresh installs already have the column and index.
-ALTER TABLE siem_batches ADD COLUMN IF NOT EXISTS indexer_ack_id BIGINT;
-DROP INDEX IF EXISTS siem_batches_one_open;
-CREATE UNIQUE INDEX siem_batches_one_open
-    ON siem_batches (tenant_id, sink_id, source)
-    WHERE state IN ('prepared', 'sending', 'partial', 'awaiting_ack', 'blocked');
-
 -- Identities removed by retention. Historical backfill must not assign a
 -- new sequence to an event that was already captured and then pruned.
 CREATE TABLE siem_incident_pruned (
@@ -19,8 +10,8 @@ CREATE TABLE siem_incident_pruned (
 );
 CALL synapse_enable_tenant_rls('siem_incident_pruned');
 
--- Databases that already applied 0187 keep the previous function body.
--- Replace it here so capture, prune, and backfill share one retention lock.
+-- Replace the 0191 trigger body so capture, prune, and backfill share one
+-- retention lock.
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION siem_capture_incident_event() RETURNS trigger
 LANGUAGE plpgsql

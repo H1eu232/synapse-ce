@@ -1119,8 +1119,14 @@ func usageTo(w io.Writer) {
 	out := func(line string) { _, _ = fmt.Fprintln(w, line) }
 	out("usage:")
 	out("  synapse-cli doctor [path] [--json]       # offline pre-scan readiness: toolchain, markers, and dimension coverage")
-	out("  synapse-cli scan <path|image-ref> [--image] [--offline] [--json] [--sarif] [--sarif-out FILE] [--mode full|vulnerabilities|licenses] [--fail-on critical|high|medium|low|info] [--min-confidence low|medium|high|very_high] [--base REF] [--include-test] [--verify-secrets] [--ignore-unfixed] [--detection-priority comprehensive|precise] [--server URL --project KEY [--branch REF] [--run-url URL] [--ci-provider NAME] [--insecure-http]]")
-	out("      --server   record the result on a Synapse server as the project's next analysis (token from SYNAPSE_API_TOKEN); the history, trend and managed gate in the console pick it up")
+	out("  synapse-cli scan <path|image-ref> [--image] [--offline] [--json] [--sarif] [--sarif-out FILE] [--mode full|vulnerabilities|licenses] [--fail-on critical|high|medium|low|info] [--min-confidence low|medium|high|very_high] [--base REF] [--include-test] [--verify-secrets] [--ignore-unfixed] [--detection-priority comprehensive|precise] [--server URL (--project KEY | --engagement ID) [--coverage FILE] [--push-source] [--push-sbom] [--asset ID] [--branch REF] [--run-url URL] [--ci-provider NAME] [--insecure-http]]")
+	out("      --server   record the result on a Synapse server (token from SYNAPSE_API_TOKEN); needs --project, --engagement, or both")
+	out("      --project KEY     record a project analysis: history, trend and the managed gate in the console pick it up (source scans only)")
+	out("      --engagement ID   record the security findings on an engagement, where they appear under its Imported tab; works for an --image scan too")
+	out("      --coverage FILE   record test coverage with the project analysis (lcov, cobertura or jacoco, auto-detected)")
+	out("      --push-source     upload the scanned tree so the console's Code view can show it (needs --project)")
+	out("      --push-sbom       import the generated SBOM into the engagement, which is how an image scan's component inventory shows up (needs --engagement)")
+	out("      --asset ID        bind the ingested findings to a business asset (needs --engagement)")
 	out("      --insecure-http   allow a plain-http --server that is not loopback (the token then travels in the clear)")
 	out("      --sarif    write a SARIF 2.1.0 report to stdout (for GitHub code-scanning upload); --fail-on still sets the exit code")
 	out("      --sarif-out FILE  write the SARIF report to FILE and keep the human report on stdout, so a CI log still shows what was found")
@@ -1181,6 +1187,29 @@ func runScan() {
 		case os.Args[i] == "--project" && i+1 < len(os.Args):
 			push.project = os.Args[i+1]
 			i++
+		// Upload the scanned tree for the analysis this push creates. Without it the console's Code
+		// view reports source as unavailable with reason not_retained, because the CLI pushes results
+		// and not files. `synapse-cli publish-source` does the same thing as a separate step against
+		// an analysis id; this does it in the same run, which is what a pipeline wants.
+		case os.Args[i] == "--push-source":
+			push.source = true
+		// Record the scan's security findings on an engagement, through the server's own SARIF ingest.
+		// Independent of --project: a pipeline may record code quality, engagement findings, or both.
+		case os.Args[i] == "--engagement" && i+1 < len(os.Args):
+			push.engagement = os.Args[i+1]
+			i++
+		case os.Args[i] == "--asset" && i+1 < len(os.Args):
+			push.asset = os.Args[i+1]
+			i++
+		// Record test coverage with the analysis. lcov, cobertura and jacoco are auto-detected, the same
+		// parser `synapse-cli gate --coverage` and the console's own upload use.
+		case os.Args[i] == "--coverage" && i+1 < len(os.Args):
+			push.coverage = os.Args[i+1]
+			i++
+		// Upload the generated SBOM to the engagement, so an image scan's component inventory shows on
+		// the console beside its findings. Replaces the engagement's active imported SBOM.
+		case os.Args[i] == "--push-sbom":
+			push.sbom = true
 		case os.Args[i] == "--branch" && i+1 < len(os.Args):
 			push.ci.Branch = os.Args[i+1]
 			i++
@@ -1259,15 +1288,21 @@ func runScan() {
 	if push.enabled() {
 		push.ci = ciContextFromEnv(push.ci, os.Getenv)
 		baseRef = prBaseRef(baseRef, image, push.ci)
-		if image {
-			// A project analysis is a source-tree analysis: it carries measures, ratings and a code
-			// quality report that have no meaning for an image.
-			fmt.Fprintln(os.Stderr, "synapse-cli: --server records a project analysis and cannot be combined with --image")
-			os.Exit(2)
-		}
-		if mode != scauc.ScanModeFull {
-			fmt.Fprintln(os.Stderr, "synapse-cli: --server records a full project analysis; --mode must be full")
-			os.Exit(2)
+		// The two destinations have different requirements, so the checks belong to the destination
+		// rather than to --server. A project analysis is a source-tree analysis carrying measures,
+		// ratings and a code-quality report, none of which mean anything for an image, and it needs the
+		// full mode to produce them. An engagement ingest is findings, which an image scan produces as
+		// well as a source scan does, so refusing --image there left a pipeline that builds and scans an
+		// image with no way to record anything at all.
+		if push.pushesAnalysis() {
+			if image {
+				fmt.Fprintln(os.Stderr, "synapse-cli: --project records a project analysis and cannot be combined with --image; use --engagement to record an image scan's findings")
+				os.Exit(2)
+			}
+			if mode != scauc.ScanModeFull {
+				fmt.Fprintln(os.Stderr, "synapse-cli: --project records a full project analysis; --mode must be full")
+				os.Exit(2)
+			}
 		}
 	}
 	if err := push.validate(); err != nil {
@@ -1876,11 +1911,18 @@ func run(path string, failOn shared.Severity, mode, priority, minConfidence, bas
 		}
 	}
 	scanOpts := scauc.ScanOptions{Mode: mode, DetectionPriority: priority, PolicyDir: policyDir}
-	if push.enabled() {
+	if push.pushesAnalysis() {
 		// The server's own project analysis runs with these set, and the recorder builds measures,
 		// ratings and hotspots from the code-quality report they produce. Without them a pushed
 		// analysis would carry security findings and nothing else.
 		scanOpts.CodeQuality, scanOpts.ProjectAnalysis = true, true
+		if path := strings.TrimSpace(push.coverage); path != "" {
+			report, _, cerr := coverage.ParseWithOptions(path, coverage.Options{GoModulePath: goModulePath(target)})
+			if cerr != nil {
+				return fmt.Errorf("read coverage report: %w", cerr)
+			}
+			scanOpts.LineCoverage = &report
+		}
 	}
 	res, err := sca.ScanWithOptions(ctx, "synapse-cli", eng.ID, ports.AcquireRequest{Kind: acqKind, Value: target}, scanOpts)
 	if err != nil {
@@ -2029,13 +2071,67 @@ func run(path string, failOn shared.Severity, mode, priority, minConfidence, bas
 	if push.enabled() {
 		pushCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
-		analysis, console, perr := pushAnalysis(pushCtx, pushHTTPClient(), push, res)
-		if perr != nil {
-			// A pipeline that asked for its result to be recorded must not go green because the
-			// record silently did not happen, so this is a failure whatever the local gate says.
-			return fmt.Errorf("record analysis on the server: %w", perr)
+		if push.pushesEngagement() {
+			ruleMeta, rerr := exportcompose.SARIFRuleMeta(pushCtx)
+			if rerr != nil {
+				return fmt.Errorf("load rule catalog for the engagement ingest: %w", rerr)
+			}
+			document, merr := exportuc.MarshalSARIF(res.Findings, buildinfo.App(), exportuc.SARIFOptions{RuleMeta: ruleMeta})
+			if merr != nil {
+				return fmt.Errorf("encode findings for the engagement ingest: %w", merr)
+			}
+			ingest, ierr := pushEngagementSARIF(pushCtx, pushHTTPClient(), push, document)
+			if ierr != nil {
+				// Same rule as the analysis push: a pipeline that asked for its findings to be recorded
+				// must not go green because the record did not happen.
+				return fmt.Errorf("record engagement findings on the server: %w", ierr)
+			}
+			reportEngagementIngest(os.Stdout, push.engagement, ingest)
+			if push.sbom {
+				if res.SBOM == nil {
+					fmt.Fprintln(os.Stderr, "warning: --push-sbom was given but the scan produced no SBOM")
+				} else {
+					document, serr := json.Marshal(res.SBOM)
+					if serr != nil {
+						return fmt.Errorf("encode sbom for the engagement import: %w", serr)
+					}
+					if uerr := pushEngagementSBOM(pushCtx, pushHTTPClient(), push, document); uerr != nil {
+						// The findings are already recorded, so this is reported and not fatal: the SBOM is
+						// the inventory half of the picture, and losing it must not fail a build twice.
+						fmt.Fprintf(os.Stderr, "warning: SBOM not imported for engagement %s: %v\n", push.engagement, uerr)
+					} else {
+						fmt.Printf("SBOM imported: %d component(s) on engagement %s\n", len(res.SBOM.Components), push.engagement)
+					}
+				}
+			}
 		}
-		reportPush(analysis, console)
+		if push.pushesAnalysis() {
+			analysis, console, perr := pushAnalysis(pushCtx, pushHTTPClient(), push, res)
+			if perr != nil {
+				// A pipeline that asked for its result to be recorded must not go green because the
+				// record silently did not happen, so this is a failure whatever the local gate says.
+				return fmt.Errorf("record analysis on the server: %w", perr)
+			}
+			reportPush(analysis, console)
+			if push.source {
+				// Best-effort on purpose: the analysis is already recorded and its gate already decided, so
+				// failing the pipeline here would turn a Code-view convenience into a build break. The
+				// warning names the separate command that retries it against the same analysis.
+				manifest, serr := publishSourceFromAnalysis(pushCtx, pushHTTPClient(), push.server, push.token,
+					push.project, analysis.ID, target, buildinfo.App())
+				switch {
+				case serr != nil:
+					fmt.Fprintf(os.Stderr, "warning: source not published for analysis %s: %v\n", analysis.ID, serr)
+					fmt.Fprintf(os.Stderr, "         the Code view will report source as unavailable; retry with:\n")
+					fmt.Fprintf(os.Stderr, "         synapse-cli publish-source --server %s --project %s --analysis %s %s\n",
+						push.server, push.project, analysis.ID, target)
+				case manifest.Truncated:
+					fmt.Printf("Source published for the Code view: %d files retained, truncated at the server's limit\n", len(manifest.Files))
+				default:
+					fmt.Printf("Source published for the Code view: %d files retained\n", len(manifest.Files))
+				}
+			}
+		}
 	}
 
 	gate := shared.SeverityRank(failOn)

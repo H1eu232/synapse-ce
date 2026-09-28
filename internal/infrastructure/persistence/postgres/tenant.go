@@ -202,7 +202,7 @@ func requireTenant(ctx context.Context, pool *pgxpool.Pool, tenantID shared.ID, 
 // sweep for the wrapped error. This is the same fan-out the job queue's Claim and the engagement
 // repository's reconciliation scan already use.
 func listTenantIDs(ctx context.Context, pool *pgxpool.Pool, label string) ([]shared.ID, error) {
-	rows, err := pool.Query(ctx, `SELECT id FROM tenants ORDER BY id`)
+	rows, err := pool.Query(ctx, `SELECT id FROM tenants WHERE id <> '' ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants for %s: %w", label, err)
 	}
