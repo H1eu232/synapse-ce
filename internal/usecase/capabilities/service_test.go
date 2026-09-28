@@ -53,6 +53,7 @@ func TestCatalogReportsSwitchPerSubsystem(t *testing.T) {
 		{"notifications.channel_types", "SYNAPSE_NOTIFICATIONS_ENABLED"},
 		{"ticketing", ""},
 		{"docpublish", ""},
+		{"legacy_alert_webhook", "SYNAPSE_ALERT_WEBHOOK_URL"},
 	}
 	if len(list) != len(cases) {
 		t.Fatalf("catalog has %d entries, want %d", len(list), len(cases))
@@ -77,7 +78,7 @@ func TestEnabledFlagsResolve(t *testing.T) {
 		FleetTelemetryIngest: true, FleetDetectionIngest: true, CSPM: true, Agent: true,
 		FPTriage: true, SLA: true, Judgments: true, Sandbox: true, WriteupDrafts: true,
 		Taint: true, JSReachability: true, SingleTenant: true, OIDC: true,
-		Ownership: true, Notifications: true,
+		Ownership: true, Notifications: true, LegacyAlertWebhook: true,
 	})
 	if err != nil {
 		t.Fatalf("new service: %v", err)

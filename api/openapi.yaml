@@ -1041,6 +1041,9 @@ paths:
         stable key, a human name, whether it is enabled, and the environment variable that controls
         it, so a client can render "disabled" rather than a dead link. It returns configuration
         booleans and variable NAMES only, never a configured value, and is gated at the view floor.
+        The `legacy_alert_webhook` entry is enabled while the deprecated SYNAPSE_ALERT_WEBHOOK_URL is
+        set; the console uses it to warn that incident.created rules and the legacy webhook both
+        deliver. The URL itself is never returned.
       responses:
         "200":
           description: The deployment's capability catalog
@@ -2783,10 +2786,13 @@ paths:
       tags: [fleet]
       operationId: testAlert
       summary: Deliver a test alert to every configured alert sink
+      deprecated: true
       description: >
         Sends a synthetic `alert.test` alert through the configured sinks (the webhook set by
         SYNAPSE_ALERT_WEBHOOK_URL) so an operator can prove the alert path works before relying on it.
         The test alert bypasses the severity floor. Registered only when alerting is configured.
+        Deprecated with SYNAPSE_ALERT_WEBHOOK_URL and removed in 0.4.0; incident.created notification
+        rules replace the legacy webhook.
       responses:
         '200': {description: At least one sink acknowledged, content: {application/json: {schema: {$ref: '#/components/schemas/AlertTestResult'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}

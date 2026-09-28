@@ -109,6 +109,27 @@ func TestCapabilitiesReportsEnabledSubsystem(t *testing.T) {
 	}
 }
 
+// TestCapabilitiesReportsLegacyAlertWebhookAsABoolean backs the rule-form warning (#1347): the console
+// learns whether the deprecated SYNAPSE_ALERT_WEBHOOK_URL is set, and only that. The response carries
+// the variable name, never a configured value.
+func TestCapabilitiesReportsLegacyAlertWebhookAsABoolean(t *testing.T) {
+	for _, set := range []bool{false, true} {
+		rt := newCapabilityRouter(t, capabilities.Flags{LegacyAlertWebhook: set})
+		rec, byKey := getCapabilities(t, rt, "admin")
+		got, ok := byKey["legacy_alert_webhook"]
+		if !ok {
+			t.Fatal("legacy_alert_webhook is missing from the response")
+		}
+		if got.Enabled != set || got.Switch != "SYNAPSE_ALERT_WEBHOOK_URL" {
+			t.Fatalf("legacy_alert_webhook = %+v, want enabled=%v", got, set)
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, "http://") || strings.Contains(body, "https://") {
+			t.Fatalf("capability response carries a URL: %s", body)
+		}
+	}
+}
+
 func TestCapabilitiesRequiresTheViewFloor(t *testing.T) {
 	rt := newCapabilityRouter(t, capabilities.Flags{})
 	for _, role := range []string{"agent", "mcp", "bogus"} {

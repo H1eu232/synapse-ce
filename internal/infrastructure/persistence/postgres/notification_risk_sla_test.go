@@ -26,7 +26,7 @@ func TestNotificationPostgresRiskAndSLA(t *testing.T) {
 		}
 	}
 	repo := NewNotificationRepository(pool)
-	source := NewNotificationSource(pool, repo, time.Minute, true)
+	source := NewNotificationSource(pool, repo, time.Minute)
 	if _, err := source.Poll(ctx, now.Add(-time.Minute), 100); err != nil {
 		t.Fatal(err)
 	}

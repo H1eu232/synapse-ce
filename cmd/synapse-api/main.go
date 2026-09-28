@@ -1687,6 +1687,7 @@ func main() {
 		OIDC:                 cfg.OIDCEnabled,
 		Ownership:            cfg.OwnershipMode != "off" && databasePool != nil,
 		Notifications:        cfg.NotificationEnabled,
+		LegacyAlertWebhook:   cfg.AlertWebhookURL != "",
 	})
 	if err != nil {
 		log.Error("capability catalog init failed", "err", err)
@@ -2356,8 +2357,12 @@ func main() {
 
 	// Operator alerting (#822): a signed webhook that receives every incident correlation opens, plus the
 	// correlator handle detection ingest uses so an incident exists as soon as its detections are sealed.
+	// Deprecated (#1347): tenant notification rules for incident.created are delivered by the worker's
+	// notification framework whether or not this webhook is set, so both paths deliver while it is
+	// configured. It stays as a compatibility path until alertinguc.LegacyWebhookRemovalRelease.
 	var alertSvc *alertinguc.Service
 	if cfg.AlertWebhookURL != "" {
+		alertinguc.WarnLegacyWebhookDeprecated(log, true)
 		rule := alerting.Rule{MinSeverity: shared.Severity(strings.ToLower(strings.TrimSpace(cfg.AlertMinSeverity)))}
 		sink, aerr := alertwebhook.New(cfg.AlertWebhookURL, cfg.AlertWebhookSecret, 10*time.Second, cfg.AlertWebhookAllowPrivate, cfg.AlertWebhookAllowUnsigned)
 		if aerr != nil {

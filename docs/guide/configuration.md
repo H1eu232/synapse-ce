@@ -348,7 +348,7 @@ All off by default. The fleet needs PostgreSQL + `synapse-worker`; agents run on
 | `SYNAPSE_FLEET_CORRELATION_MAX_TIMELINE_REFS_PER_PAGE` | `500` | Maximum causal timeline references fetched by one materialization page; at least the per-detection cap (1–10000). |
 | `SYNAPSE_FLEET_KEY_REGISTRATION_ENABLED` | `false` | Serve agent signing-key registration (`POST /api/v1/fleet/keys`) + operator key list/revoke (A4, A0.2). |
 | `SYNAPSE_FLEET_STALE_AFTER` | `10m` | An agent older than this reads as stale (`<=0` disables the staleness view). |
-| `SYNAPSE_ALERT_WEBHOOK_URL` | (unset) | Enables operator alerting: each incident correlation opens is posted as signed JSON to this URL. `https` required, `http` only for a loopback host. `POST /api/v1/alerts/test` sends a test alert. |
+| `SYNAPSE_ALERT_WEBHOOK_URL` | (unset) | **Deprecated; removed in 0.4.0.** Use an `incident.created` notification rule instead; both paths deliver while this is set, and startup logs a warning. Enables operator alerting: each incident correlation opens is posted as signed JSON to this URL. `https` required, `http` only for a loopback host. `POST /api/v1/alerts/test` sends a test alert. |
 | `SYNAPSE_ALERT_WEBHOOK_SECRET` | (unset) | Signs each webhook body: `X-Synapse-Signature: sha256=<hex HMAC-SHA256 of "<X-Synapse-Timestamp>.<body>">`. At least 16 bytes when set. |
 | `SYNAPSE_ALERT_MIN_SEVERITY` | `medium` | Inclusive severity floor for delivered alerts (`critical`, `high`, `medium`, `low`, `info`). Test alerts always deliver. |
 | `SYNAPSE_ALERT_WEBHOOK_ALLOW_PRIVATE` | `false` | Let the webhook client dial private and link-local receivers. The SSRF guard refuses them otherwise. |

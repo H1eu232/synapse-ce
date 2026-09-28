@@ -22,7 +22,7 @@ import {
   Spinner,
 } from '../../components/ui'
 import { useToast } from '../../components/synapse/Toast'
-import { capabilityHint, disabledCapability, loadCapabilities } from '../../lib/capabilities'
+import { capabilityHint, disabledCapability, loadCapabilities, useCapabilities } from '../../lib/capabilities'
 import type { Capability } from '../../lib/types'
 import { useFetch } from '../../hooks'
 import { RuleTargetPicker } from './RuleTargetPicker'
@@ -235,8 +235,9 @@ function LegacyAlertTest({ canAdmin }: { canAdmin: boolean }) {
   return (
     <Card title="Legacy incident webhook">
       <p className="text-sm text-secondary">
-        Compatibility path configured with SYNAPSE_ALERT_WEBHOOK_*. New tenant
-        rules below use the durable worker pipeline.
+        Compatibility path configured with SYNAPSE_ALERT_WEBHOOK_*. It is
+        deprecated and will be removed in 0.4.0. Use an Incident created rule
+        below, which is delivered through the durable worker pipeline.
       </p>
       {!available && (
         <p className="mt-3 text-sm font-medium text-tertiary">
@@ -574,6 +575,48 @@ function teamCursor(cursor?: string): { offset: number; apiCursor?: string } {
   return { offset: 0, apiCursor: cursor }
 }
 
+/**
+ * Blocking notice for incident.created rules while the deprecated deployment-wide webhook is set
+ * (#1347). Both paths deliver every incident and are not deduplicated against each other, so the
+ * administrator must acknowledge the overlap before the rule can be saved.
+ */
+function LegacyIncidentWebhookWarning({
+  acknowledged,
+  onAcknowledge,
+  disabled,
+}: {
+  acknowledged: boolean
+  onAcknowledge: (value: boolean) => void
+  disabled: boolean
+}) {
+  return (
+    <div
+      role="alert"
+      className="space-y-2 rounded-lg border border-warning-primary bg-warning-primary p-4 text-sm text-secondary md:col-span-2"
+    >
+      <p className="font-semibold text-warning-primary">
+        The legacy incident webhook is also configured
+      </p>
+      <p>
+        This deployment sets SYNAPSE_ALERT_WEBHOOK_URL. Every incident is sent
+        to that webhook and to the channels this rule selects. The two paths
+        are not deduplicated, so a receiver on both gets each incident twice.
+        The legacy webhook is deprecated and will be removed in 0.4.0. Ask your
+        deployment administrator to remove it once this rule is tested.
+      </p>
+      <label className="flex gap-2 font-medium text-primary">
+        <input
+          type="checkbox"
+          checked={acknowledged}
+          disabled={disabled}
+          onChange={(e) => onAcknowledge(e.target.checked)}
+        />
+        I understand incidents will be delivered through both paths
+      </label>
+    </div>
+  )
+}
+
 function RuleCreate({
   initial,
   channels,
@@ -658,6 +701,14 @@ function RuleCreate({
     String((initial?.lead_time_seconds ?? 86400) / 3600),
   )
   const [busy, setBusy] = useState(false)
+  // #1347: while the deprecated SYNAPSE_ALERT_WEBHOOK_URL is set, an incident.created rule delivers
+  // in addition to the legacy webhook. The capability catalog carries only a boolean, never the URL.
+  // A deployment that does not report capabilities shows no warning, matching the catalog contract.
+  const capabilities = useCapabilities()
+  const legacyWebhook =
+    capabilities?.get('legacy_alert_webhook')?.enabled === true
+  const legacyAckRequired = legacyWebhook && event === 'incident.created'
+  const [legacyAck, setLegacyAck] = useState(false)
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -665,6 +716,11 @@ function RuleCreate({
     try {
       if (allows('team_ids') && !allTeams && teams.length === 0) {
         throw new Error('Choose at least one team or select all teams.')
+      }
+      if (legacyAckRequired && !legacyAck) {
+        throw new Error(
+          'Acknowledge that the legacy incident webhook also delivers this event.',
+        )
       }
       const input = {
         name: name.trim(),
@@ -819,6 +875,13 @@ function RuleCreate({
             />
           </Field>
         )}
+        {legacyAckRequired && (
+          <LegacyIncidentWebhookWarning
+            acknowledged={legacyAck}
+            onAcknowledge={setLegacyAck}
+            disabled={!canAdmin}
+          />
+        )}
         {error && <ErrorState message={error} />}
         <div className="flex justify-end gap-2 md:col-span-2">
           <Button
@@ -829,6 +892,7 @@ function RuleCreate({
               !name.trim() ||
               !event ||
               selected.length === 0 ||
+              (legacyAckRequired && !legacyAck) ||
               (allows('lead_time_seconds') &&
                 (!Number.isFinite(Number(leadHours)) ||
                   Number(leadHours) < 1 ||

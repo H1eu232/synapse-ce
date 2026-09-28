@@ -22,15 +22,16 @@ type NotificationSource struct {
 	pool                  *pgxpool.Pool
 	repo                  *NotificationRepository
 	fleetStaleAfter       time.Duration
-	incidentEnabled       bool
 	vulnerabilityDisabled bool
 }
 
-func NewNotificationSource(pool *pgxpool.Pool, repo *NotificationRepository, fleetStaleAfter time.Duration, incidentEnabled bool) *NotificationSource {
+// NewNotificationSource builds the projector. incident.created is projected unconditionally (#1347): the
+// deprecated SYNAPSE_ALERT_WEBHOOK_URL no longer suppresses it, so tenant rules for it always deliver.
+func NewNotificationSource(pool *pgxpool.Pool, repo *NotificationRepository, fleetStaleAfter time.Duration) *NotificationSource {
 	if fleetStaleAfter <= 0 {
 		fleetStaleAfter = 10 * time.Minute
 	}
-	return &NotificationSource{pool: pool, repo: repo, fleetStaleAfter: fleetStaleAfter, incidentEnabled: incidentEnabled}
+	return &NotificationSource{pool: pool, repo: repo, fleetStaleAfter: fleetStaleAfter}
 }
 
 var _ ports.NotificationSource = (*NotificationSource)(nil)
@@ -194,11 +195,11 @@ func (s *NotificationSource) pollVulnerability(ctx context.Context, tx pgx.Tx, t
 }
 
 func (s *NotificationSource) pollScans(ctx context.Context, tx pgx.Tx, tenant shared.ID, activated, now time.Time, limit int) (int, error) {
-	return s.pollCaptured(ctx, tx, tenant, "scan_job", now, limit, true)
+	return s.pollCaptured(ctx, tx, tenant, "scan_job", now, limit)
 }
 
 func (s *NotificationSource) pollQualityGates(ctx context.Context, tx pgx.Tx, tenant shared.ID, activated, now time.Time, limit int) (int, error) {
-	return s.pollCaptured(ctx, tx, tenant, "project_analysis_gate", now, limit, true)
+	return s.pollCaptured(ctx, tx, tenant, "project_analysis_gate", now, limit)
 }
 
 func (s *NotificationSource) pollSLA(ctx context.Context, tx pgx.Tx, tenant shared.ID, _, now time.Time, limit int) (int, error) {
@@ -265,7 +266,7 @@ func (s *NotificationSource) pollSLA(ctx context.Context, tx pgx.Tx, tenant shar
 }
 
 func (s *NotificationSource) pollIncidents(ctx context.Context, tx pgx.Tx, tenant shared.ID, activated, now time.Time, limit int) (int, error) {
-	return s.pollCaptured(ctx, tx, tenant, "incident", now, limit, s.incidentEnabled)
+	return s.pollCaptured(ctx, tx, tenant, "incident", now, limit)
 }
 
 func (s *NotificationSource) pollFleet(ctx context.Context, tx pgx.Tx, tenant shared.ID, activated, now time.Time, limit int) (int, error) {

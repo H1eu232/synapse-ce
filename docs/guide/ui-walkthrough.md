@@ -646,7 +646,7 @@ Where notifications go, which events trigger them, and what was delivered.
    inspect its attempts and confirm whether it was delivered.
 
 The separate `Send test alert` button under **Legacy incident webhook** tests only the
-compatibility webhook configured with `SYNAPSE_ALERT_WEBHOOK_*`; it does not test tenant-managed
+compatibility webhook configured with `SYNAPSE_ALERT_WEBHOOK_*` (deprecated, removed in 0.4.0); it does not test tenant-managed
 channels.
 
 === "Desktop"

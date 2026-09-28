@@ -258,17 +258,39 @@ channel ID, recipient, host, URL, provider credentials or raw error text
 can become a metric label. Counters restart with each worker process;
 the pending-age gauge reads durable state at scrape time.
 
-The older `SYNAPSE_ALERT_WEBHOOK_URL` incident path remains available. When it is
-configured, the worker suppresses the new `incident.created` producer so an
-incident is not sent through both paths. Remove the legacy URL after equivalent
-tenant rules and channels have been tested.
+### Legacy incident webhook (deprecated)
 
-Use the same legacy URL configuration on API and worker during cutover. Let the
-worker drain incident source records while legacy delivery is active, then stop
-the API and worker together, remove the legacy URL from both, and restart. Retained
-unprocessed incident records from a period without a worker can otherwise be sent
-after cutover. Initial activation is persisted per tenant; disabling the feature
-pauses delivery rather than deleting retained records or resetting that cutoff.
+`SYNAPSE_ALERT_WEBHOOK_URL` is deprecated and will be removed in **0.4.0**. It is a
+single deployment-wide, best-effort webhook that the API calls in-process when
+correlation opens an incident. Tenant `incident.created` rules replace it: they are
+durable, retried, per tenant, and recorded in delivery history.
+
+`incident.created` rules now deliver whether or not the legacy URL is set. Before
+this release the worker suppressed the `incident.created` producer while the legacy
+URL was configured, so those rules were accepted but never fired. While both are
+configured, every incident is sent twice: once to the legacy URL and once to each
+channel a matching rule selects. Each path delivers an incident at most once to its
+own destinations, but the two paths are not deduplicated against each other. If a
+rule points at the same receiver as the legacy URL, that receiver gets two requests.
+
+Startup logs a warning on the API and the worker while the legacy URL is set. The
+URL itself is never logged. **Settings → Alerting** shows a warning on the rule
+form for `incident.created` while the legacy webhook is set, and you must
+acknowledge it before you can save the rule. The console only learns whether the
+legacy webhook is set, through the `legacy_alert_webhook` entry of
+`GET /api/v1/capabilities`. It never sees the URL.
+
+To migrate:
+
+1. Create a channel for the receiver and test it.
+2. Create an `incident.created` rule with the same severity floor as
+   `SYNAPSE_ALERT_MIN_SEVERITY`, and acknowledge the warning.
+3. Remove `SYNAPSE_ALERT_WEBHOOK_*` from the API and restart it. The worker no
+   longer reads the URL. Incidents recorded while the worker previously suppressed
+   `incident.created` are not replayed.
+
+Initial activation is persisted per tenant. Disabling the framework pauses delivery
+but keeps retained records and the activation cutoff.
 
 ### Secret rotation and retention
 

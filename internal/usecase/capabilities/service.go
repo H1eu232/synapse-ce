@@ -37,6 +37,10 @@ type Flags struct {
 	OIDC                 bool // SYNAPSE_OIDC_ENABLED
 	Ownership            bool // effective SYNAPSE_OWNERSHIP_MODE != off with PostgreSQL
 	Notifications        bool // SYNAPSE_NOTIFICATIONS_ENABLED
+	// LegacyAlertWebhook reports only whether SYNAPSE_ALERT_WEBHOOK_URL is set, never its value (the
+	// URL may embed a credential). The console uses it to warn that incident.created rules and the
+	// deprecated deployment-wide webhook both deliver (#1347).
+	LegacyAlertWebhook bool
 }
 
 // Capability describes one optional subsystem to a client. Key is stable API: a dashboard keys its
@@ -190,5 +194,12 @@ func build(f Flags) []Capability {
 		// so a client can render them as planned instead of guessing from a 404.
 		{Key: "ticketing", Name: "Ticketing", Planned: true},
 		{Key: "docpublish", Name: "Documentation publishing", Planned: true},
+		{
+			// Deprecated compatibility path, removed in alerting.LegacyWebhookRemovalRelease. Enabled
+			// means the API posts every incident to the deployment-wide webhook in addition to any
+			// tenant incident.created rule.
+			Key: "legacy_alert_webhook", Name: "Legacy incident alert webhook (deprecated)",
+			Enabled: f.LegacyAlertWebhook, Switch: "SYNAPSE_ALERT_WEBHOOK_URL",
+		},
 	}
 }
