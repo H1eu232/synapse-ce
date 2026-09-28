@@ -149,8 +149,13 @@ spec:
             {{- end }}
       volumes:
         - name: synapse-data
+          {{- if .Values.api.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.api.persistence.existingClaim | default (printf "%s-data" (include "synapse.fullname" .)) }}
+          {{- else }}
           emptyDir:
             sizeLimit: {{ .Values.api.scratch.dataSizeLimit }}
+          {{- end }}
         - name: tmp
           # A clone, an extracted archive or an image layout is staged here, bounded by
           # SYNAPSE_MAX_WORKSPACE_BYTES. Without a sizeLimit an oversized target filled the node's

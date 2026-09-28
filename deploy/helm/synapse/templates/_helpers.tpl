@@ -90,6 +90,22 @@ broker DaemonSet enabled and an execution node selector.
 */ -}}
 {{- define "synapse.validate" -}}
 {{- $mode := include "synapse.executionMode" . -}}
+{{- /* /var/lib/synapse holds the Code view's captured source, project uploads and engagement sources.
+       An emptyDir is pod-local, so a second replica cannot read what the first one captured: the Code
+       view answers "source artifact is missing from this server's storage" for every request that does
+       not reach the pod that ran the analysis, and a restart discards all of it. This was silent, which
+       is why it shipped. api.persistence with a ReadWriteMany claim is the fix; acknowledgeEphemeral is
+       for an install where nothing reads that data. */ -}}
+{{- if gt (int .Values.api.replicaCount) 1 -}}
+{{- if not .Values.api.persistence.acknowledgeEphemeral -}}
+{{- if not .Values.api.persistence.enabled -}}
+{{- fail (printf "api.replicaCount=%d with api.persistence.enabled=false puts /var/lib/synapse on a per-pod emptyDir, so the Code view cannot read source captured by another replica and a restart discards project uploads and engagement sources. Set api.persistence.enabled=true with a ReadWriteMany claim (EFS, Filestore, Azure Files), or api.replicaCount=1, or api.persistence.acknowledgeEphemeral=true if nothing reads that data" (int .Values.api.replicaCount)) -}}
+{{- end -}}
+{{- if not (has "ReadWriteMany" .Values.api.persistence.accessModes) -}}
+{{- fail (printf "api.replicaCount=%d needs api.persistence.accessModes to include ReadWriteMany: a ReadWriteOnce volume attaches to one node, so the other replicas start without /var/lib/synapse or fail to schedule. Use a filesystem storage class, or api.replicaCount=1" (int .Values.api.replicaCount)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if or (eq $mode "externalNative") (eq $mode "inClusterBroker") -}}
 {{- if not .Values.api.grantAuthority.enabled -}}
 {{- fail (printf "execution.mode=%s is a production posture and requires api.grantAuthority.enabled=true so the API can sign egress grants" $mode) -}}
