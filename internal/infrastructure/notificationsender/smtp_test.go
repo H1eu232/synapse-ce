@@ -183,10 +183,22 @@ func TestTransportTimeoutAndHTTPClassification(t *testing.T) {
 }
 
 func TestPublicTransportBlocksPrivateDestinations(t *testing.T) {
-	for _, endpoint := range []string{"https://127.0.0.1:1", "https://[::1]:1", "https://169.254.169.254", "https://10.0.0.1"} {
+	for _, endpoint := range []string{"https://127.0.0.1:1", "https://[::1]:1", "https://169.254.169.254", "https://10.0.0.1", "https://[fd00:ec2::254]"} {
 		result := New(SMTPConfig{}, 50*time.Millisecond).Send(context.Background(), testWork(notification.ChannelWebhook), ports.NotificationChannelConfig{URL: endpoint})
-		if result.ErrorCode == "" {
-			t.Fatalf("allowed private destination %s", endpoint)
+		// A refused destination does not change on retry, so it must not burn the retry budget.
+		if result.ErrorCode != "destination_blocked" || result.Retryable {
+			t.Fatalf("%s: result = %+v, want a non-retryable destination_blocked", endpoint, result)
+		}
+	}
+}
+
+func TestSMTPRelayRefusesMetadataEndpoints(t *testing.T) {
+	for _, host := range []string{"169.254.169.254", "fd00:ec2::254", "100.100.100.200"} {
+		work := testWork(notification.ChannelEmail)
+		work.Delivery.Recipient = "recipient@example.com"
+		result := New(SMTPConfig{Host: host, Port: 25, From: "synapse@example.com"}, time.Second).Send(context.Background(), work, ports.NotificationChannelConfig{})
+		if result.ErrorCode != "smtp_destination_blocked" || result.Retryable {
+			t.Fatalf("relay %s: result = %+v, want a non-retryable smtp_destination_blocked", host, result)
 		}
 	}
 }

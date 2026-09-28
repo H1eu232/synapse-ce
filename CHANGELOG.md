@@ -7,6 +7,10 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every outbound notification connection goes through one SSRF guard, and a refused destination is no longer retried (#1355).** `safehttp` now has a single `Dialer`, driven by a `Policy`, that every HTTP client it builds uses and that non-HTTP transports can call through `DialContext`. It resolves the host once, checks every candidate address, and dials the address it checked, so a DNS answer that changes between the check and the connection cannot redirect it. The refused set now covers the IANA special-purpose ranges that are never a destination: "this network", documentation, benchmarking and reserved IPv4 blocks, NAT64 local-use, Teredo, discard-only and deprecated site-local IPv6. The AWS IPv6 metadata endpoint `fd00:ec2::/32` is refused even when private networks are allowed; before this change `SYNAPSE_ALERT_WEBHOOK_ALLOW_PRIVATE`, and any integration allowed to reach private networks, admitted it. The notification SMTP relay now dials through the same guard with an operator policy that keeps loopback and private relays working. Webhook and Slack deliveries to a refused destination now fail with `destination_blocked`, and the SMTP relay with `smtp_destination_blocked`, instead of spending the retry budget on an answer that cannot change. `Policy` also carries a host predicate and private-CIDR narrowing for the operator allowlist in #1356.
+
 ### Added
 
 - **Private worker delivery health metrics (#1465).** The notification worker exposes bounded Prometheus sent/failed/dead-letter counters, attempt latency, oldest pending age and built-in content fallback counts per fixed channel family and outbound provider. Pending age is recomputed through tenant-scoped PostgreSQL reads; failed scrapes report an error rather than stale ages. No recipient, destination or tenant data is used as a metric label. Helm can explicitly enable a separate worker-only metrics Service with restricted monitoring-namespace ingress; it remains disabled by default.

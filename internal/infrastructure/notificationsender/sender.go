@@ -40,6 +40,7 @@ type SMTPConfig struct {
 type Sender struct {
 	http    *http.Client
 	smtp    SMTPConfig
+	dial    func(ctx context.Context, network, address string) (net.Conn, error)
 	now     func() time.Time
 	timeout time.Duration
 }
@@ -53,7 +54,10 @@ func New(smtpConfig SMTPConfig, timeout time.Duration) *Sender {
 	if smtpConfig.Port == 0 {
 		smtpConfig.Port = 587
 	}
-	return &Sender{http: safehttp.New(timeout, false), smtp: smtpConfig, now: time.Now, timeout: timeout}
+	// The relay comes from operator configuration, not from a tenant, and is often a local MTA, so
+	// it may be private or loopback; metadata and other special-purpose ranges stay refused.
+	relay := safehttp.NewDialer(safehttp.OperatorPolicy(), timeout)
+	return &Sender{http: safehttp.New(timeout, false), smtp: smtpConfig, dial: relay.DialContext, now: time.Now, timeout: timeout}
 }
 
 func (s *Sender) Send(ctx context.Context, work ports.NotificationWork, cfg ports.NotificationChannelConfig) ports.NotificationSendResult {
@@ -107,6 +111,10 @@ func (s *Sender) sendSlack(ctx context.Context, w ports.NotificationWork, cfg po
 
 func (s *Sender) do(req *http.Request) ports.NotificationSendResult {
 	resp, err := s.http.Do(req)
+	if errors.Is(err, safehttp.ErrBlockedDestination) {
+		// Retrying cannot change the answer; the destination has to be corrected.
+		return ports.NotificationSendResult{ErrorCode: "destination_blocked"}
+	}
 	if err != nil {
 		return ports.NotificationSendResult{ErrorCode: "network_error", Retryable: true}
 	}
@@ -162,8 +170,10 @@ func (s *Sender) sendSMTP(ctx context.Context, destination, title, summary strin
 	mailID := "<" + messageID.String() + "@synapse.local>"
 	body := "From: " + from.Address + "\r\nTo: " + destination + "\r\nSubject: " + safeHeader(title) + "\r\nMessage-ID: " + mailID + "\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + limit(summary, 64<<10) + "\r\n"
 	address := net.JoinHostPort(s.smtp.Host, strconv.Itoa(s.smtp.Port))
-	dialer := net.Dialer{Timeout: s.timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", address)
+	conn, err := s.dial(ctx, "tcp", address)
+	if errors.Is(err, safehttp.ErrBlockedDestination) {
+		return ports.NotificationSendResult{ErrorCode: "smtp_destination_blocked"}
+	}
 	if err != nil {
 		return ports.NotificationSendResult{ErrorCode: "smtp_connect", Retryable: true}
 	}
