@@ -255,3 +255,46 @@ if helm lint "$chart_dir" -f "$chart_dir/tests/invalid-tag-values.yaml" >/dev/nu
   printf '%s\n' 'expected tag-only image values to fail schema validation' >&2
   exit 1
 fi
+
+# /var/lib/synapse holds the Code view's captured source, project uploads and engagement sources. On a
+# per-pod emptyDir a second replica cannot read what the first one captured, which the console reported
+# as "source artifact is missing from this server's storage". The production posture therefore binds a
+# shared claim, and the render refuses the combination that cannot work.
+grep -q 'kind: PersistentVolumeClaim' "$out"
+grep -q 'claimName: synapse-synapse-data' "$out"
+awk '
+  /^---$/ { pvc=0; next }
+  /^kind: PersistentVolumeClaim$/ { pvc=1 }
+  pvc && /- ReadWriteMany/ { ok=1 }
+  END { exit ok ? 0 : 1 }
+' "$out" || {
+  printf '%s\n' 'the production data claim must be ReadWriteMany so every API replica reads the same captures' >&2
+  exit 1
+}
+
+if helm template synapse "$chart_dir" -f "$chart_dir/values-dev.yaml" --kube-version 1.29.0 \
+  --set api.persistence.acknowledgeEphemeral=false >/dev/null 2>&1; then
+  printf '%s\n' 'expected multi-replica pod-local /var/lib/synapse to fail the render' >&2
+  exit 1
+fi
+
+if helm template synapse "$chart_dir" -f "$chart_dir/tests/production-values.yaml" --kube-version 1.29.0 \
+  --set 'api.persistence.accessModes[0]=ReadWriteOnce' >/dev/null 2>&1; then
+  printf '%s\n' 'expected a ReadWriteOnce data claim with several API replicas to fail the render' >&2
+  exit 1
+fi
+
+# The documented escape hatch still renders, and it renders the emptyDir it describes.
+ephemeral=$(mktemp)
+trap 'rm -f "$out" "$in_cluster" "$cpo" "$worker_metrics" "$ephemeral"' EXIT
+helm template synapse "$chart_dir" -f "$chart_dir/values-dev.yaml" --kube-version 1.29.0 >"$ephemeral"
+! grep -q 'kind: PersistentVolumeClaim' "$ephemeral"
+awk '
+  /- name: synapse-data/ { data=1; next }
+  data && /emptyDir:/ { ok=1 }
+  data && /^ *- name:/ { data=0 }
+  END { exit ok ? 0 : 1 }
+' "$ephemeral" || {
+  printf '%s\n' 'api.persistence.acknowledgeEphemeral must still render the per-pod emptyDir' >&2
+  exit 1
+}
