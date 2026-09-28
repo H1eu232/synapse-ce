@@ -211,6 +211,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/srcreach"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/symreach"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/taintscan"
+	tenancyuc "github.com/KKloudTarus/synapse-ce/internal/usecase/tenancy"
 	threatmodeluc "github.com/KKloudTarus/synapse-ce/internal/usecase/threatmodeluc"
 	transferuc "github.com/KKloudTarus/synapse-ce/internal/usecase/transfer"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/usercontacts"
@@ -1464,6 +1465,17 @@ func main() {
 	} else {
 		router.SetOwnership(nil, "off", "disabled")
 	}
+	// Tenant language and time zone (#1359), read by message templates and digests.
+	var tenantSettingsStore ports.TenantSettingsStore = memory.NewTenantSettingsStore()
+	if databasePool != nil {
+		tenantSettingsStore = postgres.NewTenantSettingsStore(databasePool)
+	}
+	tenantSettingsService, err := tenancyuc.NewService(tenantSettingsStore, auditLog, clock)
+	if err != nil {
+		log.Error("tenant settings service init failed", "err", err)
+		os.Exit(1)
+	}
+	router.SetTenantSettings(tenantSettingsService)
 	var userContactService *usercontacts.Service
 	if databasePool != nil {
 		router.SetAssigneeReviewReader(postgres.NewAssigneeReviewReader(databasePool))

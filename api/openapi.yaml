@@ -27,6 +27,8 @@ security:
 tags:
   - name: users
     description: Operator identities, roles, and API-key lifecycle
+  - name: tenant-settings
+    description: Tenant-wide language and time zone used by message templates and digests
   - name: personal-contacts
     description: Self-service verified email destinations scoped to the authenticated human user
   - name: platform
@@ -2897,6 +2899,37 @@ paths:
         '200': {description: Saved choice, content: {application/json: {schema: {$ref: '#/components/schemas/InboxPreference'}}}}
         '400': {description: Unsupported channel, mandatory mute, or caller-supplied identity}
         '409': {description: Stale revision}
+
+  /api/v1/tenant/settings:
+    get:
+      tags: [tenant-settings]
+      operationId: getTenantSettings
+      summary: Read the tenant's default language and time zone
+      description: >
+        Any authenticated role may read it. A tenant that never saved settings gets the defaults
+        (`en`, `UTC`) at revision 0. The tenant comes from the session.
+      responses:
+        '200': {description: Current settings, content: {application/json: {schema: {$ref: '#/components/schemas/TenantSettings'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    put:
+      tags: [tenant-settings]
+      operationId: saveTenantSettings
+      summary: Save the tenant's default language and time zone
+      description: >
+        Requires the administer permission, and the change is audited. `revision` is the revision the
+        caller read (0 for a tenant's first save). The time zone must be an IANA name that
+        `time.LoadLocation` accepts; `Local` and offsets such as `+07:00` are refused. The body names no
+        tenant: the tenant comes from the session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TenantSettingsInput'}
+      responses:
+        '200': {description: Saved settings, content: {application/json: {schema: {$ref: '#/components/schemas/TenantSettings'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {description: Stale revision; read the settings again and retry}
 
   /api/v1/users/picker:
     get:
@@ -8335,6 +8368,42 @@ components:
           description: >
             True for a subsystem this build does not ship yet, such as `ticketing` and `docpublish`.
             It is always disabled and names no switch. Omitted when false.
+
+    TenantLocale:
+      type: string
+      enum: [en, vi]
+      description: A language this build renders messages in.
+
+    TenantSettings:
+      type: object
+      required: [default_locale, time_zone, revision, locales]
+      properties:
+        default_locale: {$ref: '#/components/schemas/TenantLocale'}
+        time_zone:
+          type: string
+          description: IANA time zone name. Stored as a name so daylight saving is resolved at render time.
+          example: Asia/Ho_Chi_Minh
+        revision:
+          type: integer
+          minimum: 0
+          description: 0 when the tenant has never saved settings and the defaults apply.
+        updated_at:
+          type: string
+          format: date-time
+          description: Omitted at revision 0.
+        locales:
+          type: array
+          description: Every language this build supports, in display order.
+          items: {$ref: '#/components/schemas/TenantLocale'}
+
+    TenantSettingsInput:
+      type: object
+      additionalProperties: false
+      required: [default_locale, time_zone, revision]
+      properties:
+        default_locale: {$ref: '#/components/schemas/TenantLocale'}
+        time_zone: {type: string, maxLength: 64, example: Asia/Ho_Chi_Minh}
+        revision: {type: integer, minimum: 0}
 
     UserChoice:
       type: object

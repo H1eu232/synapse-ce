@@ -120,6 +120,19 @@ and the picker requests that list once, then shows 25 matches at a time. Team
 search walks the existing cursor pages and does not download a user directory.
 The picker does not include email addresses or contact verification state.
 
+## Language and time zone
+
+**Settings → Language & time zone** sets the language (`en` or `vi`) and the IANA
+time zone that this tenant's messages and digests use. A tenant that never saves
+them uses English and `UTC`. The zone is stored as a name such as
+`Asia/Ho_Chi_Minh`, not an offset, so daylight saving is applied at render time.
+`Local` and offsets such as `+07:00` are refused.
+
+Any role can read the settings through `GET /api/v1/tenant/settings`. Only
+tenant administrators can change them with `PUT /api/v1/tenant/settings`, which
+takes the `revision` the caller read and answers `409` when another
+administrator saved first. Each change is written to the audit log.
+
 ## Personal inbox
 
 When notifications are enabled, each human user has an inbox at `/inbox` and a bell in the application header. `GET /api/v1/me/inbox` and `GET /api/v1/me/inbox/unread` are scoped to the signed-in user. Machine roles are denied. The bell polls at most every 30 seconds and pauses while the tab is hidden. A deployment without the inbox returns 404 and the bell stops asking.

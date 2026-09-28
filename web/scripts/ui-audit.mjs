@@ -64,6 +64,7 @@ const ROUTES = process.env.UI_ROUTES ? JSON.parse(process.env.UI_ROUTES) : [
   '/settings/sla',
   '/settings/offensive-policy',
   '/settings/alerting',
+  '/settings/regional',
   '/settings/ownership',
   '/ai-triage/reviews',
   '/ai-triage/observability',
