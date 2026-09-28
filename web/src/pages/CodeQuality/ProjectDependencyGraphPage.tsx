@@ -156,7 +156,7 @@ export function ProjectDependencyGraphPage() {
         {exportError && <ErrorState message={exportError} />}
 
         {search.trim() && (
-          <div className="rounded-lg border border-secondary bg-secondary-subtle p-3">
+          <div className="rounded-lg border border-secondary bg-secondary p-3">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-tertiary">
               {searchMatches.length} package match{searchMatches.length === 1 ? '' : 'es'}
             </p>
@@ -182,7 +182,7 @@ export function ProjectDependencyGraphPage() {
 
         <div className="grid min-h-[34rem] overflow-hidden rounded-xl border border-secondary lg:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)]">
           <section className="min-w-0 border-b border-secondary lg:border-b-0 lg:border-r" aria-label="Dependency tree">
-            <div className="flex items-center justify-between border-b border-secondary bg-secondary-subtle px-4 py-3">
+            <div className="flex items-center justify-between border-b border-secondary bg-secondary px-4 py-3">
               <div>
                 <h3 className="text-sm font-semibold text-primary">Dependency tree</h3>
                 <p className="text-xs text-quaternary">Red branches lead to a vulnerable package.</p>
@@ -340,7 +340,7 @@ function DependencyDetails({
       </dl>
 
       {node.purl && (
-        <div className="mt-4 rounded-lg bg-secondary-subtle p-3">
+        <div className="mt-4 rounded-lg bg-secondary p-3">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-quaternary">PURL</div>
           <code className="mt-1 block break-all text-xs text-secondary">{node.purl}</code>
         </div>
@@ -383,7 +383,7 @@ function DependencyDetails({
         <p className="mt-1 text-xs text-quaternary">Reverse lookup: every known reason this package is included.</p>
         <ol className="mt-3 space-y-2">
           {paths.paths.map((path, pathIndex) => (
-            <li key={`${path.join('>')}:${pathIndex}`} className={cn('rounded-lg border p-3', node.vulnerabilityCount > 0 ? 'border-critical/25 bg-critical/5' : 'border-secondary bg-secondary-subtle')}>
+            <li key={`${path.join('>')}:${pathIndex}`} className={cn('rounded-lg border p-3', node.vulnerabilityCount > 0 ? 'border-critical/25 bg-critical/5' : 'border-secondary bg-secondary')}>
               <div className="flex flex-wrap items-center gap-1 text-xs">
                 {path.map((id, indexInPath) => (
                   <span key={`${id}:${indexInPath}`} className="contents">

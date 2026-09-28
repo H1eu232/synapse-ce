@@ -45,6 +45,19 @@
         },
         "resources": {
           "$ref": "#/definitions/resources"
+        },
+        "scratch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tmpSizeLimit"
+          ],
+          "properties": {
+            "tmpSizeLimit": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },
@@ -59,7 +72,8 @@
         "nodeSelector",
         "tolerations",
         "affinity",
-        "assessmentCycleApi"
+        "assessmentCycleApi",
+        "persistence"
       ],
       "properties": {
         "replicaCount": {
@@ -240,6 +254,67 @@
                 "minLength": 1
               },
               "uniqueItems": true
+            }
+          }
+        },
+        "scratch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tmpSizeLimit",
+            "dataSizeLimit"
+          ],
+          "properties": {
+            "tmpSizeLimit": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dataSizeLimit": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "existingClaim",
+            "storageClass",
+            "accessModes",
+            "size",
+            "acknowledgeEphemeral"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "existingClaim": {
+              "type": "string"
+            },
+            "storageClass": {
+              "type": "string"
+            },
+            "accessModes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ReadWriteOnce",
+                  "ReadOnlyMany",
+                  "ReadWriteMany",
+                  "ReadWriteOncePod"
+                ]
+              }
+            },
+            "size": {
+              "type": "string",
+              "minLength": 1
+            },
+            "acknowledgeEphemeral": {
+              "type": "boolean"
             }
           }
         }
@@ -518,6 +593,24 @@
         },
         "resources": {
           "$ref": "#/definitions/resources"
+        },
+        "scratch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tmpSizeLimit",
+            "dataSizeLimit"
+          ],
+          "properties": {
+            "tmpSizeLimit": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dataSizeLimit": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },
@@ -530,6 +623,12 @@
       "properties": {
         "resources": {
           "$ref": "#/definitions/resources"
+        },
+        "nodeSelector": {
+          "type": "object"
+        },
+        "tolerations": {
+          "type": "array"
         }
       }
     },
@@ -945,6 +1044,9 @@
         },
         "mavenAllowPrivateRepos": {
           "type": "boolean"
+        },
+        "maxWorkspaceBytes": {
+          "type": "string"
         }
       }
     },
