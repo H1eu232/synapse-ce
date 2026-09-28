@@ -1,4 +1,4 @@
-import { ApiError, req } from './client'
+import { req } from './client'
 
 export type NotificationChannelType = 'webhook' | 'slack' | 'email'
 // The server's event catalog is the source of truth for event types, so the console accepts any
@@ -119,26 +119,15 @@ export interface NotificationDeliveryPage {
   next?: string
 }
 
-async function optional<T>(path: string): Promise<T | null> {
-  try {
-    return await req(path)
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 404) return null
-    throw e
-  }
-}
-
 export const notificationsApi = {
   listNotificationEventTypes: async (): Promise<NotificationEventSpec[]> =>
     ((await req('/notifications/event-types')) as {
       items?: NotificationEventSpec[]
     }).items ?? [],
-  listNotificationChannels: async (): Promise<NotificationChannel[] | null> =>
-    (
-      await optional<{ items: NotificationChannel[] }>(
-        '/notifications/channels',
-      )
-    )?.items ?? null,
+  // Whether the framework is on comes from the `notifications` capability, not from a 404 here.
+  listNotificationChannels: async (): Promise<NotificationChannel[]> =>
+    ((await req('/notifications/channels')) as { items?: NotificationChannel[] })
+      .items ?? [],
   createNotificationChannel: (
     input: NotificationChannelInput,
   ): Promise<NotificationChannel> =>
@@ -165,9 +154,9 @@ export const notificationsApi = {
     req(`/notifications/channels/${encodeURIComponent(id)}/test`, {
       method: 'POST',
     }),
-  listNotificationRules: async (): Promise<NotificationRule[] | null> =>
-    (await optional<{ items: NotificationRule[] }>('/notifications/rules'))
-      ?.items ?? null,
+  listNotificationRules: async (): Promise<NotificationRule[]> =>
+    ((await req('/notifications/rules')) as { items?: NotificationRule[] })
+      .items ?? [],
   createNotificationRule: (
     input: Omit<NotificationRuleInput, 'revision'>,
   ): Promise<NotificationRule> =>
@@ -197,14 +186,12 @@ export const notificationsApi = {
     req(`/notifications/rules/${encodeURIComponent(id)}?revision=${revision}`, {
       method: 'DELETE',
     }),
-  listNotificationDeliveries: async (): Promise<
-    NotificationDelivery[] | null
-  > =>
+  listNotificationDeliveries: async (): Promise<NotificationDelivery[]> =>
     (
-      await optional<{ items: NotificationDelivery[] }>(
-        '/notifications/deliveries?limit=100',
-      )
-    )?.items ?? null,
+      (await req('/notifications/deliveries?limit=100')) as {
+        items?: NotificationDelivery[]
+      }
+    ).items ?? [],
   listNotificationAttempts: async (
     id: string,
   ): Promise<NotificationAttempt[]> =>
