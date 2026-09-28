@@ -711,8 +711,10 @@ type Config struct {
 	// JudgmentsEnabled (it mints judgments) AND the SCA sandbox (it compiles untrusted target source).
 	TaintEnabled bool
 	// GoModGraphEnabled turns on transitive Go dependency-edge resolution via `go mod graph`:
-	// post-SBOM, add pkg:golang edges between existing components (go.mod alone has no edge graph). Off by
-	// default; opt-in + best-effort (a non-Go target / no module cache adds no edges, never fails the scan).
+	// post-SBOM, add pkg:golang edges between existing components (go.mod alone has no edge graph). ON by
+	// default, and best-effort (a non-Go target / no module cache adds no edges, never fails the scan). The
+	// composition root skips it when no Go toolchain is on PATH, which is the case in the published images
+	// and on a stock CI runner, and says so once at startup rather than failing a step in every scan.
 	// GoBin is the go executable. Low-risk (go mod graph only reads go.mod files, never compiles the target).
 	GoModGraphEnabled bool
 	GoBin             string
@@ -1734,15 +1736,79 @@ func validateResponseDatabaseRoleSeparation(migrationDSN, runtimeDSN, haltWriter
 	return nil
 }
 
+// postgresDSNUser extracts the role a DSN connects as, for the role-separation check.
+//
+// It accepts both forms pgx accepts. Only the URL form was handled before, so a libpq
+// keyword/value DSN, which pgxpool.ParseConfig takes and which therefore works on every other code
+// path, was rejected here with "DSN has no user" as soon as response execution was enabled.
 func postgresDSNUser(dsn string) (string, error) {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return "", err
+	trimmed := strings.TrimSpace(dsn)
+	if trimmed == "" {
+		return "", errors.New("DSN is empty")
 	}
-	if u.User == nil || strings.TrimSpace(u.User.Username()) == "" {
-		return "", errors.New("DSN has no user")
+	if strings.Contains(trimmed, "://") {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return "", err
+		}
+		if u.User == nil || strings.TrimSpace(u.User.Username()) == "" {
+			return "", errors.New("DSN has no user; add user= to the connection URL")
+		}
+		return u.User.Username(), nil
 	}
-	return u.User.Username(), nil
+	user, ok := libpqKeywordValue(trimmed, "user")
+	if !ok || strings.TrimSpace(user) == "" {
+		// pgx would fall back to PGUSER or the OS user here, which this check cannot compare
+		// against the other DSNs, so the role separation is unverifiable rather than violated.
+		return "", errors.New("keyword/value DSN has no user= field; the role-separation check needs it stated explicitly")
+	}
+	return user, nil
+}
+
+// libpqKeywordValue reads one field out of a libpq keyword/value connection string, honouring the
+// single-quoted form and its backslash escapes (`host=/tmp user='odd name' dbname=synapse`).
+func libpqKeywordValue(dsn, key string) (string, bool) {
+	runes := []rune(dsn)
+	for i := 0; i < len(runes); {
+		for i < len(runes) && (runes[i] == ' ' || runes[i] == '\t') {
+			i++
+		}
+		start := i
+		for i < len(runes) && runes[i] != '=' && runes[i] != ' ' && runes[i] != '\t' {
+			i++
+		}
+		if i >= len(runes) || runes[i] != '=' {
+			return "", false // malformed remainder; nothing more to read
+		}
+		field := string(runes[start:i])
+		i++ // consume '='
+		var value strings.Builder
+		if i < len(runes) && runes[i] == '\'' {
+			i++
+			for i < len(runes) && runes[i] != '\'' {
+				if runes[i] == '\\' && i+1 < len(runes) {
+					i++
+				}
+				value.WriteRune(runes[i])
+				i++
+			}
+			if i < len(runes) {
+				i++ // closing quote
+			}
+		} else {
+			for i < len(runes) && runes[i] != ' ' && runes[i] != '\t' {
+				if runes[i] == '\\' && i+1 < len(runes) {
+					i++
+				}
+				value.WriteRune(runes[i])
+				i++
+			}
+		}
+		if field == key {
+			return value.String(), true
+		}
+	}
+	return "", false
 }
 
 // MigrationDSN returns the DDL credential when configured, falling back to the runtime

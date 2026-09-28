@@ -28,6 +28,27 @@ type pushTarget struct {
 	// insecureHTTP allows a plain-http server that is not loopback. The bearer token travels in the
 	// clear then; a pipeline has to say so explicitly.
 	insecureHTTP bool
+	// source publishes the scanned tree for the analysis this push creates, so the console's Code view
+	// can serve it. Without it a CI-pushed analysis reports source as unavailable with the reason
+	// not_retained, because the CLI pushes results and not files, and only a server-side git or archive
+	// acquisition retains source. Opt-in: it uploads source to the server.
+	source bool
+	// engagement records the scan's security findings against an engagement, through the server's own
+	// SARIF ingest. It is independent of project: a pipeline may record code quality, engagement
+	// findings, or both from one run.
+	engagement string
+	// asset optionally binds the ingested findings to a business asset.
+	asset string
+	// coverage is a test-coverage report (lcov, cobertura or jacoco) to record with the analysis. The
+	// analysis payload has carried a line_coverage field all along and the scan subcommand had no way
+	// to fill it, so a pushed analysis showed no coverage and the managed gate could not evaluate a
+	// coverage condition. Only meaningful with a project destination.
+	coverage string
+	// sbom uploads the generated CycloneDX SBOM to the engagement, which is how an image scan's
+	// component inventory (its OS and language packages) becomes visible on the console next to the
+	// findings. Opt-in, because the server keeps ONE active imported SBOM per engagement: an automatic
+	// push would silently replace one an operator had imported by hand.
+	sbom bool
 }
 
 // projectKeyPattern mirrors the server's project key rule (internal/domain/project): lowercase
@@ -37,17 +58,41 @@ var projectKeyPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 func (p pushTarget) enabled() bool { return strings.TrimSpace(p.server) != "" }
 
+// project and engagement destinations are independent; run() consults each before doing its half.
+func (p pushTarget) pushesAnalysis() bool {
+	return p.enabled() && strings.TrimSpace(p.project) != ""
+}
+
+func (p pushTarget) pushesEngagement() bool {
+	return p.enabled() && strings.TrimSpace(p.engagement) != ""
+}
+
 // validate checks the target before the scan runs, so a pipeline learns about a missing token in
 // seconds rather than after a full scan.
 func (p pushTarget) validate() error {
 	if !p.enabled() {
 		return nil
 	}
-	if strings.TrimSpace(p.project) == "" {
-		return fmt.Errorf("--server requires --project KEY (the server-owned project this result belongs to)")
+	// --server needs a destination, and there are two: a project records the code-quality analysis, an
+	// engagement records the security findings. Either alone is valid, and both together record one run
+	// in both places, which is what a pipeline scanning a repository usually wants.
+	if strings.TrimSpace(p.project) == "" && strings.TrimSpace(p.engagement) == "" {
+		return fmt.Errorf("--server requires --project KEY, --engagement ID, or both")
 	}
-	if !projectKeyPattern.MatchString(strings.TrimSpace(p.project)) {
+	if project := strings.TrimSpace(p.project); project != "" && !projectKeyPattern.MatchString(project) {
 		return fmt.Errorf("--project %q is not a project key (lowercase letters, digits and single hyphens)", p.project)
+	}
+	if strings.TrimSpace(p.asset) != "" && strings.TrimSpace(p.engagement) == "" {
+		return fmt.Errorf("--asset binds ingested findings to a business asset and needs --engagement")
+	}
+	if p.source && strings.TrimSpace(p.project) == "" {
+		return fmt.Errorf("--push-source publishes source for a project analysis and needs --project")
+	}
+	if strings.TrimSpace(p.coverage) != "" && strings.TrimSpace(p.project) == "" {
+		return fmt.Errorf("--coverage is recorded on a project analysis and needs --project")
+	}
+	if p.sbom && strings.TrimSpace(p.engagement) == "" {
+		return fmt.Errorf("--push-sbom uploads the SBOM to an engagement and needs --engagement")
 	}
 	if strings.TrimSpace(p.token) == "" {
 		return fmt.Errorf("--server requires SYNAPSE_API_TOKEN in the environment")

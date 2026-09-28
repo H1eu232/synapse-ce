@@ -45,6 +45,19 @@
         },
         "resources": {
           "$ref": "#/definitions/resources"
+        },
+        "scratch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tmpSizeLimit"
+          ],
+          "properties": {
+            "tmpSizeLimit": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },
@@ -240,6 +253,24 @@
                 "minLength": 1
               },
               "uniqueItems": true
+            }
+          }
+        },
+        "scratch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tmpSizeLimit",
+            "dataSizeLimit"
+          ],
+          "properties": {
+            "tmpSizeLimit": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dataSizeLimit": {
+              "type": "string",
+              "minLength": 1
             }
           }
         }
@@ -518,6 +549,24 @@
         },
         "resources": {
           "$ref": "#/definitions/resources"
+        },
+        "scratch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tmpSizeLimit",
+            "dataSizeLimit"
+          ],
+          "properties": {
+            "tmpSizeLimit": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dataSizeLimit": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },
@@ -530,6 +579,12 @@
       "properties": {
         "resources": {
           "$ref": "#/definitions/resources"
+        },
+        "nodeSelector": {
+          "type": "object"
+        },
+        "tolerations": {
+          "type": "array"
         }
       }
     },
@@ -945,6 +1000,9 @@
         },
         "mavenAllowPrivateRepos": {
           "type": "boolean"
+        },
+        "maxWorkspaceBytes": {
+          "type": "string"
         }
       }
     },

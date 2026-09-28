@@ -14,6 +14,9 @@ image:
   pullPolicy: IfNotPresent
 
 web:
+  # nginx writes only its PID and small client bodies to /tmp.
+  scratch:
+    tmpSizeLimit: 64Mi
   replicaCount: 2
   image:
     repository: ghcr.io/kkloudtarus/synapse-web
@@ -25,6 +28,13 @@ web:
 
 api:
   replicaCount: 2
+  # Bounded scratch. A scan stages a clone, an extracted archive or an image layout under /tmp, so an
+  # unbounded emptyDir let one oversized target fill the node's ephemeral storage and get the pod
+  # evicted by the kubelet. With a limit the pod is evicted alone and the scan fails, which is the
+  # failure an operator can act on. Keep tmpSizeLimit above scan.maxWorkspaceBytes.
+  scratch:
+    tmpSizeLimit: 4Gi
+    dataSizeLimit: 1Gi
   assessmentCycleApi:
     enabled: false
     dualWriteEnabled: false
@@ -126,6 +136,13 @@ vulnerabilityIntelligence:
     batchSize: 1000
 
 worker:
+  # Bounded scratch. A scan stages a clone, an extracted archive or an image layout under /tmp, so an
+  # unbounded emptyDir let one oversized target fill the node's ephemeral storage and get the pod
+  # evicted by the kubelet. With a limit the pod is evicted alone and the scan fails, which is the
+  # failure an operator can act on. Keep tmpSizeLimit above scan.maxWorkspaceBytes.
+  scratch:
+    tmpSizeLimit: 4Gi
+    dataSizeLimit: 1Gi
   # Disable this Deployment when execution workers run on the hardened external EC2 tier.
   enabled: true
   # Fenced claim leases, per-run execution locks, and leader-gated maintenance permit safe worker replicas.
@@ -152,6 +169,12 @@ migration:
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: 500m, memory: 512Mi}
+  # The Job inherits api.nodeSelector and api.tolerations, because it runs the same
+  # amd64-only control-plane image and writes the same tenant-owned state. Set these only to
+  # place the Job somewhere other than the API's pool; each one replaces the API's value
+  # rather than merging with it.
+  nodeSelector: {}
+  tolerations: []
 
 serviceAccount:
   create: true
@@ -260,8 +283,13 @@ egressBroker:
       operator: Equal
       value: "true"
       effect: NoSchedule
-  # Base cap set the broker needs to build a per-run netns + veth + NAT + iptables. `privileged: true` is the
-  # last-resort escape hatch for runtimes that will not honour the exact caps + Unconfined seccomp.
+  # MANDATORY for execution.mode=inClusterBroker, and a render guard enforces it. The broker mounts
+  # /run/netns with mountPropagation Bidirectional so each per-run netns is visible to the worker, and
+  # the kubelet allows bidirectional propagation only on a privileged container: with privileged=false
+  # the API server rejects the DaemonSet outright. The capabilities below are what the broker actually
+  # needs to build a per-run netns + veth + NAT + iptables, and they stay declared so the posture is
+  # visible, but on their own they are not a usable configuration today. Keep execution off the cluster
+  # with execution.mode=externalNative if a privileged DaemonSet is not acceptable.
   privileged: false
   capabilities: ["NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE", "DAC_READ_SEARCH", "CHOWN"]
   resources:
@@ -301,6 +329,9 @@ topologySpreadConstraints:
 # Scan-time settings, applied to every component that runs a scan. Each is omitted from the pod when unset, so
 # the binary keeps its own default.
 scan:
+  # Largest target the acquirer will stage into the pod's /tmp, in bytes. The process default is 2 GiB.
+  # Empty leaves that default in place. This is the number the scratch limits above must exceed.
+  maxWorkspaceBytes: ""
   # Bytes of source the static analyser retains for cross-file context. Unset derives it from the container
   # memory limit (one eighth, floored at 64Mi and capped at 512Mi), which is right on almost every repository.
   # Set it explicitly for a monorepo whose source exceeds that and whose pod has the memory to hold it.

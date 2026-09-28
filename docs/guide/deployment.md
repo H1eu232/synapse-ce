@@ -164,6 +164,23 @@ role is a SUPERUSER** (superusers bypass RLS). Run migrations with an owner role
 create such a role; a managed database must be configured the same way (the runtime DSN's role is not the
 database owner and is not a superuser).
 
+The migration role needs two grants beyond owning the schema, because after applying the schema it hardens the
+runtime role: it runs `ALTER ROLE <runtime> NOINHERIT`, revokes `CREATE`, and grants the table and sequence
+privileges. PostgreSQL 16 permits a non-superuser to alter another role only when it holds **both `CREATEROLE`
+and `ADMIN OPTION` on that role**, and creating both roles as the superuser leaves admin with the superuser, not
+with the migration role. Grant them once, as the superuser:
+
+```sql
+ALTER ROLE synapse_migration CREATEROLE;
+GRANT synapse_runtime TO synapse_migration WITH ADMIN OPTION;
+-- Only when response execution is enabled, which adds a second least-privilege role:
+GRANT synapse_halt_writer TO synapse_migration WITH ADMIN OPTION;
+```
+
+Without them the migration Job applies every migration and *then* exits with
+`permission denied to alter role (SQLSTATE 42501)`, which looks like a schema failure and is not one. The
+migrator names these grants in that error.
+
 ### Local Kubernetes smoke (kind)
 
 `make kind-smoke` (or `deploy/kind/kind-smoke.sh`) installs `execution.mode=controlPlaneOnly` into a local

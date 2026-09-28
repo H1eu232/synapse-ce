@@ -206,7 +206,7 @@ function Shell() {
         <main
           id="main-content"
           tabIndex={-1}
-          className="flex-1 overflow-auto bg-secondary-subtle p-4 sm:p-6 xl:p-8 outline-none md:rounded-tl-[40px] md:border-t md:border-l md:border-secondary md:shadow-md"
+          className="flex-1 overflow-auto bg-secondary p-4 sm:p-6 xl:p-8 outline-none md:rounded-tl-[40px] md:border-t md:border-l md:border-secondary md:shadow-md"
         >
           <ErrorBoundary key={location.pathname}>
             <Suspense fallback={<LoadingFallback />}>
