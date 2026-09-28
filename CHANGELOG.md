@@ -7,6 +7,8 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-28
+
 ### Fixed
 
 - **Deleting a project answered 500 when it was linked to a business asset.** `business_asset_projects` holds that link with `ON DELETE RESTRICT`, so `DELETE /api/v1/projects/{key}` raised SQLSTATE 23503, which no branch classified and the handler could only report as `internal error`. The link is the project's own side of the relationship, replaced wholesale on every save and carrying no version, so the delete now takes it and the business asset itself survives. The three relations that merely reference a project (an assessment engagement, an assessment cycle's frozen boundary, a published ownership-policy version) refuse the delete with a 409 that names the record and what to do about it, and an unclassified foreign key now reports the relation that blocks it rather than an internal error.
