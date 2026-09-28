@@ -2048,7 +2048,8 @@ paths:
         is for a pull request. Decoration is off for every Project by default, so
         no Project performs an outward forge write until this is enabled. Requires
         the operate permission. Decoration remains fail-soft: an enabled Project
-        whose forge credential is not configured is simply not decorated.
+        whose forge credential is not configured is simply not decorated. The
+        console sets it from the PR decoration switch in the project header.
       requestBody:
         required: true
         content:

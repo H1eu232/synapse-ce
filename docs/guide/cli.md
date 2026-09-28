@@ -759,8 +759,9 @@ decoration needs and prefer a short-lived CI-provided token:
     SYNAPSE_DECORATION_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-The server decorates automatically too: a project that opts in
-(`PUT /api/v1/projects/{key}/decoration {"enabled": true}`) has every PR-ref analysis decorated using
+The server decorates automatically too: a project that opts in (the **PR decoration** switch in the
+project header in the console, or `PUT /api/v1/projects/{key}/decoration {"enabled": true}`; both need
+the operate permission) has every PR-ref analysis decorated using
 the tenant's configured SCM connector, so a CI push through the import route needs no `--decorate` flag.
 Decoration is off for every project by default, so no project performs an outward forge write until it
 opts in.

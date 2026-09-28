@@ -3,9 +3,14 @@ import { copyText } from '../../lib/clipboard'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
 import { Button, EmptyState, ErrorState, Pill, Spinner, cn } from '../../components/ui'
+import { Toggle } from '../../components/base/toggle/toggle'
 import { api } from '../../lib/api'
 import { useFetch } from '../../hooks'
 import type { Project, QualityGate, ScanJob } from '../../lib/types'
+
+// Roles holding PermOperate, which PUT /projects/{key}/decoration requires (router.go). This only
+// disables the control for accounts the server would refuse; the server still decides.
+const OPERATE_ROLES = ['admin', 'consultant', 'member']
 
 export interface ProjectRouteContext {
   projectKey: string
@@ -180,6 +185,16 @@ export function CodeQualityProject() {
     { deps: [] },
   )
   const gates = fetchedGates ?? []
+  // async so a missing or throwing api.me still resolves to null rather than escaping useFetch.
+  const { data: me } = useFetch(async () => {
+    try {
+      return await api.me()
+    } catch {
+      return null
+    }
+  }, { deps: [] })
+  const canOperate = OPERATE_ROLES.includes(me?.role ?? '')
+  const [savingDecoration, setSavingDecoration] = useState(false)
 
   if (project && project.key !== key) return <Spinner label="Loading project…" />
 
@@ -189,6 +204,20 @@ export function CodeQualityProject() {
       setProject(await api.assignProjectGate(key, gateId))
     } catch (e) {
       setOperationError(e instanceof Error ? e.message : 'Failed to assign quality gate')
+    }
+  }
+
+  async function setDecoration(enabled: boolean) {
+    setOperationError(null)
+    setSavingDecoration(true)
+    try {
+      const next = await api.setProjectDecoration(key, enabled)
+      // The user may have moved to another project while the request was in flight.
+      setProject((current) => (current && current.key === next.key ? next : current))
+    } catch (e) {
+      setOperationError(e instanceof Error ? e.message : 'Failed to change PR decoration')
+    } finally {
+      setSavingDecoration(false)
     }
   }
 
@@ -318,6 +347,22 @@ export function CodeQualityProject() {
                   <option key={gate.key} value={gate.key}>{gate.name}</option>
                 ))}
               </select>
+              <span className="text-quaternary">·</span>
+              {/* Decoration writes the gate result back to the forge PR/MR (status, check, comment).
+                  It is off by default, so no project writes outward until someone turns it on here. */}
+              <span
+                title={canOperate
+                  ? 'Post the quality gate result to the pull or merge request when an analysis is for one'
+                  : 'Changing PR decoration needs the operate permission'}
+              >
+                <Toggle
+                  size="sm"
+                  label="PR decoration"
+                  isSelected={project.decoratePullRequests}
+                  isDisabled={!canOperate || savingDecoration}
+                  onChange={setDecoration}
+                />
+              </span>
             </div>
           </div>
 

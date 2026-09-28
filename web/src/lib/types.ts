@@ -1635,6 +1635,8 @@ export interface Project {
   sourceBinding: ProjectSourceBinding
   defaultProfileByLang: Record<string, string>
   gateId: string
+  /** Opt-in to writing the gate result back to the forge PR/MR. Off by default; toggled with `setProjectDecoration`. */
+  decoratePullRequests: boolean
   createdAt: string | null
   latestAnalysis: ProjectAnalysis | null
   latestJob: ScanJob | null
