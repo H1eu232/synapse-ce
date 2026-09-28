@@ -38,6 +38,8 @@ helm template synapse "$chart_dir" -f "$values" --kube-version 1.29.0 \
   --set egressBroker.enabled=true \
   --set egressBroker.grantAuthorityURL=https://grant.internal.example \
   --set egressBroker.grantPublicKey=Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyMzJieXRlcw== \
+  `# inClusterBroker renders only with a privileged broker; see the guard's reason on the leg above.` \
+  --set egressBroker.privileged=true \
   --set worker.metrics.enabled=true \
   --set worker.metrics.port=9091 \
   --set worker.metrics.monitoringNamespace=monitoring >"$worker_metrics"
