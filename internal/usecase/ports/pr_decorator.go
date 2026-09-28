@@ -9,7 +9,7 @@ import (
 )
 
 // PRDecorationTarget identifies the forge change that should receive an analysis result.
-// PullRequest is provider-neutral: it is a GitHub/Bitbucket PR number or a GitLab MR IID.
+// PullRequest is provider-neutral: it is a GitHub/Bitbucket/Azure Repos PR number or a GitLab MR IID.
 type PRDecorationTarget struct {
 	Repository   string
 	CommitSHA    string
