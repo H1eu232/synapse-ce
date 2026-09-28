@@ -50,6 +50,7 @@ import (
 	egressinfra "github.com/KKloudTarus/synapse-ce/internal/infrastructure/egress"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/egressbroker"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/fleetca"
+	azurepipelinesintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/azurepipelines"
 	jenkinsintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/jenkins"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/llm/openai"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/logstream"
@@ -928,6 +929,10 @@ func main() {
 	projectService := projectuc.NewService(projectRepo, repo, clock, ids, auditLog, !cfg.IsProduction())
 	integrationRegistry := integrationdom.NewRegistry()
 	if err := jenkinsintegration.Register(integrationRegistry); err != nil {
+		log.Error("integration provider registry init failed", "err", err)
+		os.Exit(1)
+	}
+	if err := azurepipelinesintegration.Register(integrationRegistry); err != nil {
 		log.Error("integration provider registry init failed", "err", err)
 		os.Exit(1)
 	}
