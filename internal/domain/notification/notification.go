@@ -306,10 +306,19 @@ func containsID(in []shared.ID, v shared.ID) bool {
 	return false
 }
 
+// actionTypes is shared by rule validation and schema drift guards.
+var actionTypes = [...]string{"new_exposure", "escalation", "withdrawal", "reexposure", "retest_required", "risk_review"}
+
+// ActionTypes returns a defensive copy of the accepted action vocabulary.
+func ActionTypes() []string {
+	return append([]string(nil), actionTypes[:]...)
+}
+
 func validActionType(v string) bool {
-	switch v {
-	case "new_exposure", "escalation", "withdrawal", "reexposure", "retest_required", "risk_review":
-		return true
+	for _, allowed := range actionTypes {
+		if v == allowed {
+			return true
+		}
 	}
 	return false
 }
