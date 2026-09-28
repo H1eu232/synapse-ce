@@ -57,6 +57,7 @@ const ROUTES = process.env.UI_ROUTES ? JSON.parse(process.env.UI_ROUTES) : [
   '/settings',
   '/settings/team',
   '/settings/integrations',
+  '/settings/integrations/ci',
   '/settings/connectors',
   '/settings/privacy',
   '/settings/relationships',

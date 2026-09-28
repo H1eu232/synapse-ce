@@ -47,6 +47,7 @@ const Profile = lazy(() => import('./pages/Profile/ProfilePage').then(m => ({ de
 const Inbox = lazy(() => import('./pages/Inbox/InboxPage').then(m => ({ default: m.InboxPage })))
 const SettingsConfig = lazy(() => import('./pages/Settings/SettingsConfig').then(m => ({ default: m.SettingsConfig })))
 const Integrations = lazy(() => import('./pages/Settings/Integrations').then(m => ({ default: m.Integrations })))
+const IntegrationsHub = lazy(() => import('./pages/Settings/IntegrationsHub').then(m => ({ default: m.IntegrationsHub })))
 const Connectors = lazy(() => import('./pages/Settings/Connectors').then(m => ({ default: m.Connectors })))
 const TelemetryPrivacy = lazy(() => import('./pages/Settings/TelemetryPrivacy').then(m => ({ default: m.TelemetryPrivacy })))
 const ResponseOps = lazy(() => import('./pages/BlueTeam/ResponseOps').then(m => ({ default: m.ResponseOps })))
@@ -139,7 +140,8 @@ function Gate() {
         <Route path="settings" element={<Settings />}>
           <Route index element={<Audit />} />
           <Route path="team" element={<Team />} />
-          <Route path="integrations" element={<Integrations />} />
+          <Route path="integrations" element={<IntegrationsHub />} />
+          <Route path="integrations/ci" element={<Integrations />} />
           <Route path="connectors" element={<Connectors />} />
           <Route path="privacy" element={<TelemetryPrivacy />} />
 
