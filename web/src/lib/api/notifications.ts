@@ -119,6 +119,19 @@ export interface NotificationDeliveryPage {
   next?: string
 }
 
+export interface NotificationSourceFailure {
+  source_kind: string
+  source_id: string
+  event_type: string
+  occurred_at: string
+  processed_at: string
+  failed_reason: 'invalid_event' | 'event_data_too_large'
+}
+export interface NotificationSourceFailurePage {
+  items: NotificationSourceFailure[]
+  next_offset?: number
+}
+
 export const notificationsApi = {
   listNotificationEventTypes: async (): Promise<NotificationEventSpec[]> =>
     ((await req('/notifications/event-types')) as {
@@ -207,5 +220,16 @@ export const notificationsApi = {
     for (const [key, value] of Object.entries(query))
       if (value) params.set(key, value)
     return req('/notifications/deliveries?' + params.toString())
+  },
+  notificationSourceFailurePage: async (query: {
+    event_type?: string
+    from?: string
+    to?: string
+    offset?: number
+  } = {}): Promise<NotificationSourceFailurePage> => {
+    const params = new URLSearchParams({ limit: '50' })
+    for (const [key, value] of Object.entries(query))
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    return req('/notifications/quarantined-sources?' + params.toString())
   },
 }

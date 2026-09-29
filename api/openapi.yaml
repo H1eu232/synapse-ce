@@ -3097,6 +3097,23 @@ paths:
       responses:
         '200': {description: Delivery page, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationDeliveryPage'}}}}
 
+  /api/v1/notifications/quarantined-sources:
+    get:
+      tags: [notifications]
+      operationId: listNotificationSourceFailures
+      summary: List captured notification sources that failed projection
+      description: Requires administer permission. Returns fixed failure codes and source identity, never captured payloads.
+      parameters:
+        - {name: from, in: query, schema: {type: string, format: date-time}, description: Inclusive quarantine time in RFC3339}
+        - {name: to, in: query, schema: {type: string, format: date-time}, description: Inclusive upper quarantine time in RFC3339}
+        - {name: event_type, in: query, schema: {$ref: '#/components/schemas/NotificationEventType'}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200}}
+      responses:
+        '200': {description: Quarantined source page, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationSourceFailurePage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
   /api/v1/notifications/deliveries/{nid}:
     parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
     get:
@@ -12518,6 +12535,24 @@ components:
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/NotificationDelivery'}}
         next: {type: string}
+
+    NotificationSourceFailure:
+      type: object
+      required: [source_kind, source_id, event_type, occurred_at, processed_at, failed_reason]
+      properties:
+        source_kind: {type: string}
+        source_id: {type: string}
+        event_type: {type: string}
+        occurred_at: {type: string, format: date-time}
+        processed_at: {type: string, format: date-time}
+        failed_reason: {type: string, enum: [invalid_event, event_data_too_large]}
+
+    NotificationSourceFailurePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/NotificationSourceFailure'}}
+        next_offset: {type: integer, minimum: 0}
 
     NotificationAttempt:
       type: object

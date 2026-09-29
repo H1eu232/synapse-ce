@@ -71,7 +71,10 @@ func (s *NotificationSource) Poll(ctx context.Context, now time.Time, limit int)
 		if ctx.Err() != nil {
 			return total, ctx.Err()
 		}
-		n, err := s.pollTenant(ctx, tenant, now.UTC(), limit)
+		if total >= limit {
+			break
+		}
+		n, err := s.pollTenant(ctx, tenant, now.UTC(), limit-total)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("poll notification sources for tenant %s: %w", tenant, err))
 			continue
@@ -119,7 +122,7 @@ func (s *NotificationSource) pollTenant(ctx context.Context, tenant shared.ID, n
 		if err := tx.QueryRow(ctx, `SELECT observed_at FROM notification_source_state WHERE tenant_id=$1 AND source_kind='framework' AND source_id='activation'`, tenant).Scan(&activated); err != nil {
 			return err
 		}
-		remaining := limit
+		remaining := limit - count
 		for _, poll := range []func(context.Context, pgx.Tx, shared.ID, time.Time, time.Time, int) (int, error){s.pollVulnerability, s.pollScans, s.pollQualityGates, s.pollSLA, s.pollIncidents} {
 			if remaining <= 0 {
 				break
@@ -129,8 +132,7 @@ func (s *NotificationSource) pollTenant(ctx context.Context, tenant shared.ID, n
 				return err
 			}
 			count += n
-			// Each source receives a bounded budget so sustained scans cannot starve SLA/fleet.
-			remaining = limit
+			remaining -= n
 		}
 		if remaining > 0 {
 			n, err := s.pollFleet(ctx, tx, tenant, activated, now, remaining)

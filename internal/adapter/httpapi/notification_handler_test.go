@@ -23,7 +23,7 @@ func TestNotificationRoutesRequireAdministrator(t *testing.T) {
 	routes := []struct{ method, path string }{
 		{"GET", "channels"}, {"POST", "channels"}, {"GET", "channels/id"}, {"PATCH", "channels/id"}, {"DELETE", "channels/id"}, {"POST", "channels/id/test"},
 		{"GET", "rules"}, {"POST", "rules"}, {"GET", "rules/id"}, {"PATCH", "rules/id"}, {"DELETE", "rules/id"},
-		{"GET", "deliveries"}, {"GET", "deliveries/id"}, {"GET", "deliveries/id/attempts"},
+		{"GET", "deliveries"}, {"GET", "deliveries/id"}, {"GET", "deliveries/id/attempts"}, {"GET", "quarantined-sources"},
 	}
 	for _, route := range routes {
 		for _, role := range []string{"member", "readonly", "reviewer", "agent", "mcp", ""} {
