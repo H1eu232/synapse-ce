@@ -2,6 +2,7 @@ package capabilities
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
@@ -140,7 +141,7 @@ func TestNotificationCapabilities(t *testing.T) {
 	if got := find(t, off.List(), "notifications.channel_types"); got.Enabled || len(got.Requires) != 1 || got.Requires[0] != "notifications" {
 		t.Errorf("channel types with notifications off = %+v, want disabled and requiring notifications", got)
 	}
-	on, err := NewService(Flags{Notifications: true})
+	on, err := NewService(Flags{Notifications: true, NotificationChannelTypes: []string{"webhook", "slack", "email"}})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -160,6 +161,47 @@ func TestNotificationCapabilities(t *testing.T) {
 			t.Errorf("channel types = %v, want %v", types.Values, want)
 			break
 		}
+	}
+}
+
+// TestNotificationChannelTypesFollowTheRegistryAndTheKillSwitch is #1362: the advertised channel
+// types are the registry's, in its order, minus SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED.
+func TestNotificationChannelTypesFollowTheRegistryAndTheKillSwitch(t *testing.T) {
+	registry := []string{"webhook", "slack", "email", "pagerduty"}
+	for _, tc := range []struct {
+		name     string
+		disabled []string
+		want     string
+	}{
+		{"nothing disabled", nil, "webhook,slack,email,pagerduty"},
+		{"a new driver is advertised without editing the catalog", []string{"email"}, "webhook,slack,pagerduty"},
+		{"several disabled", []string{"slack", "webhook"}, "email,pagerduty"},
+		{"every type disabled", registry, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, err := NewService(Flags{Notifications: true, NotificationChannelTypes: registry, NotificationProvidersDisabled: tc.disabled})
+			if err != nil {
+				t.Fatalf("new service: %v", err)
+			}
+			got := find(t, svc.List(), "notifications.channel_types")
+			if !got.Enabled || strings.Join(got.Values, ",") != tc.want {
+				t.Fatalf("channel types = %+v, want enabled with %q", got, tc.want)
+			}
+			// Switching types off never disables the framework itself.
+			if !find(t, svc.List(), "notifications").Enabled {
+				t.Fatal("notifications reported disabled")
+			}
+		})
+	}
+	// The catalog copies the registry list, so the caller cannot change the answer afterwards.
+	flags := Flags{Notifications: true, NotificationChannelTypes: []string{"webhook"}}
+	svc, err := NewService(flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags.NotificationChannelTypes[0] = "mutated"
+	if got := find(t, svc.List(), "notifications.channel_types").Values; len(got) != 1 || got[0] != "webhook" {
+		t.Fatalf("channel types = %v after the caller mutated its slice", got)
 	}
 }
 

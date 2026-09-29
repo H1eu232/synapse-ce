@@ -24,6 +24,11 @@ func (v ChannelType) Valid() bool {
 	return v == ChannelWebhook || v == ChannelSlack || v == ChannelEmail
 }
 
+// CodeProviderDisabled is the reason a delivery is cancelled when the operator switched its channel
+// type off with SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED. The operator owns it: it is never a fault
+// of the channel, so channel health must not count it and the channel is not retried for it.
+const CodeProviderDisabled = "provider_disabled"
+
 type EventType string
 
 const (

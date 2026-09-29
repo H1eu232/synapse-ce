@@ -365,6 +365,25 @@ func main() {
 		log.Error("vulnerability maintenance configuration invalid", "err", err)
 		os.Exit(1)
 	}
+	if err := cfg.ValidateNotificationProvidersDisabled(); err != nil {
+		log.Error("notification kill switch invalid", "err", err)
+		os.Exit(1)
+	}
+	// The notification driver registry is the one list of channel types this build delivers to. The
+	// capability catalog advertises it and the operator kill switch is checked against it, so it is
+	// built whether or not tenant notifications are enabled: a typo in the switch always stops startup.
+	notificationSender := notificationsender.New(notificationsender.SMTPConfig{
+		Host: cfg.NotificationSMTPHost, Port: cfg.NotificationSMTPPort, From: cfg.NotificationSMTPFrom,
+		Username: cfg.NotificationSMTPUsername, Password: cfg.NotificationSMTPPassword, RequireTLS: cfg.NotificationSMTPRequireTLS,
+	}, 10*time.Second)
+	disabledNotificationTypes, err := notificationSender.ResolveDisabled(cfg.NotificationProvidersDisabled)
+	if err != nil {
+		log.Error("notification kill switch invalid", "err", err)
+		os.Exit(1)
+	}
+	if len(disabledNotificationTypes) > 0 {
+		log.Warn("notification channel types disabled by the operator", "types", cfg.NotificationProvidersDisabled)
+	}
 	if err := cfg.ValidatePublicBaseURL(); err != nil {
 		log.Error("console link configuration invalid", "err", err)
 		os.Exit(1)
@@ -1517,12 +1536,9 @@ func main() {
 			os.Exit(1)
 		}
 		notificationService.SetTransactionRunner(postgres.NewTenantTransactionRunner(databasePool))
+		notificationService.SetDisabledChannelTypes(disabledNotificationTypes)
 		router.SetNotifications(notificationService)
 		// The API still needs SMTP for contact verification and personal inbox mail.
-		notificationSender := notificationsender.New(notificationsender.SMTPConfig{
-			Host: cfg.NotificationSMTPHost, Port: cfg.NotificationSMTPPort, From: cfg.NotificationSMTPFrom,
-			Username: cfg.NotificationSMTPUsername, Password: cfg.NotificationSMTPPassword, RequireTLS: cfg.NotificationSMTPRequireTLS,
-		}, 10*time.Second)
 		userContactService, notificationErr = usercontacts.NewService(postgres.NewUserContactStore(databasePool), userRepo, vaultCipher, notificationSender, ids, clock, usercontacts.DeriveVerifierKey(cfg.VaultMasterKey), cfg.NotificationSMTPHost != "" && cfg.NotificationSMTPFrom != "")
 		if notificationErr != nil {
 			log.Error("user contact service init failed", "err", notificationErr)
@@ -1726,7 +1742,11 @@ func main() {
 		OIDC:                 cfg.OIDCEnabled,
 		Ownership:            cfg.OwnershipMode != "off" && databasePool != nil,
 		Notifications:        cfg.NotificationEnabled,
-		LegacyAlertWebhook:   cfg.AlertWebhookURL != "",
+		// Read from the driver registry, so a newly registered driver is advertised without a
+		// catalog edit; the kill switch then removes the types the operator turned off.
+		NotificationChannelTypes:      channelTypeNames(notificationSender.ChannelTypes()),
+		NotificationProvidersDisabled: cfg.NotificationProvidersDisabled,
+		LegacyAlertWebhook:            cfg.AlertWebhookURL != "",
 	})
 	if err != nil {
 		log.Error("capability catalog init failed", "err", err)
@@ -3845,4 +3865,14 @@ func (h scaJobHandler) Handle(ctx context.Context, job ports.QueuedJob) error {
 
 func (h scaJobHandler) OnDeadLetter(ctx context.Context, job ports.QueuedJob, cause error) error {
 	return h.svc.FailStrandedScanJob(ctx, job.Payload, cause)
+}
+
+// channelTypeNames converts the notification registry's channel types to the plain names the
+// capability catalog carries.
+func channelTypeNames[T ~string](types []T) []string {
+	out := make([]string, len(types))
+	for i, channelType := range types {
+		out[i] = string(channelType)
+	}
+	return out
 }

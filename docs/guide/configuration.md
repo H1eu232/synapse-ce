@@ -32,7 +32,9 @@ value. Any authenticated role may read it.
 Some entries carry more than a switch:
 
 - `notifications.channel_types` lists, in `values`, the channel types this build can deliver to
-  (`webhook`, `slack`, `email`). The console offers only these types when creating a channel.
+  (`webhook`, `slack`, `email`), read from the notification driver registry, minus any type named in
+  `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED`. The console offers only these types when creating a
+  channel. When the operator disables every type, `values` is omitted and no channel can be created.
 - `ticketing` and `docpublish` report `planned: true`. They are not in this build yet, so they are
   always disabled and their `switch` is empty.
 
@@ -360,6 +362,7 @@ All off by default. The fleet needs PostgreSQL + `synapse-worker`; agents run on
 | `SYNAPSE_NOTIFICATION_SMTP_FROM` | (unset) | Envelope and message sender for notification email. Required before an Email channel can deliver. |
 | `SYNAPSE_NOTIFICATION_SMTP_USERNAME` / `SYNAPSE_NOTIFICATION_SMTP_PASSWORD` | (unset) | Optional SMTP authentication. The password is secret and must not be logged. |
 | `SYNAPSE_NOTIFICATION_SMTP_REQUIRE_TLS` | `true` | Require STARTTLS with certificate verification. Keep enabled in production. |
+| `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED` | (unset) | Operator kill switch: comma-separated channel and provider types no tenant may use, for example `slack,email`. Entries are trimmed, lowercased and deduplicated; empty entries are ignored. Every entry must be a type in this build's notification driver registry (`webhook`, `slack`, `email`), so a typo stops API and worker startup. A disabled type is left out of the `notifications.channel_types` capability, creating or testing a channel of that type answers `400`, an existing channel of that type cannot be switched on or given a new destination (it can still be renamed, switched off or deleted), and the worker cancels its queued deliveries with `provider_disabled`. Set the same value on the API and the worker. Removing a type from the list restores its channels. It does not affect personal inbox mail or contact verification email. |
 | `SYNAPSE_FLEET_COVERAGE_FRESHNESS_TARGET` | `24h` | Coverage freshness SLO. |
 | `SYNAPSE_FLEET_MIN_AGENT_VERSION` | empty | Reject agents below this version (empty = no floor). |
 | `SYNAPSE_FLEET_ENROL_URL` | `SYNAPSE_FLEET_URL` | One-time enrollment API base URL for `synapse-agent`; after enrollment, the agent uses `SYNAPSE_FLEET_URL`. HTTPS is required except for a loopback host. |

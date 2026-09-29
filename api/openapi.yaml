@@ -2995,7 +2995,10 @@ paths:
       tags: [notifications]
       operationId: createNotificationChannel
       summary: Create a signed webhook, Slack, or email channel
-      description: URL and credentials are write-only and encrypted at rest. Email uses the operator-managed SMTP relay.
+      description: >
+        URL and credentials are write-only and encrypted at rest. Email uses the operator-managed SMTP relay.
+        A type the operator switched off with `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED` answers `400`
+        naming the type; such types are absent from the `notifications.channel_types` capability.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannelInput'}}}}
       responses:
         '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannel'}}}}
@@ -3016,9 +3019,13 @@ paths:
       tags: [notifications]
       operationId: updateNotificationChannel
       summary: Update a channel with optimistic revision checking
+      description: >
+        A channel whose type the operator switched off with `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED`
+        can be renamed or switched off, but switching it on or giving it a new URL or secret answers `400`.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannelInput'}}}}
       responses:
         '200': {description: Updated channel, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannel'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '409': {description: Stale revision}
     delete:
       tags: [notifications]
@@ -3035,8 +3042,10 @@ paths:
       tags: [notifications]
       operationId: testNotificationChannel
       summary: Queue a synthetic test through the durable delivery path
+      description: A channel whose type the operator switched off with `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED` answers `400`.
       responses:
         '202': {description: Queued, content: {application/json: {schema: {type: object, required: [delivery_id, state], properties: {delivery_id: {type: string}, state: {type: string, enum: [pending]}}}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '404': {$ref: '#/components/responses/NotFound'}
 
   /api/v1/notifications/rules:
@@ -8511,7 +8520,9 @@ components:
           type: array
           description: >
             Options the capability offers. `notifications.channel_types` lists the channel types this
-            build can deliver to. Omitted when the capability has no options.
+            build can deliver to, read from the notification driver registry, minus the types the
+            operator switched off with `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED`. Omitted when the
+            capability has no options, including when every channel type is switched off.
           items: {type: string}
           example: [webhook, slack, email]
         planned:
