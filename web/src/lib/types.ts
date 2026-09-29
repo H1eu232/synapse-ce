@@ -41,6 +41,10 @@ export interface Capability {
   enabled: boolean
   switch: string
   requires: string[]
+  /** Options an enabled capability offers, e.g. the notification channel types. */
+  values: string[]
+  /** Not shipped in this build: always disabled, and `switch` is empty. */
+  planned: boolean
 }
 
 /** Offensive rules of engagement. riskCeiling is '' | 'low' | 'medium' | 'high' | 'prohibited'. */
@@ -1631,6 +1635,8 @@ export interface Project {
   sourceBinding: ProjectSourceBinding
   defaultProfileByLang: Record<string, string>
   gateId: string
+  /** Opt-in to writing the gate result back to the forge PR/MR. Off by default; toggled with `setProjectDecoration`. */
+  decoratePullRequests: boolean
   createdAt: string | null
   latestAnalysis: ProjectAnalysis | null
   latestJob: ScanJob | null

@@ -6,7 +6,7 @@ Synapse provides a tenant-scoped, provider-neutral framework for observing exter
 
 ## Jenkins workflow
 
-1. Open **Settings → Integrations** and choose the Jenkins provider descriptor.
+1. Open **Settings → Integrations**, select **Manage CI/CD** in the CI/CD group (`/settings/integrations/ci`), and choose the Jenkins provider descriptor.
 2. Enter a display name and an HTTPS Jenkins endpoint. Private-network access is off unless both a tenant administrator requests it and an operator enables `SYNAPSE_INTEGRATION_ALLOW_PRIVATE_NETWORK=true`. The operator can also limit which hosts integrations may use with `SYNAPSE_INTEGRATION_HOST_ALLOWLIST`, and which private ranges with `SYNAPSE_INTEGRATION_PRIVATE_CIDRS`; an endpoint outside them is refused when it is saved and again before every connection.
 3. Save a Jenkins username and API token. Credentials are write-only: the browser clears them after save and the API returns only `credential_configured`.
 4. Run **Test connection**. Synapse refuses to enable an integration until a test operation succeeds.

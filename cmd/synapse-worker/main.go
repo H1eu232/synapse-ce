@@ -65,6 +65,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/platform/logging"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/accuracyeval"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/agenttools"
+	alertinguc "github.com/KKloudTarus/synapse-ce/internal/usecase/alerting"
 	analysisuc "github.com/KKloudTarus/synapse-ce/internal/usecase/analysis"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/approval"
 	comparisonuc "github.com/KKloudTarus/synapse-ce/internal/usecase/assessmentcomparison"
@@ -710,7 +711,14 @@ func main() {
 		}
 		personalInbox.SetMailer(sender)
 		handlers[inbox.JobKind] = personalMailJobHandler{svc: personalInbox}
-		notificationSource := postgres.NewNotificationSource(pool, postgres.NewNotificationRepository(pool), cfg.FleetAgentStaleAfter, cfg.AlertWebhookURL == "")
+		// #1347: incident.created is always projected onto the framework. Before this, a set
+		// SYNAPSE_ALERT_WEBHOOK_URL made the worker mark captured incidents processed without
+		// publishing them, silently discarding every tenant incident.created rule. The legacy webhook
+		// runs in the API and delivers to its own deployment-wide URL; rules deliver to tenant channels,
+		// so both paths run side by side until the legacy one is removed. Each path is idempotent on
+		// its own (the framework keys events by a stable id), and the rule form warns about the overlap.
+		alertinguc.WarnLegacyWebhookDeprecated(log, cfg.AlertWebhookURL != "")
+		notificationSource := postgres.NewNotificationSource(pool, postgres.NewNotificationRepository(pool), cfg.FleetAgentStaleAfter)
 		notificationSource.SetVulnerabilityEnabled(cfg.VulnerabilityNotificationsEnabled && !cfg.VulnerabilityDryRunEnabled)
 		maintenanceTasks = append(maintenanceTasks, func(taskCtx context.Context) {
 			ticker := time.NewTicker(time.Minute)

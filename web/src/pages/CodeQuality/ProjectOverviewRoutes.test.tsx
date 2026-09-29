@@ -35,6 +35,7 @@ function buildProject(key: string, name = key): Project {
   sourceBinding: { kind: 'git' as const, value: 'https://example.com/repo.git', ref: 'main' },
   defaultProfileByLang: {},
   gateId: '',
+  decoratePullRequests: false,
   createdAt: null,
   latestAnalysis: null,
   latestJob: null,

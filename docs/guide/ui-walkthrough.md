@@ -562,11 +562,12 @@ Teams, members and the routing policy that decides which team owns a finding.
 
 `/settings/integrations`
 
-Outbound systems Synapse talks to, and whether each is enabled.
+Every external system Synapse talks to, grouped by capability: CI/CD, Source control, Messaging, Ticketing, Documentation and SIEM.
 
-1. Add an integration and supply its credential; secrets go to the vault.
-2. Enable or disable one without deleting it.
-3. Check its bindings to see what it is wired to.
+1. Each card shows the integration's health, last success and last error. A field its API does not report reads **Not reported by this integration**.
+2. **Test** runs the integration's own test (a CI/CD connection test or a notification test delivery). Only tenant administrators can run it, and only administrators see source-control connectors and notification channels.
+3. A group whose capability is switched off shows **Off** and the switch that turns it on. Ticketing, Documentation and SIEM show **Not available yet** until they ship.
+4. **Manage CI/CD** (`/settings/integrations/ci`), **Manage connectors** and **Manage channels** open the pages where each integration is configured.
 
 === "Desktop"
 
@@ -646,7 +647,7 @@ Where notifications go, which events trigger them, and what was delivered.
    inspect its attempts and confirm whether it was delivered.
 
 The separate `Send test alert` button under **Legacy incident webhook** tests only the
-compatibility webhook configured with `SYNAPSE_ALERT_WEBHOOK_*`; it does not test tenant-managed
+compatibility webhook configured with `SYNAPSE_ALERT_WEBHOOK_*` (deprecated, removed in 0.4.0); it does not test tenant-managed
 channels.
 
 === "Desktop"
