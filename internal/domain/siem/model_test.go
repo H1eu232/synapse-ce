@@ -80,6 +80,40 @@ func TestIndexerAckIsNotImplied(t *testing.T) {
 	}
 }
 
+func TestSyslogTLSContract(t *testing.T) {
+	if !ProviderSyslogTLS.Valid() {
+		t.Fatal("syslog TLS provider is not valid")
+	}
+	if !AckTransportWrite.ValidFor(ProviderSyslogTLS, false) {
+		t.Fatal("syslog TLS must acknowledge a completed transport write")
+	}
+	if AckTransportWrite.ValidFor(ProviderSplunk, false) {
+		t.Fatal("transport-write acknowledgement leaked to an HTTPS provider")
+	}
+	origin, err := ParseOriginFor(ProviderSyslogTLS, "tls://syslog.example:6514")
+	if err != nil || origin.String() != "tls://syslog.example:6514" {
+		t.Fatalf("syslog origin = %+v, %v", origin, err)
+	}
+	origin, err = ParseOriginFor(ProviderSyslogTLS, "tls://[2001:4860:4860::8888]:6514")
+	if err != nil || origin.String() != "tls://[2001:4860:4860::8888]:6514" {
+		t.Fatalf("syslog IPv6 origin = %+v, %v", origin, err)
+	}
+	for _, raw := range []string{"tls://syslog.example", "https://syslog.example:6514"} {
+		if _, err := ParseOriginFor(ProviderSyslogTLS, raw); err == nil {
+			t.Fatalf("accepted invalid syslog origin %q", raw)
+		}
+	}
+	if _, err := ParseOriginFor(ProviderSplunk, "tls://splunk.example:8088"); err == nil {
+		t.Fatal("TLS origin weakened HTTPS provider validation")
+	}
+	if err := validateTarget(ProviderSyslogTLS, "synapse"); err != nil {
+		t.Fatalf("normal syslog app name rejected: %v", err)
+	}
+	if err := validateTarget(ProviderSyslogTLS, "bad app"); err == nil {
+		t.Fatal("invalid syslog app name accepted")
+	}
+}
+
 func TestAuditHolesAreNotGapsAndBreaksStop(t *testing.T) {
 	at := time.UnixMicro(1_700_000_000_000_000).UTC()
 	meta := map[string]string{"severity": "high"}

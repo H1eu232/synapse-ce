@@ -125,6 +125,19 @@ func TestTickPublishesBacklogForAllSources(t *testing.T) {
 	}
 }
 
+func TestCreateSyslogTLSDefaultsTransportContract(t *testing.T) {
+	svc, _, _, _, _ := testService(t)
+	sink, err := svc.Create(shared.WithTenant(context.Background(), "tenant-a"), "ada", SinkInput{
+		Name: "Syslog", Provider: siem.ProviderSyslogTLS, Origin: "tls://syslog.example:6514", Secret: "client-credentials",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sink.Target != "synapse" || sink.AckMode != siem.AckTransportWrite {
+		t.Fatalf("syslog defaults = target %q, ack %q", sink.Target, sink.AckMode)
+	}
+}
+
 func TestTickRotatesSinksUnderPartitionBudget(t *testing.T) {
 	svc, store, driver, _, clock := testService(t)
 	ctx := shared.WithTenant(context.Background(), "tenant-a")

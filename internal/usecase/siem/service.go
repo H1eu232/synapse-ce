@@ -196,7 +196,7 @@ func (s *Service) update(ctx context.Context, actor string, id shared.ID, in Sin
 		return siem.Sink{}, conflict("sink version")
 	}
 	if in.OriginPresent || in.Origin != "" {
-		origin, err := siem.NormalizeOrigin(in.Origin)
+		origin, err := siem.NormalizeOriginFor(current.Provider, in.Origin)
 		if err != nil {
 			return siem.Sink{}, err
 		}
@@ -308,7 +308,7 @@ func (s *Service) changeOrigin(ctx context.Context, actor string, id shared.ID, 
 	if in.Version != current.Version {
 		return siem.Sink{}, conflict("sink version")
 	}
-	origin, err := siem.NormalizeOrigin(in.Origin)
+	origin, err := siem.NormalizeOriginFor(current.Provider, in.Origin)
 	if err != nil {
 		return siem.Sink{}, err
 	}
@@ -461,11 +461,11 @@ func (s *Service) newSink(ctx context.Context, tenant shared.ID, in SinkInput) (
 	if err := validateSecret(in.Secret); err != nil {
 		return siem.Sink{}, "", err
 	}
-	origin, err := siem.NormalizeOrigin(in.Origin)
+	provider := in.Provider
+	origin, err := siem.NormalizeOriginFor(provider, in.Origin)
 	if err != nil {
 		return siem.Sink{}, "", err
 	}
-	provider := in.Provider
 	channel, err := newChannel()
 	if err != nil {
 		return siem.Sink{}, "", err
@@ -660,6 +660,9 @@ func defaultAck(provider siem.Provider, mode siem.AckMode) siem.AckMode {
 	if provider == siem.ProviderElasticsearch {
 		return siem.AckBulkItem
 	}
+	if provider == siem.ProviderSyslogTLS {
+		return siem.AckTransportWrite
+	}
 	return siem.AckHECAcceptance
 }
 
@@ -669,6 +672,9 @@ func defaultTarget(provider siem.Provider, target string) string {
 	}
 	if provider == siem.ProviderSplunk {
 		return "/services/collector/event"
+	}
+	if provider == siem.ProviderSyslogTLS {
+		return "synapse"
 	}
 	return target
 }
