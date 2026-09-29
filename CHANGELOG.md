@@ -18,6 +18,7 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 ### Added
 
 - **Microsoft Sentinel Logs Ingestion API sink (#1461).** SIEM streams can send redacted audit and incident batches to an Azure public-cloud Logs Ingestion endpoint with sealed Entra client credentials, TLS 1.2+ certificate verification, SSRF-safe dialing, retry handling for transient identity/ingestion failures, and stable source-position/hash evidence. Sentinel targets use a DCR immutable ID plus a `Custom-` stream; only HTTP 204 advances the batch.
+- **Tenant-isolated inbound provider webhook plane (#1434).** A separately authenticated 1 MiB HMAC ingress route resolves an opaque endpoint to one enabled integration and tenant via a restricted PostgreSQL lookup; secrets are vault-sealed and allow 24-hour rotation overlap. Shared row-locked admission enforces per-endpoint rate limits and a hostile cross-tenant test protects the routing boundary. No human auth exemption, provider receiver or UI is added.
 
 - **Syslog TLS SIEM sink (#1458).** Tenant administrators can stream existing
   audit and incident records as RFC 5424 messages over RFC 5425 TLS. Syslog

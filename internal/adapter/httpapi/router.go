@@ -136,6 +136,7 @@ type Router struct {
 	accuracyRuns             accuracyRunReader          // optional read side for the engine detection-accuracy trend (#860 D8.6)
 	chainRehearsal           chainRehearser             // optional: governed exploitation chain rehearsal (simulation)
 	fleet                    *fleetRouter               // optional; nil ⇒ agent transport plane is not served
+	inboundWebhooks          *inboundWebhookPlane       // separate header-HMAC auth plane, no human fallback
 	fleetAdmin               fleetAdminService          // optional; nil ⇒ operator agent-admin routes not registered
 	fleetKeys                fleetKeyAdmin              // optional; nil ⇒ operator signing-key routes not registered (A4 #625)
 	qualityGates             qualityGateService         // optional; nil ⇒ quality-gate routes are not registered
@@ -1068,16 +1069,21 @@ func (rt *Router) Handler() http.Handler {
 	// Attach a method-aware route pattern before auth/AUP can reject a known human
 	// route. ServeMux returns an empty pattern for unknown paths and method mismatches.
 	human = annotateRoutePattern(routes, limitRequestBody(human))
+	// Mount exact hook route before the human chain. Never create a prefix-wide
+	// publicPaths exemption: methods and siblings stay on human auth.
 	var complete http.Handler
-	if rt.fleet == nil {
+	if rt.fleet == nil && rt.inboundWebhooks == nil {
 		complete = normalizePath(human)
 	} else {
-		// The untrusted agent transport is a separate auth plane. Mount its exact
-		// subtrees so operator routes under /api/v1/fleet remain on the human chain.
 		top := http.NewServeMux()
-		agentPlane := rt.fleet.handler()
-		for _, mount := range fleetAgentPlaneMounts() {
-			top.Handle(mount, agentPlane)
+		if rt.fleet != nil {
+			agentPlane := rt.fleet.handler()
+			for _, mount := range fleetAgentPlaneMounts() {
+				top.Handle(mount, agentPlane)
+			}
+		}
+		if rt.inboundWebhooks != nil {
+			top.HandleFunc("POST /api/v1/hooks/{public_id}", rt.inboundWebhooks.handle)
 		}
 		top.Handle("/", human)
 		complete = normalizePath(top)

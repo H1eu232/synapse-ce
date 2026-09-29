@@ -1464,6 +1464,22 @@ func main() {
 		os.Exit(1)
 	}
 	router := httpapi.NewRouter(log, auth, engService, scaService, aupService, findingsService, exportService, reportService, evidenceService, reconService, logBroker, transferService, auditService, vexService, usersService, credentialsService)
+	if cfg.InboundWebhooksEnabled {
+		if databasePool == nil || cfg.VaultMasterKey == "" {
+			log.Error("inbound webhooks require PostgreSQL and SYNAPSE_VAULT_MASTER_KEY")
+			os.Exit(1)
+		}
+		checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := postgres.CheckRLSRuntimeRole(checkCtx, databasePool)
+		cancel()
+		if err != nil {
+			log.Error("inbound webhook runtime DB role cannot enforce tenant isolation", "err", err)
+			os.Exit(1)
+		}
+		// A provider-specific receiver is installed by its integration workstream.
+		// Without one, authenticated events fail closed with 503, never a false 202.
+		router.SetInboundWebhookPlane(postgres.NewInboundWebhookRepository(databasePool), vaultCipher, nil)
+	}
 	if cfg.OwnershipMode != "off" && cfg.OwnershipMode != "observe" && cfg.OwnershipMode != "enforce" {
 		log.Error("SYNAPSE_OWNERSHIP_MODE must be off, observe or enforce")
 		os.Exit(1)
@@ -1747,6 +1763,7 @@ func main() {
 		SingleTenant:         cfg.SingleTenant,
 		OIDC:                 cfg.OIDCEnabled,
 		Ownership:            cfg.OwnershipMode != "off" && databasePool != nil,
+		InboundWebhooks:      cfg.InboundWebhooksEnabled,
 		Notifications:        cfg.NotificationEnabled,
 		// Read from the driver registry, so a newly registered driver is advertised without a
 		// catalog edit; the kill switch then removes the types the operator turned off.

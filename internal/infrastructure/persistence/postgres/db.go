@@ -513,6 +513,21 @@ func GrantRuntimePrivileges(ctx context.Context, adminDSN, runtimeDSN string, ha
 			"GRANT SELECT, INSERT ON response_audit_intents TO "+quotedHaltRole,
 		)
 	}
+	// This registry intentionally sits outside a tenant session. Its single-row
+	// lookup and row-locked admission use SECURITY DEFINER; never leave direct
+	// DML or unscoped SELECT granted by the generic runtime grant.
+	var inboundInstalled bool
+	if err := adminDB.QueryRowContext(ctx, "SELECT to_regclass('public.inbound_webhook_endpoints') IS NOT NULL").Scan(&inboundInstalled); err != nil {
+		return fmt.Errorf("inspect inbound webhook registry: %w", err)
+	}
+	if inboundInstalled {
+		statements = append(statements,
+			"REVOKE ALL ON TABLE inbound_webhook_endpoints FROM "+quotedRole,
+			"GRANT SELECT ON TABLE inbound_webhook_endpoints TO "+quotedRole,
+			"GRANT EXECUTE ON FUNCTION synapse_lookup_inbound_webhook(TEXT) TO "+quotedRole,
+			"GRANT EXECUTE ON FUNCTION synapse_admit_inbound_webhook(TEXT,TEXT,TEXT,TEXT,INT,BOOLEAN) TO "+quotedRole,
+		)
+	}
 	for _, statement := range statements {
 		// #nosec G701 -- SQL is fixed apart from quoteIdentifier-escaped DSN identifiers; PostgreSQL cannot bind identifiers as parameters.
 		if _, err := adminDB.ExecContext(ctx, statement); err != nil {
