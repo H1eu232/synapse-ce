@@ -91,6 +91,7 @@ function mapProject(r: ProjectWire): Project {
     },
     defaultProfileByLang: r.default_profile_by_lang ?? {},
     gateId: r.gate_id ?? '',
+    decoratePullRequests: r.decorate_pull_requests === true,
     createdAt: r.created_at ?? null,
     latestAnalysis: r.latest_analysis ? mapProjectSummaryAnalysis(r.latest_analysis) : null,
     latestJob: r.latest_job ? mapScanJob(r.latest_job) : null,
@@ -629,6 +630,10 @@ export const codeQualityApi = {
 
   assignProjectGate: async (key: string, gateId: string): Promise<Project> =>
     mapProject(await req(`/projects/${encodeURIComponent(key)}/gate`, { method: 'PUT', body: JSON.stringify({ gate_id: gateId }) })),
+
+  /** Opt the project in or out of PR/MR decoration. PermOperate. Returns the updated project. */
+  setProjectDecoration: async (key: string, enabled: boolean): Promise<Project> =>
+    mapProject(await req(`/projects/${encodeURIComponent(key)}/decoration`, { method: 'PUT', body: JSON.stringify({ enabled }) })),
 
   startProjectAnalysis: async (key: string, coverage?: File): Promise<ScanJob> => {
     const path = `/projects/${encodeURIComponent(key)}/analyses`

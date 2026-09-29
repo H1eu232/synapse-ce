@@ -27,6 +27,8 @@ security:
 tags:
   - name: users
     description: Operator identities, roles, and API-key lifecycle
+  - name: tenant-settings
+    description: Tenant-wide language and time zone used by message templates and digests
   - name: personal-contacts
     description: Self-service verified email destinations scoped to the authenticated human user
   - name: platform
@@ -1039,6 +1041,9 @@ paths:
         stable key, a human name, whether it is enabled, and the environment variable that controls
         it, so a client can render "disabled" rather than a dead link. It returns configuration
         booleans and variable NAMES only, never a configured value, and is gated at the view floor.
+        The `legacy_alert_webhook` entry is enabled while the deprecated SYNAPSE_ALERT_WEBHOOK_URL is
+        set; the console uses it to warn that incident.created rules and the legacy webhook both
+        deliver. The URL itself is never returned.
       responses:
         "200":
           description: The deployment's capability catalog
@@ -2046,7 +2051,8 @@ paths:
         is for a pull request. Decoration is off for every Project by default, so
         no Project performs an outward forge write until this is enabled. Requires
         the operate permission. Decoration remains fail-soft: an enabled Project
-        whose forge credential is not configured is simply not decorated.
+        whose forge credential is not configured is simply not decorated. The
+        console sets it from the PR decoration switch in the project header.
       requestBody:
         required: true
         content:
@@ -2780,10 +2786,13 @@ paths:
       tags: [fleet]
       operationId: testAlert
       summary: Deliver a test alert to every configured alert sink
+      deprecated: true
       description: >
         Sends a synthetic `alert.test` alert through the configured sinks (the webhook set by
         SYNAPSE_ALERT_WEBHOOK_URL) so an operator can prove the alert path works before relying on it.
         The test alert bypasses the severity floor. Registered only when alerting is configured.
+        Deprecated with SYNAPSE_ALERT_WEBHOOK_URL and removed in 0.4.0; incident.created notification
+        rules replace the legacy webhook.
       responses:
         '200': {description: At least one sink acknowledged, content: {application/json: {schema: {$ref: '#/components/schemas/AlertTestResult'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -2898,6 +2907,37 @@ paths:
         '400': {description: Unsupported channel, mandatory mute, or caller-supplied identity}
         '409': {description: Stale revision}
 
+  /api/v1/tenant/settings:
+    get:
+      tags: [tenant-settings]
+      operationId: getTenantSettings
+      summary: Read the tenant's default language and time zone
+      description: >
+        Any authenticated role may read it. A tenant that never saved settings gets the defaults
+        (`en`, `UTC`) at revision 0. The tenant comes from the session.
+      responses:
+        '200': {description: Current settings, content: {application/json: {schema: {$ref: '#/components/schemas/TenantSettings'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    put:
+      tags: [tenant-settings]
+      operationId: saveTenantSettings
+      summary: Save the tenant's default language and time zone
+      description: >
+        Requires the administer permission, and the change is audited. `revision` is the revision the
+        caller read (0 for a tenant's first save). The time zone must be an IANA name that
+        `time.LoadLocation` accepts; `Local` and offsets such as `+07:00` are refused. The body names no
+        tenant: the tenant comes from the session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TenantSettingsInput'}
+      responses:
+        '200': {description: Saved settings, content: {application/json: {schema: {$ref: '#/components/schemas/TenantSettings'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {description: Stale revision; read the settings again and retry}
+
   /api/v1/users/picker:
     get:
       tags: [users]
@@ -2925,6 +2965,21 @@ paths:
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
       responses:
         '200': {description: Bounded review page, content: {application/json: {schema: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/AssigneeReviewItem'}}, next: {type: object, nullable: true, properties: {engagement_id: {type: string}, finding_id: {type: string}}}}}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/notifications/event-types:
+    get:
+      tags: [notifications]
+      operationId: listNotificationEventTypes
+      summary: List the notification event catalog
+      description: >
+        Every declared event type with its console label, the rule filters it accepts, its maximum data
+        class and its template variables, ordered by type. Operator-only types are included and flagged;
+        rules never match them. The response is derived only from the built-in catalog and carries no
+        tenant data.
+      responses:
+        '200': {description: Event catalog, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NotificationEventSpec'}}}}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
   /api/v1/notifications/channels:
@@ -8285,7 +8340,9 @@ components:
       properties:
         key:
           type: string
-          description: Stable subsystem identifier a client keys its navigation off.
+          description: >
+            Stable subsystem identifier a client keys its navigation off. Includes `notifications`,
+            `notifications.channel_types`, `ticketing` and `docpublish`.
           example: fleet
         name:
           type: string
@@ -8296,7 +8353,9 @@ components:
           description: Whether this deployment serves the subsystem's routes.
         switch:
           type: string
-          description: The SYNAPSE_* environment variable an operator sets to change `enabled`.
+          description: >
+            The SYNAPSE_* environment variable an operator sets to change `enabled`. Empty when
+            `planned` is true.
           example: SYNAPSE_FLEET_ENABLED
         requires:
           type: array
@@ -8304,6 +8363,54 @@ components:
             Keys of the capabilities this one depends on. Present only when the subsystem needs more
             than its own switch, so a client can explain an enabled switch that is still disabled.
           items: {type: string}
+        values:
+          type: array
+          description: >
+            Options the capability offers. `notifications.channel_types` lists the channel types this
+            build can deliver to. Omitted when the capability has no options.
+          items: {type: string}
+          example: [webhook, slack, email]
+        planned:
+          type: boolean
+          description: >
+            True for a subsystem this build does not ship yet, such as `ticketing` and `docpublish`.
+            It is always disabled and names no switch. Omitted when false.
+
+    TenantLocale:
+      type: string
+      enum: [en, vi]
+      description: A language this build renders messages in.
+
+    TenantSettings:
+      type: object
+      required: [default_locale, time_zone, revision, locales]
+      properties:
+        default_locale: {$ref: '#/components/schemas/TenantLocale'}
+        time_zone:
+          type: string
+          description: IANA time zone name. Stored as a name so daylight saving is resolved at render time.
+          example: Asia/Ho_Chi_Minh
+        revision:
+          type: integer
+          minimum: 0
+          description: 0 when the tenant has never saved settings and the defaults apply.
+        updated_at:
+          type: string
+          format: date-time
+          description: Omitted at revision 0.
+        locales:
+          type: array
+          description: Every language this build supports, in display order.
+          items: {$ref: '#/components/schemas/TenantLocale'}
+
+    TenantSettingsInput:
+      type: object
+      additionalProperties: false
+      required: [default_locale, time_zone, revision]
+      properties:
+        default_locale: {$ref: '#/components/schemas/TenantLocale'}
+        time_zone: {type: string, maxLength: 64, example: Asia/Ho_Chi_Minh}
+        revision: {type: integer, minimum: 0}
 
     UserChoice:
       type: object
@@ -12135,6 +12242,42 @@ components:
     NotificationEventType:
       type: string
       enum: [vulnerability_action.created, scan.completed, quality_gate.failed, sla.approaching_deadline, fleet.agent.offline, incident.created, finding.ownership_changed]
+
+    NotificationEventSpec:
+      type: object
+      additionalProperties: false
+      required: [type, label, schema_version, subject_kind, has_engagement, has_severity, has_team, has_lead_time, filters, max_data_class, mandatory, operator_only, variables]
+      properties:
+        type: {type: string, description: Event type; the catalog may declare types newer than the NotificationEventType enum}
+        label: {type: string}
+        schema_version: {type: integer, minimum: 1}
+        subject_kind: {type: string, description: Entity the event is about}
+        has_engagement: {type: boolean}
+        has_severity: {type: boolean}
+        has_team: {type: boolean}
+        has_lead_time: {type: boolean}
+        filters:
+          type: array
+          description: Rule filters this event type accepts; a rule using any other filter is rejected.
+          items: {type: string, enum: [min_severity, action_types, engagement_ids, team_ids, lead_time_seconds]}
+        max_data_class: {$ref: '#/components/schemas/NotificationDataClass'}
+        mandatory: {type: boolean, description: Cannot be muted by a rule or a user preference}
+        operator_only: {type: boolean, description: Sent on demand to one channel and never matched by rules}
+        variables: {type: array, items: {$ref: '#/components/schemas/NotificationEventVariable'}}
+
+    NotificationEventVariable:
+      type: object
+      additionalProperties: false
+      required: [name, class, description, list_cap]
+      properties:
+        name: {type: string}
+        class: {$ref: '#/components/schemas/NotificationDataClass'}
+        description: {type: string}
+        list_cap: {type: integer, minimum: 0, description: Maximum items of a list variable; 0 marks a scalar}
+
+    NotificationDataClass:
+      type: string
+      enum: [signal, summary, detail]
 
     NotificationDeliveryState:
       type: string

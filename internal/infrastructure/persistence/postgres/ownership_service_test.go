@@ -93,7 +93,7 @@ func TestLegacyAssigneePickerIDPublishesPersonalInbox(t *testing.T) {
 	}); err != nil || afterID != "bob" {
 		t.Fatalf("decision lost canonical assignee %q: %v", afterID, err)
 	}
-	source := NewNotificationSource(f.pool, NewNotificationRepository(f.pool), time.Minute, false)
+	source := NewNotificationSource(f.pool, NewNotificationRepository(f.pool), time.Minute)
 	if err := WithTenant(f.ctx, f.pool, "own-a", func(tx pgx.Tx) error {
 		_, err := source.pollOwnership(f.ctx, tx, "own-a", 10)
 		return err

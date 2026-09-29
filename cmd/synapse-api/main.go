@@ -212,6 +212,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/srcreach"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/symreach"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/taintscan"
+	tenancyuc "github.com/KKloudTarus/synapse-ce/internal/usecase/tenancy"
 	threatmodeluc "github.com/KKloudTarus/synapse-ce/internal/usecase/threatmodeluc"
 	transferuc "github.com/KKloudTarus/synapse-ce/internal/usecase/transfer"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/usercontacts"
@@ -1469,6 +1470,17 @@ func main() {
 	} else {
 		router.SetOwnership(nil, "off", "disabled")
 	}
+	// Tenant language and time zone (#1359), read by message templates and digests.
+	var tenantSettingsStore ports.TenantSettingsStore = memory.NewTenantSettingsStore()
+	if databasePool != nil {
+		tenantSettingsStore = postgres.NewTenantSettingsStore(databasePool)
+	}
+	tenantSettingsService, err := tenancyuc.NewService(tenantSettingsStore, auditLog, clock)
+	if err != nil {
+		log.Error("tenant settings service init failed", "err", err)
+		os.Exit(1)
+	}
+	router.SetTenantSettings(tenantSettingsService)
 	var userContactService *usercontacts.Service
 	if databasePool != nil {
 		router.SetAssigneeReviewReader(postgres.NewAssigneeReviewReader(databasePool))
@@ -1679,6 +1691,8 @@ func main() {
 		SingleTenant:         cfg.SingleTenant,
 		OIDC:                 cfg.OIDCEnabled,
 		Ownership:            cfg.OwnershipMode != "off" && databasePool != nil,
+		Notifications:        cfg.NotificationEnabled,
+		LegacyAlertWebhook:   cfg.AlertWebhookURL != "",
 	})
 	if err != nil {
 		log.Error("capability catalog init failed", "err", err)
@@ -2348,8 +2362,12 @@ func main() {
 
 	// Operator alerting (#822): a signed webhook that receives every incident correlation opens, plus the
 	// correlator handle detection ingest uses so an incident exists as soon as its detections are sealed.
+	// Deprecated (#1347): tenant notification rules for incident.created are delivered by the worker's
+	// notification framework whether or not this webhook is set, so both paths deliver while it is
+	// configured. It stays as a compatibility path until alertinguc.LegacyWebhookRemovalRelease.
 	var alertSvc *alertinguc.Service
 	if cfg.AlertWebhookURL != "" {
+		alertinguc.WarnLegacyWebhookDeprecated(log, true)
 		rule := alerting.Rule{MinSeverity: shared.Severity(strings.ToLower(strings.TrimSpace(cfg.AlertMinSeverity)))}
 		sink, aerr := alertwebhook.New(cfg.AlertWebhookURL, cfg.AlertWebhookSecret, 10*time.Second, cfg.AlertWebhookAllowPrivate, cfg.AlertWebhookAllowUnsigned)
 		if aerr != nil {
