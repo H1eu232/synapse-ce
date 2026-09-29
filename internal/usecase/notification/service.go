@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/mail"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -343,70 +341,6 @@ func tenantFrom(ctx context.Context) (shared.ID, error) {
 	return tenant, nil
 }
 
-func validateChannel(in ChannelInput, requireSecret bool) (ports.NotificationChannelConfig, string, []string, error) {
-	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || !in.Type.Valid() {
-		return ports.NotificationChannelConfig{}, "", nil, fmt.Errorf("%w: channel name and valid type are required", shared.ErrValidation)
-	}
-	cfg := ports.NotificationChannelConfig{}
-	switch in.Type {
-	case domain.ChannelWebhook:
-		u, err := validateHTTPS(in.URL, false)
-		if err != nil {
-			return cfg, "", nil, err
-		}
-		if requireSecret && len(in.Secret) < 16 {
-			return cfg, "", nil, fmt.Errorf("%w: webhook signing secret must be at least 16 bytes", shared.ErrValidation)
-		}
-		cfg.URL = u.String()
-		cfg.Secret = in.Secret
-		return cfg, u.Scheme + "://" + u.Host + "/…", nil, nil
-	case domain.ChannelSlack:
-		u, err := validateHTTPS(in.URL, true)
-		if err != nil {
-			return cfg, "", nil, err
-		}
-		cfg.URL = u.String()
-		return cfg, "https://" + u.Host + "/services/…", nil, nil
-	case domain.ChannelEmail:
-		recipients := make([]string, 0, len(in.Recipients))
-		seen := map[string]bool{}
-		for _, v := range in.Recipients {
-			a, err := mail.ParseAddress(strings.TrimSpace(v))
-			if err != nil || strings.ContainsAny(a.Address, "\r\n") {
-				return cfg, "", nil, fmt.Errorf("%w: invalid email recipient", shared.ErrValidation)
-			}
-			normalized := strings.ToLower(a.Address)
-			if !seen[normalized] {
-				seen[normalized] = true
-				recipients = append(recipients, normalized)
-			}
-		}
-		if len(recipients) == 0 || len(recipients) > 50 {
-			return cfg, "", nil, fmt.Errorf("%w: email channel requires 1-50 recipients", shared.ErrValidation)
-		}
-		cfg.Recipients = recipients
-		return cfg, recipientSummary(recipients), recipients, nil
-	}
-	return cfg, "", nil, fmt.Errorf("%w: unsupported channel type", shared.ErrValidation)
-}
-func validateHTTPS(raw string, slack bool) (*url.URL, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-		return nil, fmt.Errorf("%w: channel URL must be an HTTPS URL without credentials", shared.ErrValidation)
-	}
-	host := strings.ToLower(u.Hostname())
-	if slack && !((host == "hooks.slack.com" || host == "hooks.slack-gov.com") && strings.HasPrefix(u.EscapedPath(), "/services/")) {
-		return nil, fmt.Errorf("%w: Slack channel requires a supported incoming-webhook URL", shared.ErrValidation)
-	}
-	return u, nil
-}
-func recipientSummary(v []string) string {
-	if len(v) == 1 {
-		return v[0]
-	}
-	return strconv.Itoa(len(v)) + " recipients"
-}
-
 // DeliveryError lets the generic worker schedule a channel-specific retry or
 // stop immediately on a permanent transport response.
 type DeliveryError struct {
@@ -466,15 +400,15 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 		s.observeDeadLetter(work.Delivery.ChannelType)
 		return &DeliveryError{terminal: true, cause: errors.New("channel_secret_unavailable")}
 	}
-	var cfg ports.NotificationChannelConfig
-	if json.Unmarshal(raw, &cfg) != nil {
+	cfg, configErr := decodeChannelConfig(work.Channel.Type, raw)
+	if configErr != "" {
 		finished := s.clock.Now().UTC()
-		if finishErr := s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, "failed", 0, "channel_config_invalid", nil); finishErr != nil {
+		if finishErr := s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, "failed", 0, configErr, nil); finishErr != nil {
 			return finishErr
 		}
 		s.observeAttempt(work.Delivery.ChannelType, now, finished, false, false)
 		s.observeDeadLetter(work.Delivery.ChannelType)
-		return &DeliveryError{terminal: true, cause: errors.New("channel_config_invalid")}
+		return &DeliveryError{terminal: true, cause: errors.New(configErr)}
 	}
 	result := s.sender.Send(ctx, work, cfg)
 	finished := s.clock.Now().UTC()

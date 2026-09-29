@@ -43,7 +43,7 @@ func TestSlackSenderReportsActualFallback(t *testing.T) {
 		Delivery: notification.Delivery{ID: "delivery"},
 		Event:    notification.Event{ID: "event", Type: notification.EventTest, OccurredAt: time.Now().UTC(), Data: json.RawMessage(`{}`)},
 	}
-	config := ports.NotificationChannelConfig{URL: srv.URL}
+	config := ports.SlackChannelConfig{URL: srv.URL}
 	if got := s.Send(context.Background(), work, config); got.StatusCode != 200 || !got.TemplateFallback {
 		t.Fatalf("fallback send result=%+v", got)
 	}

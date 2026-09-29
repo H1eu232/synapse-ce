@@ -1,32 +1,28 @@
 // Package notificationsender delivers one durable notification attempt. Retry
 // scheduling belongs to synapse-worker; this adapter never sleeps or retries.
+//
+// Each channel type is a Driver registered on the Sender. Adding a channel means
+// adding a driver file and registering it in New; Send never switches on the type.
 package notificationsender
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/tls"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/mail"
-	"net/smtp"
-	"net/textproto"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/notification"
-	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/safehttp"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
+
+// Driver delivers one attempt for one channel type. It receives the configuration the usecase
+// decoded for that type and returns a transport-level result; it never retries.
+type Driver interface {
+	ChannelType() notification.ChannelType
+	Send(context.Context, ports.NotificationWork, ports.NotificationChannelConfig) ports.NotificationSendResult
+}
 
 type SMTPConfig struct {
 	Host       string
@@ -37,12 +33,15 @@ type SMTPConfig struct {
 	RequireTLS bool
 }
 
+// Sender holds the shared transports and the driver registry. Drivers keep a pointer to it, so
+// the HTTP client, clock and SMTP dialer are configured in one place.
 type Sender struct {
 	http    *http.Client
 	smtp    SMTPConfig
 	dial    func(ctx context.Context, network, address string) (net.Conn, error)
 	now     func() time.Time
 	timeout time.Duration
+	drivers map[notification.ChannelType]Driver
 }
 
 var _ ports.NotificationSender = (*Sender)(nil)
@@ -57,221 +56,39 @@ func New(smtpConfig SMTPConfig, timeout time.Duration) *Sender {
 	// The relay comes from operator configuration, not from a tenant, and is often a local MTA, so
 	// it may be private or loopback; metadata and other special-purpose ranges stay refused.
 	relay := safehttp.NewDialer(safehttp.OperatorPolicy(), timeout)
-	return &Sender{http: safehttp.New(timeout, false), smtp: smtpConfig, dial: relay.DialContext, now: time.Now, timeout: timeout}
+	s := &Sender{http: safehttp.New(timeout, false), smtp: smtpConfig, dial: relay.DialContext, now: time.Now, timeout: timeout}
+	s.drivers = map[notification.ChannelType]Driver{}
+	for _, driver := range builtinDrivers(s) {
+		s.drivers[driver.ChannelType()] = driver
+	}
+	return s
 }
 
-func (s *Sender) Send(ctx context.Context, work ports.NotificationWork, cfg ports.NotificationChannelConfig) ports.NotificationSendResult {
-	switch work.Channel.Type {
-	case notification.ChannelWebhook:
-		return s.sendWebhook(ctx, work, cfg)
-	case notification.ChannelSlack:
-		return s.sendSlack(ctx, work, cfg)
-	case notification.ChannelEmail:
-		return s.sendEmail(ctx, work, cfg)
-	default:
+// builtinDrivers are the channel types every deployment has. Their types are distinct constants,
+// which TestBuiltinDriversCoverEveryChannelType checks, so New needs no duplicate handling.
+func builtinDrivers(s *Sender) []Driver {
+	return []Driver{webhookDriver{s}, slackDriver{s}, emailDriver{s}}
+}
+
+// Register adds a driver. Registering a second driver for a channel type is an error rather than
+// a silent replacement.
+func (s *Sender) Register(driver Driver) error {
+	channelType := driver.ChannelType()
+	if _, exists := s.drivers[channelType]; exists {
+		return fmt.Errorf("notification driver for %q is already registered", channelType)
+	}
+	s.drivers[channelType] = driver
+	return nil
+}
+
+// Send delivers one attempt through the driver registered for the channel's type.
+func (s *Sender) Send(ctx context.Context, work ports.NotificationWork, config ports.NotificationChannelConfig) ports.NotificationSendResult {
+	driver, ok := s.drivers[work.Channel.Type]
+	if !ok {
 		return ports.NotificationSendResult{ErrorCode: "unsupported_channel"}
 	}
-}
-
-func (s *Sender) sendWebhook(ctx context.Context, w ports.NotificationWork, cfg ports.NotificationChannelConfig) ports.NotificationSendResult {
-	body, err := json.Marshal(w.Event)
-	if err != nil {
-		return ports.NotificationSendResult{ErrorCode: "encode_failed"}
+	if config == nil || config.NotificationChannelType() != work.Channel.Type {
+		return ports.NotificationSendResult{ErrorCode: "channel_config_invalid"}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, bytes.NewReader(body))
-	if err != nil {
-		return ports.NotificationSendResult{ErrorCode: "request_invalid"}
-	}
-	timestamp := strconv.FormatInt(s.now().UTC().Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(cfg.Secret))
-	_, _ = mac.Write([]byte(timestamp + "."))
-	_, _ = mac.Write(body)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "synapse-notifications/1")
-	req.Header.Set("X-Synapse-Timestamp", timestamp)
-	req.Header.Set("X-Synapse-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
-	req.Header.Set("X-Synapse-Event-ID", w.Event.ID.String())
-	req.Header.Set("X-Synapse-Delivery-ID", w.Delivery.ID.String())
-	return s.do(req)
-}
-
-func (s *Sender) sendSlack(ctx context.Context, w ports.NotificationWork, cfg ports.NotificationChannelConfig) ports.NotificationSendResult {
-	title, summary, fallback := eventText(w)
-	body, _ := json.Marshal(map[string]any{"text": title, "blocks": []map[string]any{{"type": "header", "text": map[string]string{"type": "plain_text", "text": limit(title, 150)}}, {"type": "section", "text": map[string]string{"type": "mrkdwn", "text": escapeSlack(limit(summary, 2500))}}, {"type": "context", "elements": []map[string]string{{"type": "mrkdwn", "text": "Event `" + string(w.Event.Type) + "` · `" + w.Event.ID.String() + "`"}}}}})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, bytes.NewReader(body))
-	if err != nil {
-		return ports.NotificationSendResult{ErrorCode: "request_invalid", TemplateFallback: fallback}
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "synapse-notifications/1")
-	result := s.do(req)
-	result.TemplateFallback = fallback
-	return result
-}
-
-func (s *Sender) do(req *http.Request) ports.NotificationSendResult {
-	resp, err := s.http.Do(req)
-	if errors.Is(err, safehttp.ErrBlockedDestination) {
-		// Retrying cannot change the answer; the destination has to be corrected.
-		return ports.NotificationSendResult{ErrorCode: "destination_blocked"}
-	}
-	if err != nil {
-		return ports.NotificationSendResult{ErrorCode: "network_error", Retryable: true}
-	}
-	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-	result := ports.NotificationSendResult{StatusCode: resp.StatusCode}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return result
-	}
-	switch {
-	case resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
-		result.Retryable = true
-		result.ErrorCode = "http_" + strconv.Itoa(resp.StatusCode)
-		if resp.StatusCode == http.StatusTooManyRequests {
-			result.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), s.now())
-		}
-	default:
-		result.ErrorCode = "http_" + strconv.Itoa(resp.StatusCode)
-	}
-	return result
-}
-
-func (s *Sender) sendEmail(ctx context.Context, w ports.NotificationWork, _ ports.NotificationChannelConfig) ports.NotificationSendResult {
-	title, summary, fallback := eventText(w)
-	result := s.sendSMTP(ctx, w.Delivery.Recipient, title, summary, w.Delivery.ID)
-	result.TemplateFallback = fallback
-	return result
-}
-
-// SendContactVerification shares the SMTP transport and retry classification with
-// notification delivery, but the code is never put into a persisted event, rule,
-// delivery attempt, or job payload.
-func (s *Sender) SendContactVerification(ctx context.Context, recipient, code string, challengeID shared.ID) ports.NotificationSendResult {
-	return s.sendSMTP(ctx, recipient, "Verify your Synapse email address", "Your verification code is "+code+". It expires in 10 minutes. If you did not request this, ignore this email.", challengeID)
-}
-
-func (s *Sender) SendPersonalNotice(ctx context.Context, recipient, title, summary string, messageID shared.ID) ports.NotificationSendResult {
-	return s.sendSMTP(ctx, recipient, title, summary, messageID)
-}
-
-func (s *Sender) sendSMTP(ctx context.Context, destination, title, summary string, messageID shared.ID) ports.NotificationSendResult {
-	if strings.TrimSpace(s.smtp.Host) == "" || strings.TrimSpace(s.smtp.From) == "" {
-		return ports.NotificationSendResult{ErrorCode: "smtp_not_configured"}
-	}
-	from, err := mail.ParseAddress(s.smtp.From)
-	if err != nil || strings.ContainsAny(from.Address, "\r\n") {
-		return ports.NotificationSendResult{ErrorCode: "smtp_sender_invalid"}
-	}
-	recipient, err := mail.ParseAddress(destination)
-	if err != nil || recipient.Address != destination || strings.ContainsAny(destination, "\r\n") {
-		return ports.NotificationSendResult{ErrorCode: "smtp_recipient_invalid"}
-	}
-	mailID := "<" + messageID.String() + "@synapse.local>"
-	body := "From: " + from.Address + "\r\nTo: " + destination + "\r\nSubject: " + safeHeader(title) + "\r\nMessage-ID: " + mailID + "\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + limit(summary, 64<<10) + "\r\n"
-	address := net.JoinHostPort(s.smtp.Host, strconv.Itoa(s.smtp.Port))
-	conn, err := s.dial(ctx, "tcp", address)
-	if errors.Is(err, safehttp.ErrBlockedDestination) {
-		return ports.NotificationSendResult{ErrorCode: "smtp_destination_blocked"}
-	}
-	if err != nil {
-		return ports.NotificationSendResult{ErrorCode: "smtp_connect", Retryable: true}
-	}
-	defer func() { _ = conn.Close() }()
-	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stopCancel()
-	_ = conn.SetDeadline(time.Now().Add(s.timeout))
-	client, err := smtp.NewClient(conn, s.smtp.Host)
-	if err != nil {
-		return smtpResult(err)
-	}
-	defer func() { _ = client.Close() }()
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err = client.StartTLS(&tls.Config{ServerName: s.smtp.Host, MinVersion: tls.VersionTLS12}); err != nil {
-			return smtpResult(err)
-		}
-	} else if s.smtp.RequireTLS {
-		return ports.NotificationSendResult{ErrorCode: "smtp_tls_required"}
-	}
-	if s.smtp.Username != "" {
-		if ok, _ := client.Extension("AUTH"); !ok {
-			return ports.NotificationSendResult{ErrorCode: "smtp_auth_unavailable"}
-		}
-		if err = client.Auth(smtp.PlainAuth("", s.smtp.Username, s.smtp.Password, s.smtp.Host)); err != nil {
-			return smtpResult(err)
-		}
-	}
-	if err = client.Mail(from.Address); err != nil {
-		return smtpResult(err)
-	}
-	if err = client.Rcpt(destination); err != nil {
-		return smtpResult(err)
-	}
-	writer, err := client.Data()
-	if err != nil {
-		return smtpResult(err)
-	}
-	if _, err = writer.Write([]byte(body)); err == nil {
-		err = writer.Close()
-	}
-	if err != nil {
-		return smtpResult(err)
-	}
-	// DATA's final 250 is the relay's acknowledgement. A disconnect during
-	// QUIT must not cause a duplicate of an already accepted message.
-	_ = client.Quit()
-	return ports.NotificationSendResult{StatusCode: 250}
-}
-
-func smtpResult(err error) ports.NotificationSendResult {
-	result := ports.NotificationSendResult{ErrorCode: "smtp_error", Retryable: true}
-	var proto *textproto.Error
-	if errors.As(err, &proto) {
-		result.StatusCode = proto.Code
-		result.ErrorCode = "smtp_" + strconv.Itoa(proto.Code)
-		result.Retryable = proto.Code >= 400 && proto.Code < 500
-	}
-	return result
-}
-func parseRetryAfter(v string, now time.Time) time.Duration {
-	if seconds, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && seconds > 0 {
-		return time.Duration(min(seconds, 3600)) * time.Second
-	}
-	if at, err := http.ParseTime(v); err == nil && at.After(now) {
-		return at.Sub(now)
-	}
-	return 0
-}
-
-// eventText supplies safe built-in content when the preferred title/summary
-// fields are missing. That fallback is reported by the sender, not inferred
-// from the transport result or from untrusted event payload fields.
-func eventText(w ports.NotificationWork) (string, string, bool) {
-	var data map[string]any
-	_ = json.Unmarshal(w.Event.Data, &data)
-	fallback := false
-	title := fmt.Sprint(data["title"])
-	if title == "<nil>" || strings.TrimSpace(title) == "" {
-		title = "Synapse: " + string(w.Event.Type)
-		fallback = true
-	}
-	summary := fmt.Sprint(data["summary"])
-	if summary == "<nil>" || strings.TrimSpace(summary) == "" {
-		summary = "A " + string(w.Event.Type) + " event occurred at " + w.Event.OccurredAt.UTC().Format(time.RFC3339)
-		fallback = true
-	}
-	return safeHeader(title), summary, fallback
-}
-func safeHeader(v string) string {
-	return strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(limit(v, 180)))
-}
-func escapeSlack(v string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(v)
-}
-func limit(v string, n int) string {
-	runes := []rune(v)
-	if len(runes) > n {
-		return string(runes[:n])
-	}
-	return v
+	return driver.Send(ctx, work, config)
 }

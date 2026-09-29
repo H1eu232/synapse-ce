@@ -74,7 +74,7 @@ func TestSMTPControlledRelay(t *testing.T) {
 			sender := New(SMTPConfig{Host: host, Port: number, From: "synapse@example.com"}, time.Second)
 			work := testWork(notification.ChannelEmail)
 			work.Delivery.Recipient = "recipient@example.com"
-			result := sender.Send(context.Background(), work, ports.NotificationChannelConfig{})
+			result := sender.Send(context.Background(), work, ports.EmailChannelConfig{})
 			if code == 250 {
 				if result.StatusCode != 250 || result.ErrorCode != "" {
 					t.Fatalf("%+v", result)
@@ -163,7 +163,7 @@ func TestTransportTimeoutAndHTTPClassification(t *testing.T) {
 				defer receiver.Close()
 				sender := New(SMTPConfig{}, time.Second)
 				sender.http = receiver.Client()
-				result := sender.Send(context.Background(), testWork(kind), ports.NotificationChannelConfig{URL: receiver.URL, Secret: "test-key"})
+				result := sender.Send(context.Background(), testWork(kind), channelConfig(kind, receiver.URL, "test-key"))
 				if result.StatusCode != code || result.Retryable != (code == 408 || code == 429 || code >= 500) {
 					t.Fatalf("%+v", result)
 				}
@@ -177,14 +177,14 @@ func TestTransportTimeoutAndHTTPClassification(t *testing.T) {
 	sender := New(SMTPConfig{}, 20*time.Millisecond)
 	sender.http = receiver.Client()
 	sender.http.Timeout = 20 * time.Millisecond
-	if result := sender.Send(context.Background(), testWork(notification.ChannelWebhook), ports.NotificationChannelConfig{URL: receiver.URL}); !result.Retryable {
+	if result := sender.Send(context.Background(), testWork(notification.ChannelWebhook), ports.WebhookChannelConfig{URL: receiver.URL}); !result.Retryable {
 		t.Fatalf("%+v", result)
 	}
 }
 
 func TestPublicTransportBlocksPrivateDestinations(t *testing.T) {
 	for _, endpoint := range []string{"https://127.0.0.1:1", "https://[::1]:1", "https://169.254.169.254", "https://10.0.0.1", "https://[fd00:ec2::254]"} {
-		result := New(SMTPConfig{}, 50*time.Millisecond).Send(context.Background(), testWork(notification.ChannelWebhook), ports.NotificationChannelConfig{URL: endpoint})
+		result := New(SMTPConfig{}, 50*time.Millisecond).Send(context.Background(), testWork(notification.ChannelWebhook), ports.WebhookChannelConfig{URL: endpoint})
 		// A refused destination does not change on retry, so it must not burn the retry budget.
 		if result.ErrorCode != "destination_blocked" || result.Retryable {
 			t.Fatalf("%s: result = %+v, want a non-retryable destination_blocked", endpoint, result)
@@ -196,7 +196,7 @@ func TestSMTPRelayRefusesMetadataEndpoints(t *testing.T) {
 	for _, host := range []string{"169.254.169.254", "fd00:ec2::254", "100.100.100.200"} {
 		work := testWork(notification.ChannelEmail)
 		work.Delivery.Recipient = "recipient@example.com"
-		result := New(SMTPConfig{Host: host, Port: 25, From: "synapse@example.com"}, time.Second).Send(context.Background(), work, ports.NotificationChannelConfig{})
+		result := New(SMTPConfig{Host: host, Port: 25, From: "synapse@example.com"}, time.Second).Send(context.Background(), work, ports.EmailChannelConfig{})
 		if result.ErrorCode != "smtp_destination_blocked" || result.Retryable {
 			t.Fatalf("relay %s: result = %+v, want a non-retryable smtp_destination_blocked", host, result)
 		}
@@ -234,7 +234,7 @@ func TestSMTPTimeoutAndRequiredTLS(t *testing.T) {
 			sender := New(SMTPConfig{Host: host, Port: number, From: "sender@example.com", RequireTLS: true}, 100*time.Millisecond)
 			work := testWork(notification.ChannelEmail)
 			work.Delivery.Recipient = "recipient@example.com"
-			result := sender.Send(context.Background(), work, ports.NotificationChannelConfig{})
+			result := sender.Send(context.Background(), work, ports.EmailChannelConfig{})
 			if silent {
 				if !result.Retryable {
 					t.Fatalf("timeout: %+v", result)

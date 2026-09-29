@@ -34,14 +34,6 @@ type NotificationWork struct {
 	Sealed   string
 }
 
-type NotificationChannelConfig struct {
-	URL        string   `json:"url,omitempty"`
-	Secret     string   `json:"secret,omitempty"`
-	Username   string   `json:"username,omitempty"`
-	Password   string   `json:"password,omitempty"`
-	Recipients []string `json:"recipients,omitempty"`
-}
-
 type NotificationSendResult struct {
 	StatusCode int
 	ErrorCode  string
@@ -50,6 +42,10 @@ type NotificationSendResult struct {
 	// TemplateFallback is true only when the sender rendered built-in fallback
 	// content rather than the preferred event fields/template.
 	TemplateFallback bool
+	// RemoteRef is the provider's handle for the delivered message (a Slack ts, a ticket key), kept
+	// on the delivery so a later event about the same subject can reply to it. Empty when the
+	// provider returns none.
+	RemoteRef string
 }
 
 // NotificationDeliveryObserver is optional worker-only instrumentation. Every
