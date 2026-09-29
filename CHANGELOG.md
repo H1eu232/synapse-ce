@@ -17,6 +17,8 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ### Added
 
+- **Tenant-isolated inbound provider webhook plane (#1434).** A separately authenticated 1 MiB HMAC ingress route resolves an opaque endpoint to one enabled integration and tenant via a restricted PostgreSQL lookup; secrets are vault-sealed and allow 24-hour rotation overlap. Shared row-locked admission enforces per-endpoint rate limits and a hostile cross-tenant test protects the routing boundary. No human auth exemption, provider receiver or UI is added.
+
 - **Syslog TLS SIEM sink (#1458).** Tenant administrators can stream existing
   audit and incident records as RFC 5424 messages over RFC 5425 TLS. Syslog
   destinations require `tls://host:port`; connections use the DNS-rebinding
