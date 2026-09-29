@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/projectanalysis"
 	scauc "github.com/KKloudTarus/synapse-ce/internal/usecase/sca"
@@ -321,6 +322,40 @@ func ciContextFromEnvWithReader(explicit projectanalysis.CIContext, lookup func(
 		pick(&out.TargetBranch, "BITBUCKET_PR_DESTINATION_BRANCH")
 		pick(&out.RepoSlug, "BITBUCKET_REPO_FULL_NAME")
 		pick(&out.HeadSHA, "BITBUCKET_COMMIT")
+	case strings.EqualFold(strings.TrimSpace(lookup("TF_BUILD")), "true"):
+		if out.Provider == "" {
+			pick(&out.Provider, "SYNAPSE_CI_PROVIDER")
+			if out.Provider == "" {
+				out.Provider = "azure-pipelines"
+			}
+		}
+		pick(&out.Branch, "SYSTEM_PULLREQUEST_SOURCEBRANCH", "BUILD_SOURCEBRANCH")
+		if explicit.Branch == "" {
+			out.Branch = strings.TrimPrefix(out.Branch, "refs/heads/")
+		}
+		pick(&out.RunID, "BUILD_BUILDID")
+		pick(&out.Actor, "BUILD_REQUESTEDFOR")
+		pick(&out.PullRequest, "SYNAPSE_PR_NUMBER")
+		if out.PullRequest == "" {
+			out.PullRequest = azurePipelinesPullRequest(lookup)
+		}
+		pick(&out.TargetBranch, "SYNAPSE_PR_TARGET_BRANCH", "SYSTEM_PULLREQUEST_TARGETBRANCH")
+		if explicit.TargetBranch == "" {
+			out.TargetBranch = strings.TrimPrefix(out.TargetBranch, "refs/heads/")
+		}
+		pick(&out.RepoSlug, "SYNAPSE_REPO_SLUG")
+		if out.RepoSlug == "" {
+			out.RepoSlug = azurePipelinesRepoSlug(lookup)
+		}
+		// Azure PR builds check out a synthetic merge commit. Never claim it as the forge head.
+		if out.PullRequest != "" {
+			pick(&out.HeadSHA, "SYNAPSE_PR_HEAD_SHA", "SYSTEM_PULLREQUEST_SOURCECOMMITID")
+		} else {
+			pick(&out.HeadSHA, "SYNAPSE_PR_HEAD_SHA", "BUILD_SOURCEVERSION")
+		}
+		if out.RunURL == "" {
+			out.RunURL = azurePipelinesRunURL(lookup)
+		}
 	case lookup("JENKINS_URL") != "":
 		if out.Provider == "" {
 			out.Provider = "jenkins"
@@ -339,6 +374,101 @@ func ciContextFromEnvWithReader(explicit projectanalysis.CIContext, lookup func(
 	pick(&out.RepoSlug, "SYNAPSE_REPO_SLUG")
 	pick(&out.HeadSHA, "SYNAPSE_PR_HEAD_SHA")
 	return out
+}
+
+func azurePipelinesPullRequest(lookup func(string) string) string {
+	provider := strings.ToLower(strings.TrimSpace(lookup("BUILD_REPOSITORY_PROVIDER")))
+	// Azure documents PullRequestNumber specifically for GitHub, where its forge-visible number can
+	// differ from PullRequestId. For Azure Repos the ID is the PR number used by the REST API.
+	keys := []string{"SYSTEM_PULLREQUEST_PULLREQUESTID", "SYSTEM_PULLREQUEST_PULLREQUESTNUMBER"}
+	if strings.HasPrefix(provider, "github") {
+		keys[0], keys[1] = keys[1], keys[0]
+	}
+	for _, key := range keys {
+		if value := strings.TrimSpace(lookup(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func azurePipelinesRepoSlug(lookup func(string) string) string {
+	provider := strings.ToLower(strings.TrimSpace(lookup("BUILD_REPOSITORY_PROVIDER")))
+	// Only Azure Repos has the organization/project/repository identity consumed by the Azure DevOps
+	// decorator. Do not fabricate an Azure target for GitHub or another external repository just
+	// because Azure Pipelines happens to run the build; those forges require explicit overrides.
+	if provider != "" && provider != "tfsgit" {
+		return ""
+	}
+	org, ok := azurePipelinesOrganization(lookup("SYSTEM_COLLECTIONURI"))
+	if !ok {
+		return ""
+	}
+	project := strings.TrimSpace(lookup("SYSTEM_TEAMPROJECT"))
+	repository := strings.TrimSpace(lookup("BUILD_REPOSITORY_NAME"))
+	if !safeAzurePipelinesIdentitySegment(project) || !safeAzurePipelinesIdentitySegment(repository) {
+		return ""
+	}
+	return org + "/" + project + "/" + repository
+}
+
+func safeAzurePipelinesIdentitySegment(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || value == "." || value == ".." || strings.ContainsAny(value, "/\\\\?#%") {
+		return false
+	}
+	for _, ch := range value {
+		if unicode.IsControl(ch) || unicode.Is(unicode.Cf, ch) {
+			return false
+		}
+	}
+	return true
+}
+
+func azurePipelinesOrganization(raw string) (string, bool) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Hostname(), "dev.azure.com") ||
+		(u.Port() != "" && u.Port() != "443") || u.User != nil || u.RawQuery != "" || u.ForceQuery ||
+		u.Fragment != "" || u.RawFragment != "" {
+		return "", false
+	}
+	org := strings.Trim(u.Path, "/")
+	if len(org) == 0 || len(org) > 64 {
+		return "", false
+	}
+	for _, ch := range org {
+		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-') {
+			return "", false
+		}
+	}
+	return org, true
+}
+
+// azurePipelinesRunURL builds a credential-free link from the current Azure job.
+// An arbitrary collection URL must never become an outbound link in the console.
+func azurePipelinesRunURL(lookup func(string) string) string {
+	raw := strings.TrimSpace(lookup("SYSTEM_COLLECTIONURI"))
+	project := strings.TrimSpace(lookup("SYSTEM_TEAMPROJECT"))
+	id := strings.TrimSpace(lookup("BUILD_BUILDID"))
+	if raw == "" || project == "" || id == "" {
+		return ""
+	}
+	for _, ch := range id {
+		if ch < '0' || ch > '9' {
+			return ""
+		}
+	}
+	for _, ch := range project {
+		if unicode.IsControl(ch) || unicode.Is(unicode.Cf, ch) || ch == '/' || ch == '\\' || ch == '?' || ch == '#' {
+			return ""
+		}
+	}
+	org, ok := azurePipelinesOrganization(raw)
+	if !ok {
+		return ""
+	}
+	u := &url.URL{Scheme: "https", Host: "dev.azure.com", Path: "/" + org + "/" + project + "/_build/results"}
+	u.RawQuery = url.Values{"buildId": {id}}.Encode()
+	return u.String()
 }
 
 func githubPullRequestNumber(ref string) string {
