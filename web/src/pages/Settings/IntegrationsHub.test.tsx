@@ -197,6 +197,19 @@ describe('IntegrationsHub', () => {
     expect(await screen.findByText('Test delivery queued for Security Slack (d3).')).toBeInTheDocument()
   })
 
+  it('shows a paused channel as Paused even when its last delivery succeeded', async () => {
+    vi.mocked(api.listCapabilities).mockResolvedValue([capability({ key: 'notifications', switch: 'SYNAPSE_NOTIFICATIONS_ENABLED' })])
+    vi.mocked(api.listNotificationChannels).mockResolvedValue([{
+      ...channel,
+      health: { state: 'paused', paused_at: '2026-09-04T00:00:00Z', paused_reason: 'consecutive_permanent_failures', consecutive_failures: 5, last_failure_code: 'destination_blocked' },
+    }])
+    vi.mocked(api.notificationDeliveryPage).mockResolvedValue({ items: [delivery({ state: 'delivered' })] })
+    renderHub()
+    const card = within(await screen.findByRole('listitem', { name: 'Security Slack' }))
+    expect(card.getByText('Paused')).toBeInTheDocument()
+    expect(card.queryByText('Healthy')).not.toBeInTheDocument()
+  })
+
   it('shows a disabled capability as off with its switch and planned ones as not available', async () => {
     vi.mocked(api.listCapabilities).mockResolvedValue([
       capability({ key: 'notifications', name: 'Tenant notifications', enabled: false, switch: 'SYNAPSE_NOTIFICATIONS_ENABLED' }),
@@ -249,5 +262,12 @@ describe('health derivation', () => {
     expect(channelHealth({ ...channel, enabled: false }, [delivery({})]).label).toBe('Disabled')
     expect(channelHealth(channel, [delivery({ state: 'cancelled' }), delivery({ state: 'dead_letter' })]).label).toBe('Failing')
     expect(channelHealth(channel, [delivery({ state: 'retrying' })]).label).toBe('Retrying')
+  })
+
+  it('reads the worker pause before the delivery history', () => {
+    const paused = { ...channel, health: { state: 'paused' as const, consecutive_failures: 5 } }
+    expect(channelHealth(paused, [delivery({ state: 'delivered' })])).toEqual({ label: 'Paused', tone: 'danger' })
+    expect(channelHealth({ ...paused, enabled: false }, []).label).toBe('Disabled')
+    expect(channelHealth({ ...channel, health: { state: 'active', consecutive_failures: 2 } }, [delivery({})]).label).toBe('Healthy')
   })
 })

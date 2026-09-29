@@ -21,6 +21,8 @@ type fakeRepo struct {
 	next             *time.Time
 	publishedEvent   domain.Event
 	publishedChannel shared.ID
+	cancelReason     string
+	outcomes         []ports.NotificationChannelOutcome
 }
 
 func (f *fakeRepo) LoadWork(context.Context, shared.ID, shared.ID) (ports.NotificationWork, error) {
@@ -37,12 +39,22 @@ func (f *fakeRepo) FinishAttempt(_ context.Context, _, _ shared.ID, _ string, _ 
 	f.next = next
 	return nil
 }
-func (f *fakeRepo) CancelDelivery(context.Context, shared.ID, shared.ID, string, int64, string) error {
+func (f *fakeRepo) CancelDelivery(_ context.Context, _, _ shared.ID, _ string, _ int64, reason string) error {
 	f.cancelled = true
+	f.cancelReason = reason
 	return nil
 }
 func (f *fakeRepo) DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) (bool, error) {
 	return false, nil
+}
+
+// RecordChannelOutcome applies the domain rules to the loaded channel, like the Postgres
+// repository does under its row lock.
+func (f *fakeRepo) RecordChannelOutcome(_ context.Context, _ shared.ID, o ports.NotificationChannelOutcome) (ports.NotificationChannelTransition, error) {
+	f.outcomes = append(f.outcomes, o)
+	next, effect := f.work.Channel.Health.Observe(o.Class, o.Code, o.At, o.Threshold)
+	f.work.Channel.Health = next
+	return ports.NotificationChannelTransition{Paused: effect == domain.HealthPausedNow, PauseID: "pause", Health: next}, nil
 }
 
 type fakeProtector struct{ raw []byte }

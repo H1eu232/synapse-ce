@@ -492,6 +492,8 @@ function SourceControlGroup({ canAdmin }: { canAdmin: boolean }) {
 /** Health from the channel's newest deliveries (newest first, as the API returns them). */
 export function channelHealth(channel: NotificationChannel, deliveries: NotificationDelivery[]): Health {
   if (!channel.enabled) return { label: 'Disabled', tone: 'neutral' }
+  // The worker's own verdict wins over the delivery history: a paused channel sends nothing (#1464).
+  if (channel.health?.state === 'paused') return { label: 'Paused', tone: 'danger' }
   const latest = deliveries.find((delivery) => delivery.state !== 'cancelled')
   if (!latest) return { label: 'No deliveries yet', tone: 'neutral' }
   if (latest.state === 'delivered') return { label: 'Healthy', tone: 'good' }

@@ -52,7 +52,11 @@ func Deliver(mandatory bool, choice Preference, tenantDefault bool) bool {
 	}
 }
 
-func InAppMandatory(event EventType) bool { return event == EventDestinationChanged }
+// InAppMandatory lists the administrator notices a user cannot mute in the inbox: a destination
+// change and an automatic channel pause (#1464).
+func InAppMandatory(event EventType) bool {
+	return event == EventDestinationChanged || event == EventChannelPaused
+}
 
 // PersonalRoleSupported reports whether a shipped event can grant that role.
 // Mention, approver and engagement-lead producers are not in this baseline, so
@@ -71,7 +75,7 @@ func PersonalRoleSupported(event EventType, role string) error {
 		if role == RoleAssignee {
 			return nil
 		}
-	case EventDestinationChanged:
+	case EventDestinationChanged, EventChannelPaused:
 		if role == RoleTenantAdmin {
 			return nil
 		}
@@ -149,6 +153,17 @@ func SubjectFromEvent(e Event) (PersonalSubject, error) {
 		var data DestinationNotice
 		if json.Unmarshal(e.Data, &data) != nil || (data.Action != "created" && data.Action != "host_changed") {
 			return PersonalSubject{}, fmt.Errorf("%w: destination notice payload", shared.ErrValidation)
+		}
+		return PersonalSubject{
+			Admins:  true,
+			Title:   data.Title,
+			Summary: data.Summary,
+			Link:    "/settings/alerting",
+		}, nil
+	case EventChannelPaused:
+		var data ChannelPausedNotice
+		if json.Unmarshal(e.Data, &data) != nil || data.Title == "" || data.ChannelID == "" {
+			return PersonalSubject{}, fmt.Errorf("%w: channel pause notice payload", shared.ErrValidation)
 		}
 		return PersonalSubject{
 			Admins:  true,
@@ -303,7 +318,7 @@ func ConfigurableEvents() []EventType {
 // recipient and a safe subject. Other framework events keep their tenant rules.
 func PersonalDeliveryAvailable(event EventType) bool {
 	switch event {
-	case EventOwnershipChanged, EventSLAApproaching, EventDestinationChanged:
+	case EventOwnershipChanged, EventSLAApproaching, EventDestinationChanged, EventChannelPaused:
 		return true
 	default:
 		return false
