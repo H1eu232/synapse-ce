@@ -453,7 +453,77 @@ function ChannelCreate({
   )
 }
 
-function ChannelList({
+const PAUSE_REASONS: Record<string, string> = {
+  consecutive_permanent_failures: 'consecutive permanent failures',
+}
+
+function failureCount(n: number) {
+  return `${n} consecutive permanent failure${n === 1 ? '' : 's'}`
+}
+
+/** Explains a channel's delivery health (#1464) in one line; nothing for a healthy channel. */
+function ChannelHealthLine({ channel }: { channel: NotificationChannel }) {
+  const health = channel.health
+  if (!health) return null
+  const last = health.last_failure_code ? (
+    <>
+      {' '}
+      (last: <code>{health.last_failure_code}</code>)
+    </>
+  ) : null
+  if (health.state === 'paused')
+    return (
+      <p className="text-sm text-error-primary">
+        Paused
+        {health.paused_at
+          ? ` since ${new Date(health.paused_at).toLocaleString()}`
+          : ''}{' '}
+        after {failureCount(health.consecutive_failures)}
+        {last}. Nothing is sent until an administrator resumes it; fix the
+        destination first.
+      </p>
+    )
+  if (health.consecutive_failures > 0)
+    return (
+      <p className="text-sm text-warning-primary">
+        {failureCount(health.consecutive_failures)}
+        {last}. A delivered message resets this.
+      </p>
+    )
+  return null
+}
+
+/** The channel's append-only pause and resume history, loaded on demand. */
+function ChannelHealthHistory({ channelId }: { channelId: string }) {
+  const { data, error, loading } = useFetch(
+    () => api.listNotificationChannelHealthEvents(channelId),
+    { deps: [channelId] },
+  )
+  if (loading) return <Spinner label="Loading pause history…" />
+  if (error) return <ErrorState message={error} />
+  if (!data || data.length === 0)
+    return <p className="text-sm text-tertiary">This channel has never been paused.</p>
+  return (
+    <ul className="space-y-1 text-sm text-secondary" aria-label="Pause history">
+      {data.map((e) => (
+        <li key={e.id}>
+          {new Date(e.occurred_at).toLocaleString()} ·{' '}
+          {e.action === 'paused'
+            ? `Paused by the worker after ${failureCount(e.failures)}`
+            : `Resumed by ${e.actor}`}
+          {e.failure_code ? (
+            <>
+              {' '}
+              (<code>{e.failure_code}</code>)
+            </>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+export function ChannelList({
   onEdit,
   channels,
   canAdmin,
@@ -466,6 +536,7 @@ function ChannelList({
   refresh: () => void
   notify: (message: string, tone?: 'success' | 'error' | 'info') => void
 }) {
+  const [historyFor, setHistoryFor] = useState<string | null>(null)
   async function action(fn: () => Promise<void>) {
     try {
       await fn()
@@ -494,13 +565,15 @@ function ChannelList({
   return (
     <Card title="Channels" bodyClass="p-0">
       <ul className="divide-y divide-secondary">
-        {channels.map((c) => (
+        {channels.map((c) => {
+          const paused = c.health?.state === 'paused'
+          return (
           <li
             key={c.id}
             className="flex flex-wrap items-center gap-3 px-5 py-4"
           >
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-primary">{c.name}</span>
                 <Pill
                   className={
@@ -509,13 +582,48 @@ function ChannelList({
                 >
                   {c.enabled ? 'Enabled' : 'Disabled'}
                 </Pill>
+                {paused && (
+                  <Pill className="text-error-primary">
+                    Paused:{' '}
+                    {PAUSE_REASONS[c.health?.paused_reason ?? ''] ??
+                      c.health?.paused_reason ??
+                      'unknown reason'}
+                  </Pill>
+                )}
                 <Pill>{c.type}</Pill>
               </div>
               <p className="truncate text-sm text-tertiary">{c.destination}</p>
+              <ChannelHealthLine channel={c} />
+              {historyFor === c.id && (
+                <div className="mt-2">
+                  <ChannelHealthHistory channelId={c.id} />
+                </div>
+              )}
             </div>
+            {paused && canAdmin && (
+              <Button
+                onClick={async () => {
+                  await action(async () => {
+                    await api.resumeNotificationChannel(c.id, c.revision)
+                    notify(`${c.name} resumed. Deliveries start again from the next event.`, 'success')
+                    refresh()
+                  })
+                }}
+              >
+                Resume
+              </Button>
+            )}
             <Button
               variant="secondary"
-              disabled={!canAdmin}
+              aria-expanded={historyFor === c.id}
+              onClick={() => setHistoryFor(historyFor === c.id ? null : c.id)}
+            >
+              History
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={!canAdmin || paused}
+              title={paused ? 'Resume the channel before sending a test.' : undefined}
               onClick={async () => {
                 await action(async () => {
                   const r = await api.testNotificationChannel(c.id)
@@ -555,7 +663,8 @@ function ChannelList({
               <Trash01 className="size-4" />
             </Button>
           </li>
-        ))}
+          )
+        })}
       </ul>
     </Card>
   )

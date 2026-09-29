@@ -71,10 +71,10 @@ func (s *Service) SavePreference(ctx context.Context, tenant, user shared.ID, ev
 	if !state.Valid() || (channel != notification.PersonalInApp && channel != notification.PersonalEmail) {
 		return ports.InboxPreference{}, fmt.Errorf("%w: preference channel or state is invalid", shared.ErrValidation)
 	}
-	if event == notification.EventDestinationChanged && channel == notification.PersonalInApp && state == notification.PreferenceDisabled {
-		return ports.InboxPreference{}, fmt.Errorf("%w: in-app destination notices are mandatory", shared.ErrValidation)
+	if notification.InAppMandatory(event) && channel == notification.PersonalInApp && state == notification.PreferenceDisabled {
+		return ports.InboxPreference{}, fmt.Errorf("%w: in-app administrator notices are mandatory", shared.ErrValidation)
 	}
-	known := event == notification.EventDestinationChanged && channel == notification.PersonalEmail
+	known := notification.InAppMandatory(event) && channel == notification.PersonalEmail
 	for _, candidate := range notification.ConfigurableEvents() {
 		if candidate == event {
 			known = true
