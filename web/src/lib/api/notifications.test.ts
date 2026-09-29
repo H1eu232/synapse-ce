@@ -31,6 +31,23 @@ describe('notification API', () => {
       expect.objectContaining({ method: 'POST' }),
     )
   })
+  it('resumes a paused channel with only its revision', async () => {
+    respond({ id: 'c/1', revision: 5, health: { state: 'active', consecutive_failures: 0 } })
+    const resumed = await notificationsApi.resumeNotificationChannel('c/1', 4)
+    expect(resumed.health?.state).toBe('active')
+    const [url, options] = vi.mocked(fetch).mock.calls[0]
+    expect(String(url)).toContain('/notifications/channels/c%2F1/resume')
+    expect(options).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(String(options?.body))).toEqual({ revision: 4 })
+  })
+  it('reads the pause and resume history', async () => {
+    respond({ items: [{ id: 'h1', channel_id: 'c1', action: 'paused', failures: 5, actor: 'system', occurred_at: 'date' }] })
+    const items = await notificationsApi.listNotificationChannelHealthEvents('c1')
+    expect(items).toHaveLength(1)
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain('/notifications/channels/c1/health-events')
+    respond({})
+    expect(await notificationsApi.listNotificationChannelHealthEvents('c1')).toEqual([])
+  })
   it('sends only rule input fields when toggling a loaded rule', async () => {
     respond({})
     await notificationsApi.updateNotificationRule('r', {

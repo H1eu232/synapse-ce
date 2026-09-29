@@ -35,6 +35,7 @@ const (
 	EventIncidentCreated     EventType = "incident.created"
 	EventOwnershipChanged    EventType = "finding.ownership_changed"
 	EventDestinationChanged  EventType = "notification.destination_changed"
+	EventChannelPaused       EventType = "notification.channel_paused"
 	EventTest                EventType = "notification.test"
 )
 
@@ -73,6 +74,8 @@ type Channel struct {
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
 	DeletedAt     *time.Time  `json:"deleted_at,omitempty"`
+	// Health is maintained by the delivery worker (#1464); administrators change it only by resuming.
+	Health ChannelHealth `json:"health"`
 }
 
 func (c Channel) Validate() error {

@@ -24,6 +24,7 @@ var v1DataFields = map[EventType]string{
 	"incident.created":                 "title summary incident_id asset_id",
 	"finding.ownership_changed":        "title summary decision_id finding_id engagement_id old_team_id new_team_id old_assignee_id new_assignee_id actor reason",
 	"notification.destination_changed": "title summary actor action class scheme host",
+	"notification.channel_paused":      "title summary channel_id class reason failure_code",
 	"notification.test":                "title",
 }
 
@@ -225,11 +226,13 @@ func TestPublishedV1FieldConstraints(t *testing.T) {
 		"incident.created":                 "engagement_id severity",
 		"finding.ownership_changed":        "engagement_id",
 		"notification.destination_changed": "",
+		"notification.channel_paused":      "",
 		"notification.test":                "",
 	}
 	closedEnums := map[EventType]map[string]string{
 		"vulnerability_action.created":     {"action_type": strings.Join(ActionTypes(), " ")},
 		"notification.destination_changed": {"action": "created host_changed", "class": "webhook slack", "scheme": "http https"},
+		"notification.channel_paused":      {"reason": "consecutive_permanent_failures"},
 	}
 	idFields := map[EventType]string{
 		"vulnerability_action.created":     "outbox_id",
@@ -240,6 +243,7 @@ func TestPublishedV1FieldConstraints(t *testing.T) {
 		"incident.created":                 "incident_id",
 		"finding.ownership_changed":        "decision_id finding_id engagement_id",
 		"notification.destination_changed": "host",
+		"notification.channel_paused":      "channel_id class failure_code",
 	}
 	for _, spec := range EventCatalog() {
 		fields, ok := optionalEnvelope[spec.Type]
