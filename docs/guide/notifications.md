@@ -275,7 +275,7 @@ What counts:
 | Attempt result | Effect on the count |
 | --- | --- |
 | Delivered | Resets it to zero |
-| Final failure the channel owns: `destination_blocked`, `smtp_destination_blocked`, `channel_config_invalid`, `smtp_recipient_invalid`, HTTP 4xx other than 408 and 429 (`http_4xx`), SMTP 5xx (`smtp_5xx`) | Adds one |
+| Final failure the channel owns: `destination_blocked`, `smtp_destination_blocked`, `channel_config_invalid`, `smtp_recipient_invalid`, HTTP 4xx other than 408 and 429 (`http_4xx`), SMTP 5xx (`smtp_5xx`) other than the RFC 4954 AUTH replies 530, 534, 535 and 538, which describe the shared relay credential | Adds one |
 | Retryable failure: network errors, HTTP 408, 429 and 5xx, SMTP 4xx, including the eighth one that exhausts a delivery | None: it neither adds nor resets |
 | Final failure the operator owns: `smtp_not_configured`, `smtp_sender_invalid`, `smtp_tls_required`, `smtp_auth_unavailable`, `channel_secret_unavailable`, and internal codes such as `encode_failed` | None |
 

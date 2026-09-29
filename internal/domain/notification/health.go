@@ -96,10 +96,15 @@ func PermanentChannelFailure(code string) bool {
 		return n >= 400 && n < 500 && n != 408 && n != 429
 	}
 	if n, ok := statusCode(code, "smtp_"); ok {
-		return n >= 500 && n < 600
+		return n >= 500 && n < 600 && !smtpAuthFailure[n]
 	}
 	return false
 }
+
+// smtpAuthFailure are the RFC 4954 replies to AUTH. They describe the operator's relay credential,
+// which every email channel shares, so counting them would pause all email channels for a fault no
+// channel owns.
+var smtpAuthFailure = map[int]bool{530: true, 534: true, 535: true, 538: true}
 
 func statusCode(code, prefix string) (int, bool) {
 	rest, ok := strings.CutPrefix(code, prefix)

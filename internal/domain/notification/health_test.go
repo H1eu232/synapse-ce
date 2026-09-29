@@ -20,6 +20,8 @@ func TestPermanentChannelFailureCountsOnlyChannelOwnedFinalCodes(t *testing.T) {
 		"", "http_408", "http_429", "http_500", "http_503", "http_302", "network_error", "smtp_connect", "smtp_error", "smtp_421", "smtp_451",
 		// Operator-side or internal final failures: pausing every channel would not fix them.
 		"smtp_not_configured", "smtp_sender_invalid", "smtp_tls_required", "smtp_auth_unavailable", "channel_secret_unavailable",
+		// RFC 4954 AUTH replies describe the shared relay credential, not the channel.
+		"smtp_530", "smtp_534", "smtp_535", "smtp_538",
 		"encode_failed", "request_invalid", "unsupported_channel", "delivery_failed",
 		"http_4000", "http_4x0", "smtp_5",
 	} {
