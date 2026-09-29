@@ -28,7 +28,7 @@ const (
 )
 
 // familyFields lists the content fields each family renders. It matches the family CHECK on
-// notification_templates (0196); adding a family is a code change plus that CHECK.
+// notification_templates (0195); adding a family is a code change plus that CHECK.
 var familyFields = map[TemplateFamily][]string{
 	FamilyChat:    {"title", "body"},
 	FamilyEmail:   {"subject", "body"},
@@ -71,7 +71,7 @@ const (
 	AnyLocale    tenancy.Locale = "*"
 )
 
-// Bounds shared with the CHECKs in 0196.
+// Bounds shared with the CHECKs in 0195.
 const (
 	// MaxTemplateNameRunes caps a template's display name.
 	MaxTemplateNameRunes = 200

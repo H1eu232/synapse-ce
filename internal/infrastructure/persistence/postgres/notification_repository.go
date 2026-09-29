@@ -142,7 +142,7 @@ func (r *NotificationRepository) ListChannels(ctx context.Context, tenant shared
 
 const channelSelect = `SELECT tenant_id,id,name,channel_type,enabled,destination,recipients,revision,secret_version,created_at,updated_at,deleted_at,` + channelHealthColumns + ` FROM notification_channels`
 
-// channelHealthColumns is the health projection scanned by scanChannelHealth (migration 0197).
+// channelHealthColumns is the health projection scanned by scanChannelHealth (migration 0196).
 const channelHealthColumns = `consecutive_permanent_failures,last_failure_code,last_failure_at,paused_at,COALESCE(paused_reason,'')`
 
 func scanChannel(row scanner, c *notification.Channel) error {

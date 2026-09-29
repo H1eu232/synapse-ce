@@ -20,7 +20,7 @@ import (
 var _ ports.NotificationTemplateStore = (*NotificationTemplateStore)(nil)
 
 // NotificationTemplateStore is the PostgreSQL ports.NotificationTemplateStore over
-// notification_templates and notification_template_versions (0196). Every statement runs inside
+// notification_templates and notification_template_versions (0195). Every statement runs inside
 // WithTenant, so forced RLS confines it to the caller's tenant; the one-active index and the
 // append-only trigger back the rules the store checks first.
 type NotificationTemplateStore struct{ pool *pgxpool.Pool }

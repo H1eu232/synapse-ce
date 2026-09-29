@@ -15,7 +15,7 @@ import (
 var _ ports.NotificationTemplateStore = (*NotificationTemplateStore)(nil)
 
 // NotificationTemplateStore is the in-memory ports.NotificationTemplateStore. It applies the same
-// rules as the PostgreSQL store (0196): rows are keyed by tenant, versions are never rewritten, and
+// rules as the PostgreSQL store (0195): rows are keyed by tenant, versions are never rewritten, and
 // at most one template per key is active.
 type NotificationTemplateStore struct {
 	mu        sync.Mutex

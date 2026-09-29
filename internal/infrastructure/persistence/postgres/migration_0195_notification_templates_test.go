@@ -19,7 +19,7 @@ import (
 
 const templateChecksum = "0000000000000000000000000000000000000000000000000000000000000000"
 
-func TestMigration0196NotificationTemplatesSchema(t *testing.T) {
+func TestMigration0195NotificationTemplatesSchema(t *testing.T) {
 	_, db := ownershipTestDatabase(t, 194, nil)
 	for _, table := range []string{"notification_templates", "notification_template_versions"} {
 		requireMigrationTable(t, db, table, true)

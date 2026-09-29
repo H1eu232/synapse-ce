@@ -15,7 +15,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
 
-// Channel health persistence (#1464, migration 0197). The counting rules live in the domain
+// Channel health persistence (#1464, migration 0196). The counting rules live in the domain
 // (notification.ChannelHealth.Observe); this file locks the channel row, applies them and, on the
 // transition to paused, performs the side effects in the same transaction.
 

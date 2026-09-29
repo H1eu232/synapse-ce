@@ -13,12 +13,12 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
 
-// The base is 194 (the main line when #1464 was written); 0197 does not depend on 0195 or 0196,
-// so the test passes whether or not those migrations are present.
-const migration0197Base = 194
+// The base is 194, the last migration before this branch. 0196 does not depend on 0195 (the
+// template store), so the channel health schema is checked on its own.
+const migration0196Base = 194
 
-func TestMigration0197NotificationChannelHealthSchema(t *testing.T) {
-	_, db := ownershipTestDatabase(t, migration0197Base, nil)
+func TestMigration0196NotificationChannelHealthSchema(t *testing.T) {
+	_, db := ownershipTestDatabase(t, migration0196Base, nil)
 	requireMigrationTable(t, db, "notification_channel_health_events", true)
 	requireMigrationRLS(t, db, "notification_channel_health_events")
 	requireMigrationIndexes(t, db, "notification_channel_health_events_channel")
@@ -87,7 +87,7 @@ func TestMigration0197NotificationChannelHealthSchema(t *testing.T) {
 	if err := exec(`DELETE FROM notification_channel_health_events WHERE id='h1'`); err == nil {
 		t.Error("health history row was deleted")
 	}
-	if err := goose.DownTo(db, ".", migration0197Base); err != nil {
+	if err := goose.DownTo(db, ".", migration0196Base); err != nil {
 		t.Fatalf("migrate down: %v", err)
 	}
 	requireMigrationTable(t, db, "notification_channel_health_events", false)
@@ -97,11 +97,11 @@ func TestMigration0197NotificationChannelHealthSchema(t *testing.T) {
 	}
 }
 
-// TestMigration0197ChannelHealthIsTenantIsolated is the hostile case under the runtime role, which
+// TestMigration0196ChannelHealthIsTenantIsolated is the hostile case under the runtime role, which
 // does not bypass RLS: another tenant cannot read a channel's pause history, cannot forge history
 // for it, cannot resume it and cannot clear its pause.
-func TestMigration0197ChannelHealthIsTenantIsolated(t *testing.T) {
-	pool, db := ownershipTestDatabase(t, migration0197Base, nil)
+func TestMigration0196ChannelHealthIsTenantIsolated(t *testing.T) {
+	pool, db := ownershipTestDatabase(t, migration0196Base, nil)
 	for _, id := range []string{"t-a", "t-b"} {
 		if _, err := db.Exec(`INSERT INTO tenants(id,name) VALUES($1,$1) ON CONFLICT DO NOTHING`, id); err != nil {
 			t.Fatal(err)
