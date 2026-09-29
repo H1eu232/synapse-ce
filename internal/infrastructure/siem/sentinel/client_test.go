@@ -293,6 +293,9 @@ func TestIngestionURLRejectsMalformedOrigin(t *testing.T) {
 	if _, _, err := ingestionURL("https://example.eastus-1.ingest.monitor.azure.com", testDCR+"/SynapseSIEM"); err == nil {
 		t.Fatal("sentinel stream without Custom- prefix was accepted")
 	}
+	if _, _, err := ingestionURL("https://example.eastus-1.ingest.monitor.azure.com", testDCR+"/Custom-"); err == nil {
+		t.Fatal("sentinel stream with an empty name was accepted")
+	}
 }
 
 func TestRetryAfterIsBounded(t *testing.T) {

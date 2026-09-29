@@ -64,6 +64,7 @@ export function SIEM() {
   const canAdmin = me?.role === 'admin' || me?.role === 'owner'
   const [sinks, setSinks] = useState<SIEMSink[] | null | undefined>(undefined)
   const [status, setStatus] = useState<SIEMStatus | null>(null)
+  const [tested, setTested] = useState<{ id: string; guarantee: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [denied, setDenied] = useState(false)
   const [unsupported, setUnsupported] = useState(false)
@@ -90,6 +91,16 @@ export function SIEM() {
   useEffect(() => {
     if (canAdmin) void load()
   }, [canAdmin, load])
+  async function testConnection(id: string) {
+    setTested(null)
+    setError(null)
+    try {
+      const result = await api.testSIEMSink(id)
+      setTested({ id, guarantee: result.guarantee })
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Connection test failed')
+    }
+  }
 
   if (!me) return <Spinner label="Loading permissions" />
   if (!canAdmin) {
@@ -132,10 +143,11 @@ export function SIEM() {
                     <p className="mt-1 text-sm text-tertiary">{guarantees[sink.ack_mode]}</p>
                     {sink.blocked_reason ? <p className="mt-2 text-sm text-error-primary">{sink.blocked_reason}</p> : null}
                     {sink.paused ? <p className="mt-1 text-sm text-warning-primary">Paused</p> : null}
+                    {tested?.id === sink.id ? <p role="status" className="mt-2 text-sm text-success-primary">Connection test accepted ({tested.guarantee}).</p> : null}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button type="button" onClick={() => void showStatus(sink.id, setStatus, setError)}>Status</Button>
-                    <Button type="button" onClick={() => void run(() => api.testSIEMSink(sink.id), load, setError)}>Test</Button>
+                    <Button type="button" onClick={() => void testConnection(sink.id)}>Test</Button>
                     {sink.paused ? (
                       <Button type="button" onClick={() => void run(() => api.resumeSIEMSink(sink.id, sink.version), load, setError)}>Resume</Button>
                     ) : (

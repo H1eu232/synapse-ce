@@ -271,7 +271,7 @@ func validDCR(value string) bool {
 }
 
 func validStream(value string) bool {
-	if !strings.HasPrefix(value, "Custom-") || len(value) > 128 {
+	if !strings.HasPrefix(value, "Custom-") || len(value) <= len("Custom-") || len(value) > 128 {
 		return false
 	}
 	for _, r := range value {

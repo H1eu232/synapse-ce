@@ -141,7 +141,7 @@ func validSentinelTarget(target string) bool {
 			return false
 		}
 	}
-	if !strings.HasPrefix(stream, "Custom-") || len(stream) > 128 {
+	if !strings.HasPrefix(stream, "Custom-") || len(stream) <= len("Custom-") || len(stream) > 128 {
 		return false
 	}
 	for _, r := range stream {

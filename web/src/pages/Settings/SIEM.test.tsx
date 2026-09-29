@@ -146,6 +146,7 @@ describe('SIEM settings', () => {
     await waitFor(() => {
       expect(api.testSIEMSink).toHaveBeenCalledWith('sink-blocked')
     })
+    expect(await screen.findByRole('status')).toHaveTextContent('Connection test accepted (hec_acceptance).')
   })
 
   it('resumes a blocked sink that is not paused', async () => {

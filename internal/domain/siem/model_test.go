@@ -103,7 +103,7 @@ func TestIndexerAckIsNotImplied(t *testing.T) {
 	if !validSentinelTarget("dcr-0123456789abcdef0123456789abcdef/Custom-SynapseSIEM") {
 		t.Fatal("valid microsoft sentinel target was rejected")
 	}
-	for _, target := range []string{"", "dcr-short/Custom-SynapseSIEM", "dcr-0123456789ABCDEF0123456789abcdef/Custom-SynapseSIEM", "dcr-0123456789abcdef0123456789abcdef/SynapseSIEM", " dcr-0123456789abcdef0123456789abcdef/Custom-SynapseSIEM ", "dcr-0123456789abcdef0123456789abcdef/a/b"} {
+	for _, target := range []string{"", "dcr-short/Custom-SynapseSIEM", "dcr-0123456789abcdef0123456789abcdef/Custom-", "dcr-0123456789ABCDEF0123456789abcdef/Custom-SynapseSIEM", "dcr-0123456789abcdef0123456789abcdef/SynapseSIEM", " dcr-0123456789abcdef0123456789abcdef/Custom-SynapseSIEM ", "dcr-0123456789abcdef0123456789abcdef/a/b"} {
 		if validSentinelTarget(target) {
 			t.Fatalf("invalid microsoft sentinel target accepted: %s", target)
 		}
