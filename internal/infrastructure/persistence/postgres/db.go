@@ -35,6 +35,9 @@ type PoolConfig struct {
 	MaxConnLifetime   time.Duration
 	MaxConnIdleTime   time.Duration
 	HealthCheckPeriod time.Duration
+	// Nil preserves the default (capture enabled). Composition roots pass the
+	// parsed SIEM switch so transaction setup never reads the environment.
+	SIEMCaptureEnabled *bool
 }
 
 func (c *PoolConfig) withDefaults() {
@@ -68,6 +71,17 @@ func buildPoolConfig(dsn string, pc PoolConfig) (*pgxpool.Config, error) {
 	cfg.MaxConnLifetime = pc.MaxConnLifetime
 	cfg.MaxConnIdleTime = pc.MaxConnIdleTime
 	cfg.HealthCheckPeriod = pc.HealthCheckPeriod
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	capture := "on"
+	if pc.SIEMCaptureEnabled != nil && !*pc.SIEMCaptureEnabled {
+		capture = "off"
+	}
+	// PostgreSQL accepts dotted custom GUCs at connection startup. Keep the
+	// configured value on the pool so WithTenant can reassert it locally in
+	// every transaction, even after a connection is reused.
+	cfg.ConnConfig.RuntimeParams["app.siem_capture_enabled"] = capture
 	return cfg, nil
 }
 

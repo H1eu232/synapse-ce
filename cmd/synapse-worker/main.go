@@ -30,6 +30,7 @@ import (
 	integrationdom "github.com/KKloudTarus/synapse-ce/internal/domain/integration"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/judgment"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/vulnerabilityreconcile"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/accuracyprobe"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/blob"
@@ -45,6 +46,9 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/persistence/postgres"
 	recontools "github.com/KKloudTarus/synapse-ce/internal/infrastructure/recon"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sandbox"
+	elastic "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/elastic"
+	siemseal "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/seal"
+	splunk "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/splunk"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/signing"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sourceartifact"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sourceupload"
@@ -60,6 +64,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/platform/binregistry"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/buildinfo"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/config"
+
 	"github.com/KKloudTarus/synapse-ce/internal/platform/idgen"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/jobs"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/logging"
@@ -96,6 +101,7 @@ import (
 	reconuc "github.com/KKloudTarus/synapse-ce/internal/usecase/recon"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/safety"
 	scauc "github.com/KKloudTarus/synapse-ce/internal/usecase/sca"
+	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/slauc"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/usercontacts"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/vulnerabilitycorrelation"
@@ -109,6 +115,8 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/vulnerabilityscheduler"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/worker"
 	writeupdraftuc "github.com/KKloudTarus/synapse-ce/internal/usecase/writeupdraftuc"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -200,6 +208,7 @@ func main() {
 	pool, err := postgres.ConnectPool(startup, cfg.DBDSN, postgres.PoolConfig{
 		MaxConns: int32(cfg.DBMaxConns), MinConns: int32(cfg.DBMinConns),
 		MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime,
+		SIEMCaptureEnabled: &cfg.SIEMEnabled,
 	})
 	if err != nil {
 		log.Error("db connect failed", "err", err)
@@ -655,6 +664,7 @@ func main() {
 		maintenanceTasks = append(maintenanceTasks, ownershipWorker.Run)
 		log.Info("durable finding ownership routing enabled", "mode", cfg.OwnershipMode, "profile", cfg.WorkerProfile)
 	}
+	var workerMetricsRegistry *prometheus.Registry
 	if cfg.NotificationEnabled {
 		if cfg.VaultMasterKey == "" {
 			log.Error("SYNAPSE_NOTIFICATIONS_ENABLED requires SYNAPSE_VAULT_MASTER_KEY shared by API and worker")
@@ -673,6 +683,7 @@ func main() {
 		// aggregate queue health but never observes worker transport outcomes.
 		if cfg.MetricsEnabled {
 			workerMetrics := observability.NewWorkerNotificationMetrics(postgres.NewNotificationRepository(pool))
+			workerMetricsRegistry = workerMetrics.Registry()
 			notificationService.SetDeliveryObserver(workerMetrics)
 			mux := http.NewServeMux()
 			mux.Handle("GET /metrics", workerMetrics.Handler())
@@ -1201,6 +1212,71 @@ func main() {
 			}
 		},
 	)
+
+	// SIEM export runs on every replica. Leases, not leader election, decide
+	// which worker may commit a partition. Its counters share the worker
+	// /metrics listener instead of binding the address a second time.
+	if cfg.SIEMEnabled && cfg.MetricsEnabled && workerMetricsRegistry == nil {
+		workerMetricsRegistry = prometheus.NewRegistry()
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", promhttp.HandlerFor(workerMetricsRegistry, promhttp.HandlerOpts{}))
+		listener, listenErr := net.Listen("tcp", cfg.MetricsAddr)
+		if listenErr != nil {
+			log.Error("worker metrics listener failed", "err", listenErr)
+			os.Exit(1)
+		}
+		metricsServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			if serveErr := metricsServer.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && ctx.Err() == nil {
+				log.Error("worker metrics listener stopped", "err", serveErr)
+				stop()
+			}
+		}()
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			if shutdownErr := metricsServer.Shutdown(shutdownCtx); shutdownErr != nil {
+				log.Warn("worker metrics shutdown failed", "err", shutdownErr)
+			}
+		}()
+		log.Info("private worker metrics enabled", "addr", cfg.MetricsAddr)
+	}
+	if cfg.SIEMEnabled {
+		go func() {
+			repository := postgres.NewSIEMRepository(pool)
+			service, serviceErr := siemuc.NewService(repository, repository, repository, siemseal.Vault{Cipher: vaultCipher}, map[siem.Provider]ports.SIEMDriver{
+				siem.ProviderSplunk:        splunk.New(5*time.Second, true),
+				siem.ProviderElasticsearch: elastic.New(5 * time.Second),
+			}, auditLog, clock, ids)
+			if serviceErr != nil {
+				log.Error("siem worker init failed", "err", serviceErr)
+				return
+			}
+			if err := service.SetPublicBase(cfg.SIEMPublicBaseURL); err != nil {
+				log.Error("siem public base URL is invalid", "err", err)
+				return
+			}
+			if cfg.MetricsEnabled {
+				service.SetMetrics(observability.NewSIEMMetrics(workerMetricsRegistry))
+			}
+			workerID := "siem-" + ids.NewID().String()
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				stats, tickErr := service.Tick(ctx, workerID, siemuc.TickBudget{MaxPartitions: 8, Deadline: clock.Now().Add(5 * time.Second)})
+				if tickErr != nil && ctx.Err() == nil {
+					log.Warn("siem tick failed", "err", tickErr)
+				} else if stats.Sent > 0 || stats.Blocked > 0 {
+					log.Info("siem tick", "sent", stats.Sent, "blocked", stats.Blocked)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
 
 	runWorkerRuntime(ctx, cfg, queue, handlers, maintenanceTasks, leaderStore, auditLog, clock, ids, visibility, log)
 }

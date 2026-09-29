@@ -108,25 +108,22 @@ export function IntegrationsHub() {
         info="Publish engagement and assessment reports to Confluence and other documentation spaces."
         capability={capabilities?.get('docpublish') ?? null}
       />
-      <UnavailableGroup
-        title="SIEM"
-        icon={ShieldTick}
-        info="Stream findings and audit events to a SIEM."
-        capability={capabilities?.get('siem') ?? null}
-      />
+      <SIEMGroup key={`siem-${generation}`} canAdmin={canAdmin} />
     </div>
   )
 }
 
 // ---- Group shell ----
 
-type GroupStatus = 'on' | 'off' | 'planned' | 'restricted'
+type GroupStatus = 'on' | 'off' | 'planned' | 'restricted' | 'unknown' | 'available'
 
 const GROUP_STATUS: Record<GroupStatus, { label: string; className: string }> = {
   on: { label: 'On', className: 'bg-low/10 text-low' },
   off: { label: 'Off', className: 'text-tertiary' },
   planned: { label: 'Not available yet', className: 'text-tertiary' },
   restricted: { label: 'Admin only', className: 'text-tertiary' },
+  unknown: { label: 'Unknown', className: 'text-tertiary' },
+  available: { label: 'Available', className: 'bg-low/10 text-low' },
 }
 
 function Group({
@@ -601,6 +598,45 @@ function MessagingGroup({ canAdmin, capabilities }: { canAdmin: boolean; capabil
             </CardGrid>
           )}
         </>
+      )}
+    </Group>
+  )
+}
+
+// ---- SIEM ----
+
+function SIEMGroup({ canAdmin }: { canAdmin: boolean }) {
+  const [count, setCount] = useState<number | null | undefined>(undefined)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!canAdmin) return
+    let live = true
+    api.listSIEMSinks().then(
+      (sinks) => { if (live) setCount(sinks?.length ?? null) },
+      (caught) => { if (live) setError(message(caught)) },
+    )
+    return () => { live = false }
+  }, [canAdmin])
+
+  return (
+    <Group
+      title="SIEM"
+      icon={ShieldTick}
+      info="Export audit and incident events to Splunk HEC or Elasticsearch. Stream status and connection tests are on the SIEM settings page."
+      status={!canAdmin ? 'restricted' : error || count === undefined ? 'unknown' : count === null ? 'off' : 'available'}
+      manage={canAdmin && count !== null && count !== undefined ? { to: '/settings/siem', label: 'Manage SIEM streams' } : undefined}
+    >
+      {!canAdmin ? (
+        <EmptyState icon={Lock01} title="Administrator access required" hint="Only tenant administrators can see SIEM destinations and their status." />
+      ) : error ? (
+        <ErrorState message={error} />
+      ) : count === undefined ? (
+        <Spinner label="Loading SIEM streams…" />
+      ) : count === null ? (
+        <EmptyState icon={ShieldTick} title="SIEM streams are not enabled" hint="This server has no SIEM sink API." />
+      ) : (
+        <EmptyState icon={ShieldTick} title={count === 0 ? 'No SIEM destinations yet' : `${count} SIEM destination${count === 1 ? '' : 's'} configured`} hint="Manage destinations, stream status and connection tests on the SIEM settings page." />
       )}
     </Group>
   )

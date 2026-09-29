@@ -61,6 +61,7 @@ const Team = lazy(() => import('./pages/Settings/Team').then(m => ({ default: m.
 const SLAPolicy = lazy(() => import('./pages/Settings/SLAPolicy').then(m => ({ default: m.SLAPolicy })))
 const OffensivePolicy = lazy(() => import('./pages/Settings/OffensivePolicy').then(m => ({ default: m.OffensivePolicy })))
 const Alerting = lazy(() => import('./pages/Settings/Alerting').then(m => ({ default: m.Alerting })))
+const SIEM = lazy(() => import('./pages/Settings/SIEM').then(m => ({ default: m.SIEM })))
 const RegionalSettings = lazy(() => import('./pages/Settings/RegionalSettings').then(m => ({ default: m.RegionalSettings })))
 const OwnershipInbox = lazy(() => import('./pages/Ownership/OwnershipInbox').then(m => ({ default: m.OwnershipInbox })))
 const OwnershipSettings = lazy(() => import('./pages/Ownership/OwnershipSettings').then(m => ({ default: m.OwnershipSettings })))
@@ -150,6 +151,7 @@ function Gate() {
           <Route path="sla" element={<SLAPolicy />} />
           <Route path="offensive-policy" element={<OffensivePolicy />} />
           <Route path="alerting" element={<Alerting />} />
+          <Route path="siem" element={<SIEM />} />
           <Route path="regional" element={<RegionalSettings />} />
           <Route path="ownership" element={<OwnershipSettings />} />
           <Route path="assignee-review" element={<AssigneeReview />} />

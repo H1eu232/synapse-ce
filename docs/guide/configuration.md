@@ -515,6 +515,13 @@ All are best-effort and no-op without inputs. Set a flag to `false` to opt out.
 The settings below are intentionally grouped by owning process. They are real operator controls even
 when they are used only by a CLI, helper, or optional subsystem.
 
+### SIEM streams
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SYNAPSE_SIEM_ENABLED` | `true` | Set `false` on every API and worker replica to stop incident capture and SIEM sends. Pausing one sink does not stop capture. Events written while capture is off are not in the live partition; a historical backfill can still copy identities that were never captured. |
+| `SYNAPSE_SIEM_PUBLIC_BASE_URL` | empty | Optional absolute `https` console origin, with no path, added to exported SIEM records as a deep link. Empty omits links. It does not fall back to `SYNAPSE_PUBLIC_BASE_URL`, because that console builder can include a deployment prefix and uses different routes. |
+
 ### Database, project storage, and maintenance
 
 | Variable | Default | Description |

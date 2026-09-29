@@ -6054,6 +6054,94 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
 
+  /api/v1/siem/sinks:
+    get:
+      tags: [siem]
+      operationId: listSIEMSinks
+      summary: List tenant SIEM sinks without secrets
+      responses:
+        "200": {description: Sinks, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: "#/components/schemas/SIEMSink"}}}}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [siem]
+      operationId: createSIEMSink
+      summary: Create a Splunk or Elasticsearch sink
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/SIEMSinkInput"}}}}
+      responses:
+        "201": {description: Created sink, content: {application/json: {schema: {$ref: "#/components/schemas/SIEMSink"}}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /api/v1/siem/sinks/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    get:
+      tags: [siem]
+      operationId: getSIEMSink
+      summary: Get one SIEM sink without its secret
+      responses:
+        "200": {description: Sink, content: {application/json: {schema: {$ref: "#/components/schemas/SIEMSink"}}}}
+        "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      tags: [siem]
+      operationId: updateSIEMSink
+      summary: Update a sink without changing its host
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/SIEMSinkInput"}}}}
+      responses:
+        "200": {description: Updated sink, content: {application/json: {schema: {$ref: "#/components/schemas/SIEMSink"}}}}
+        "409": {description: Stale version}
+  /api/v1/siem/sinks/{id}/secret:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [siem]
+      operationId: rotateSIEMSecret
+      summary: Replace a sink secret without moving the cursor
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [secret, version], properties: {secret: {type: string, writeOnly: true}, version: {type: integer}}}}}}
+      responses:
+        "200": {description: Updated sink, content: {application/json: {schema: {$ref: "#/components/schemas/SIEMSink"}}}}
+  /api/v1/siem/sinks/{id}/origin:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [siem]
+      operationId: changeSIEMOrigin
+      summary: Change a sink host and choose cursor or head replay
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [origin, secret, replay, version], properties: {origin: {type: string}, secret: {type: string, writeOnly: true}, replay: {type: string, enum: [cursor, head]}, version: {type: integer}}}}}}
+      responses:
+        "200": {description: Paused sink on a new generation}
+  /api/v1/siem/sinks/{id}/pause:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [siem]
+      operationId: pauseSIEMSink
+      summary: Pause export without moving cursors
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [version], properties: {version: {type: integer}}}}}}
+      responses:
+        "200": {description: Paused sink}
+  /api/v1/siem/sinks/{id}/resume:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [siem]
+      operationId: resumeSIEMSink
+      summary: Resume export and clear a blocked reason
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [version], properties: {version: {type: integer}}}}}}
+      responses:
+        "200": {description: Resumed sink}
+  /api/v1/siem/sinks/{id}/test:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [siem]
+      operationId: testSIEMSink
+      summary: Send one synthetic record without moving a cursor
+      responses:
+        "200": {description: Accepted test, content: {application/json: {schema: {type: object, required: [guarantee, result], properties: {guarantee: {type: string}, result: {type: string, enum: [accepted]}}}}}}
+  /api/v1/siem/sinks/{id}/status:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    get:
+      tags: [siem]
+      operationId: siemSinkStatus
+      summary: Show cursors, lag, and coverage limits
+      responses:
+        "200": {description: Sink status, content: {application/json: {schema: {$ref: "#/components/schemas/SIEMStatus"}}}}
+
 components:
   securitySchemes:
     bearerAuth:
@@ -6274,6 +6362,62 @@ components:
           schema: {$ref: "#/components/schemas/Error"}
 
   schemas:
+    SIEMSink:
+      type: object
+      required: [id, tenant_id, name, provider, origin, target, data_class, ack_mode, version, generation, secret_version]
+      properties:
+        id: {type: string}
+        tenant_id: {type: string}
+        name: {type: string}
+        provider: {type: string, enum: [splunk_hec, elasticsearch]}
+        origin: {type: string}
+        target: {type: string}
+        data_class: {type: string, enum: [signal, summary, detail]}
+        ack_mode: {type: string, enum: [hec_acceptance, indexer_ack, bulk_item]}
+        indexer_ack_supported: {type: boolean}
+        paused: {type: boolean}
+        enabled: {type: boolean}
+        generation: {type: integer}
+        secret_version: {type: integer}
+        version: {type: integer}
+        channel: {type: string}
+        blocked_reason: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    SIEMSinkInput:
+      type: object
+      required: [name, provider, origin, secret]
+      properties:
+        name: {type: string}
+        provider: {type: string, enum: [splunk_hec, elasticsearch]}
+        origin: {type: string}
+        target: {type: string}
+        data_class: {type: string, enum: [signal, summary, detail]}
+        ack_mode: {type: string}
+        indexer_ack_supported: {type: boolean}
+        allow_hosts: {type: array, items: {type: string}}
+        secret: {type: string, writeOnly: true}
+        version: {type: integer}
+    SIEMStatus:
+      type: object
+      required: [sink, partitions]
+      properties:
+        sink: {$ref: "#/components/schemas/SIEMSink"}
+        partitions:
+          type: array
+          items:
+            type: object
+            required: [source, caught_up, lag_records, guarantee, coverage_note]
+            properties:
+              source: {type: string}
+              caught_up: {type: boolean}
+              lag_records: {type: integer}
+              backlog_age_seconds: {type: number}
+              cursor: {type: string}
+              blocked: {type: string}
+              guarantee: {type: string}
+              legacy_v1: {type: boolean}
+              coverage_note: {type: string}
     AccuracyMetrics:
       type: object
       additionalProperties: false

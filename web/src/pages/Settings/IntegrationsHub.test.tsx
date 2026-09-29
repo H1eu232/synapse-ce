@@ -15,6 +15,7 @@ vi.mock('../../lib/api', async () => {
       listIntegrationProviders: vi.fn(), listIntegrations: vi.fn(), listIntegrationOperations: vi.fn(), startIntegrationOperation: vi.fn(),
       listConnectors: vi.fn(),
       listNotificationChannels: vi.fn(), notificationDeliveryPage: vi.fn(), testNotificationChannel: vi.fn(),
+      listSIEMSinks: vi.fn(),
     },
   }
 })
@@ -70,6 +71,7 @@ describe('IntegrationsHub', () => {
     vi.mocked(api.listConnectors).mockResolvedValue([])
     vi.mocked(api.listNotificationChannels).mockResolvedValue([])
     vi.mocked(api.notificationDeliveryPage).mockResolvedValue({ items: [] })
+    vi.mocked(api.listSIEMSinks).mockResolvedValue([])
   })
 
   it('shows a loading state until permissions and capabilities arrive', () => {
@@ -94,10 +96,13 @@ describe('IntegrationsHub', () => {
     expect(await (await group('Messaging')).findByText('No notification channels yet')).toBeInTheDocument()
     // No capability catalog: the planned groups still have nothing to configure in this build.
     expect((await group('Ticketing')).getByText('Ticketing is not available in this build yet')).toBeInTheDocument()
-    expect((await group('SIEM')).getByText('SIEM is not available in this build yet')).toBeInTheDocument()
+    const siem = await group('SIEM')
+    expect(await siem.findByText('No SIEM destinations yet')).toBeInTheDocument()
+    expect(siem.getByText('Available')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Manage CI/CD' })).toHaveAttribute('href', '/settings/integrations/ci')
     expect(screen.getByRole('link', { name: 'Manage connectors' })).toHaveAttribute('href', '/settings/connectors')
     expect(screen.getByRole('link', { name: 'Manage channels' })).toHaveAttribute('href', '/settings/alerting')
+    expect(screen.getByRole('link', { name: 'Manage SIEM streams' })).toHaveAttribute('href', '/settings/siem')
   })
 
   it('renders a CI/CD card from the integration and its operation history, and tests it', async () => {
@@ -159,6 +164,13 @@ describe('IntegrationsHub', () => {
     expect(await (await group('Source control')).findByText('Connectors are not enabled on this deployment')).toBeInTheDocument()
   })
 
+  it('shows SIEM as off when the sink API is absent', async () => {
+    vi.mocked(api.listSIEMSinks).mockResolvedValue(null)
+    renderHub()
+    expect(await (await group('SIEM')).findByText('SIEM streams are not enabled')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Manage SIEM streams' })).not.toBeInTheDocument()
+  })
+
   it('renders a messaging card from channel deliveries and sends a test', async () => {
     vi.mocked(api.listCapabilities).mockResolvedValue([
       capability({ key: 'notifications', switch: 'SYNAPSE_NOTIFICATIONS_ENABLED' }),
@@ -213,8 +225,10 @@ describe('IntegrationsHub', () => {
     expect(card.getByText('Only tenant administrators can run a test.')).toBeInTheDocument()
     expect((await group('Source control')).getByText('Administrator access required')).toBeInTheDocument()
     expect((await group('Messaging')).getByText('Administrator access required')).toBeInTheDocument()
+    expect((await group('SIEM')).getByText('Administrator access required')).toBeInTheDocument()
     expect(api.listConnectors).not.toHaveBeenCalled()
     expect(api.listNotificationChannels).not.toHaveBeenCalled()
+    expect(api.listSIEMSinks).not.toHaveBeenCalled()
   })
 })
 
