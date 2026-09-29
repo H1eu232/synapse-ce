@@ -16,6 +16,8 @@ vi.mock('../../lib/api', () => ({
     listNotificationChannels: vi.fn(),
     listNotificationRules: vi.fn(),
     updateNotificationRule: vi.fn(),
+    // incident.created declares engagement_ids, so the rule form mounts the engagement picker.
+    listEngagements: vi.fn(),
     notificationDeliveryPage: vi.fn(),
   },
   AlertNotEnabledError: class AlertNotEnabledError extends Error {},
@@ -103,12 +105,17 @@ describe('Alerting rule form with the legacy incident webhook', () => {
     vi.mocked(api.listNotificationChannels).mockResolvedValue([channel])
     vi.mocked(api.notificationDeliveryPage).mockResolvedValue({ items: [] } as never)
     vi.mocked(api.updateNotificationRule).mockResolvedValue(rule('incident.created'))
+    vi.mocked(api.listEngagements).mockResolvedValue([])
   })
 
   it('blocks saving an incident.created rule until the overlap is acknowledged', async () => {
     legacyWebhook(true)
     const save = await editRule('incident.created')
-    const warning = screen.getByRole('alert')
+    // Other controls in the form can raise their own alerts; pick the legacy-webhook one by its text.
+    const warning = screen
+      .getAllByRole('alert')
+      .find((el) => el.textContent?.includes('The legacy incident webhook is also configured'))
+    if (!warning) throw new Error('legacy webhook warning not shown')
     expect(warning).toHaveTextContent('The legacy incident webhook is also configured')
     expect(warning).toHaveTextContent('deprecated and will be removed in 0.4.0')
     expect(warning).not.toHaveTextContent('https://')
