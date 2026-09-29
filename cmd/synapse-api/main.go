@@ -51,6 +51,7 @@ import (
 	egressinfra "github.com/KKloudTarus/synapse-ce/internal/infrastructure/egress"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/egressbroker"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/fleetca"
+	azurepipelinesintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/azurepipelines"
 	jenkinsintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/jenkins"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/llm/openai"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/logstream"
@@ -614,6 +615,7 @@ func main() {
 		pool, err := postgres.ConnectPool(startup, cfg.DBDSN, postgres.PoolConfig{
 			MaxConns: int32(cfg.DBMaxConns), MinConns: int32(cfg.DBMinConns),
 			MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime,
+			SIEMCaptureEnabled: &cfg.SIEMEnabled,
 		})
 		if err != nil {
 			log.Error("db connect failed", "err", err)
@@ -621,7 +623,7 @@ func main() {
 		}
 		defer pool.Close()
 		databasePool = pool
-		haltPool, err := postgres.ConnectPool(startup, cfg.DBHaltWriterDSN, postgres.PoolConfig{MaxConns: 2, MinConns: 0, MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime})
+		haltPool, err := postgres.ConnectPool(startup, cfg.DBHaltWriterDSN, postgres.PoolConfig{MaxConns: 2, MinConns: 0, MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime, SIEMCaptureEnabled: &cfg.SIEMEnabled})
 		if err != nil {
 			log.Error("halt-writer database connect failed", "err", err)
 			os.Exit(1)
@@ -933,6 +935,10 @@ func main() {
 	projectService := projectuc.NewService(projectRepo, repo, clock, ids, auditLog, !cfg.IsProduction())
 	integrationRegistry := integrationdom.NewRegistry()
 	if err := jenkinsintegration.Register(integrationRegistry); err != nil {
+		log.Error("integration provider registry init failed", "err", err)
+		os.Exit(1)
+	}
+	if err := azurepipelinesintegration.Register(integrationRegistry); err != nil {
 		log.Error("integration provider registry init failed", "err", err)
 		os.Exit(1)
 	}

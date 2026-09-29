@@ -2,7 +2,7 @@
 
 [Documentation home](README.md) · [Configuration](configuration.md) · [Security model](security.md)
 
-Synapse provides a tenant-scoped, provider-neutral framework for observing external CI/CD systems. The first adapter is Jenkins. The MVP is read-only, polling-based, and requires no Jenkins plugin.
+Synapse provides a tenant-scoped, provider-neutral framework for observing external CI/CD systems. Jenkins and Azure Pipelines are read-only polling adapters sharing the same tenant-scoped integration and credential framework. Neither needs an agent plugin.
 
 ## Jenkins workflow
 
@@ -16,6 +16,12 @@ Synapse provides a tenant-scoped, provider-neutral framework for observing exter
 
 Use Jenkins API tokens rather than passwords. Synapse performs authenticated GET requests only and never triggers builds or mutates Jenkins.
 
+## Azure Pipelines workflow
+
+Choose **Azure Pipelines** in Settings → Integrations. The HTTPS endpoint must name exactly one cloud organization and project, for example https://dev.azure.com/example/My%20Project. Configure a PAT with the **Build: Read** scope only. After a successful connection test, discover build definitions and bind a numeric definition ID to an existing Synapse Project. Enable the integration and poll manually or with the leader-only scheduler.
+
+The adapter uses authenticated GET requests to Azure DevOps Build REST API v7.1, bounded pagination, the shared SSRF-safe client and the operation request/response budget. It synthesizes console links from the trusted endpoint and numeric IDs, not from returned URL fields. Build IDs remain stable across queued, running and completed transitions; `partiallySucceeded` maps to unstable and `canceled` to aborted. Each poll materializes at most the newest 200 runs for a bound definition; deeper history is deliberately left unread instead of turning a long-lived pipeline into a permanent polling failure. Recent rows are re-read so queued and running builds can advance to completed. This adapter never starts, cancels or modifies builds.
+
 ## Architecture
 
 ```text
@@ -27,7 +33,7 @@ HTTP API / Settings UI / leader-gated scheduler
           /          |          \
        test       discover      read runs
                     |
-          Jenkins read-only adapter
+          Jenkins / Azure read-only adapters
                     |
      bounded SSRF-resistant HTTP client
 ```

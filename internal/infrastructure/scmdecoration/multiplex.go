@@ -11,7 +11,7 @@ import (
 
 // MultiplexDecorator dispatches one decoration to the owned adapter for its forge, chosen from the
 // decoration's Provider claim. It exists for the server, where a single tenant can host projects on
-// different forges: one injected decorator must be able to reach GitHub, GitLab, and Bitbucket. Every
+// different forges: one injected decorator must be able to reach GitHub, GitLab, Bitbucket, and Azure Repos. Every
 // adapter shares the same tenant-scoped credential resolver (the SCM connector store), so the concrete
 // token is resolved per call from tenant context and is never held here.
 type MultiplexDecorator struct {

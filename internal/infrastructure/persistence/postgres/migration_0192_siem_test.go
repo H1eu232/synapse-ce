@@ -12,12 +12,12 @@ import (
 
 // Main can have 0190 installed before this PR lands. Verify that the normal
 // migration entry point advances such a database through the SIEM migrations.
-func TestMigration0191SIEMAfterNotification0190(t *testing.T) {
+func TestMigration0192SIEMAfterNotification0190(t *testing.T) {
 	sharedDSN := os.Getenv("SYNAPSE_TEST_DB_DSN")
 	if sharedDSN == "" {
 		t.Skip("set SYNAPSE_TEST_DB_DSN to run the postgres integration test")
 	}
-	dsn := isolatedMigrationDSN(t, sharedDSN, "0191")
+	dsn := isolatedMigrationDSN(t, sharedDSN, "0192")
 	// This database is isolated. Do not hold openLockedGooseDB's advisory lock:
 	// MigrateLocked must acquire it below, as it does in production.
 	db, err := goose.OpenDBWithDriver("pgx", dsnForMigrate(dsn))
@@ -36,8 +36,8 @@ func TestMigration0191SIEMAfterNotification0190(t *testing.T) {
 		t.Fatalf("upgrade database with 0190 applied: %v", err)
 	}
 	version, err := goose.GetDBVersion(db)
-	if err != nil || version != 193 {
-		t.Fatalf("migration version = %d, err = %v; want 193", version, err)
+	if err != nil || version < 194 {
+		t.Fatalf("migration version = %d, err = %v; want at least 194", version, err)
 	}
 	for _, name := range []string{"siem_sinks", "siem_incident_capture", "siem_incident_pruned", "siem_audit_v2_keyset_idx"} {
 		var present bool

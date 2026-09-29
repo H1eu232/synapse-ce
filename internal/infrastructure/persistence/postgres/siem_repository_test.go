@@ -201,8 +201,13 @@ func TestSIEMCaptureActivationAndRetainedAnchor(t *testing.T) {
 	if err := repo.CreateSink(tenantCtx, sink, "sealed"); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SYNAPSE_SIEM_ENABLED", "false")
-	if err := WithTenant(ctx, pool, id, func(tx pgx.Tx) error {
+	disabled := false
+	disabledPool, err := ConnectPool(ctx, dsn, PoolConfig{SIEMCaptureEnabled: &disabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer disabledPool.Close()
+	if err := WithTenant(ctx, disabledPool, id, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO incident_events
 			(tenant_id, incident_id, seq, kind, occurred_at, actor, payload)
 			VALUES ($1,'disabled',1,'created',$2,'tester','{}')`, id, now)
@@ -213,8 +218,21 @@ func TestSIEMCaptureActivationAndRetainedAnchor(t *testing.T) {
 	if got := countCapture(); got != 0 {
 		t.Fatalf("kill switch captured %d events", got)
 	}
-	t.Setenv("SYNAPSE_SIEM_ENABLED", "true")
-	for _, name := range []string{"one", "two", "three"} {
+	enabled := true
+	enabledPool, err := ConnectPool(ctx, dsn, PoolConfig{SIEMCaptureEnabled: &enabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enabledPool.Close()
+	if err := WithTenant(ctx, enabledPool, id, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO incident_events
+			(tenant_id, incident_id, seq, kind, occurred_at, actor, payload)
+			VALUES ($1,'one',1,'created',$2,'tester','{}')`, id, now)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"two", "three"} {
 		appendIncident(name)
 	}
 	if got := countCapture(); got != 3 {

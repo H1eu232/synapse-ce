@@ -7,10 +7,11 @@ const PROVIDERS: { value: ConnectorProvider; label: string; hint: string; scope:
   { value: 'github', label: 'GitHub', hint: 'github.com or GitHub Enterprise; username defaults to x-access-token.', scope: 'Needs the classic repo scope, or a fine-grained token with Contents: Read.' },
   { value: 'gitlab', label: 'GitLab', hint: 'gitlab.com or self-managed; username defaults to oauth2.', scope: 'Needs a token with the read_repository scope.' },
   { value: 'bitbucket', label: 'Bitbucket', hint: 'bitbucket.org or Data Center; set the username the token belongs to.', scope: 'Needs an app password with Repositories: Read.' },
+  { value: 'azure-devops', label: 'Azure DevOps', hint: 'Azure DevOps Services uses dev.azure.com; username defaults to pat.', scope: 'Azure Repos PAT needs Code (Read & write) plus Code (Status) for PR comments and statuses.' },
   { value: 'generic', label: 'Generic', hint: 'Any git host that authenticates a token over HTTPS basic auth.', scope: 'Needs read access to the repositories you will scan.' },
 ]
 
-const PROVIDER_LABEL: Record<string, string> = { github: 'GitHub', gitlab: 'GitLab', bitbucket: 'Bitbucket', generic: 'Generic' }
+const PROVIDER_LABEL: Record<string, string> = { github: 'GitHub', gitlab: 'GitLab', bitbucket: 'Bitbucket', 'azure-devops': 'Azure DevOps', generic: 'Generic' }
 
 /**
  * Settings → Connectors. Tenant-scoped source-control connectors: a git host plus a personal access
@@ -127,10 +128,10 @@ function AddConnector({ onCreated }: { onCreated: () => void }) {
           <Input id="conn-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Production GitHub" autoComplete="off" />
         </Field>
         <Field label="Host" htmlFor="conn-host" hint={providerHint}>
-          <Input id="conn-host" value={host} onChange={(e) => setHost(e.target.value)} placeholder="github.com" autoComplete="off" spellCheck={false} />
+          <Input id="conn-host" value={host} onChange={(e) => setHost(e.target.value)} placeholder={provider === 'azure-devops' ? 'dev.azure.com' : 'github.com'} autoComplete="off" spellCheck={false} />
         </Field>
         <Field label="Username" htmlFor="conn-user" hint="Optional; a sensible default is used per provider.">
-          <Input id="conn-user" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="x-access-token" autoComplete="off" spellCheck={false} />
+          <Input id="conn-user" value={username} onChange={(e) => setUsername(e.target.value)} placeholder={provider === 'azure-devops' ? 'pat' : 'x-access-token'} autoComplete="off" spellCheck={false} />
         </Field>
         <Field label="Personal access token" htmlFor="conn-token" hint={providerScope}>
           <div className="relative">
@@ -139,7 +140,7 @@ function AddConnector({ onCreated }: { onCreated: () => void }) {
               type={showToken ? 'text' : 'password'}
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="ghp_…"
+              placeholder={provider === 'azure-devops' ? 'Azure DevOps PAT' : 'ghp_…'}
               autoComplete="off"
               spellCheck={false}
               className="pr-10"

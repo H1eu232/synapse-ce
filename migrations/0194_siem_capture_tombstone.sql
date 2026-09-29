@@ -10,7 +10,7 @@ CREATE TABLE siem_incident_pruned (
 );
 CALL synapse_enable_tenant_rls('siem_incident_pruned');
 
--- Replace the 0191 trigger body so capture, prune, and backfill share one
+-- Replace the 0192 trigger body so capture, prune, and backfill share one
 -- retention lock.
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION siem_capture_incident_event() RETURNS trigger
