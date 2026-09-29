@@ -9,6 +9,7 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ### Fixed
 
+- **The SIEM export enumerated the legacy empty tenant.** `SIEMRepository.TenantIDs` listed every `tenants` row, including the empty-id row migration 0002 seeds and every install still carries. Nothing can be exported for it, because `WithTenant` maps an empty id to NULL and RLS denies it, so each tick spent an RLS-denied round trip on it. It is now filtered like the other seven tenant listings in the package.
 - Invalid captured notification sources are quarantined so later sources can be delivered; administrators can inspect safe failure reasons in delivery history.
 
 - **A saved tenant language shows in Settings → Language & time zone (#1359).** A tenant that had saved `vi` saw "Select an option" in the language select, because the form started at `en` and copied the stored values in after mount. The form now starts from the stored values. The API and worker still embed the IANA time zone database; it moved out of `internal/domain/tenancy`, so `synapse-cli` and the agents no longer carry it (about 410 KB smaller CLI).
