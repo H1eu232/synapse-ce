@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/integration"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/selfhosted"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/persistence/memory"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/vault"
@@ -47,7 +48,7 @@ func TestSchedulerIsLeaderGatedBackpressureAwareAndDispatchBounded(t *testing.T)
 	store := memory.NewIntegrationStore(queue, cipher, clock, audit)
 	descriptor := integration.ProviderDescriptor{Provider: "fake-ci", Name: "Fake CI", Capabilities: []integration.Capability{integration.CapabilityReadRuns}}
 	registry := integration.NewRegistry()
-	if err := registry.Register(descriptor, func(integration.Integration, integration.CredentialBundle) (integration.Adapter, error) {
+	if err := registry.Register(descriptor, func(integration.Integration, integration.CredentialBundle, selfhosted.Rules) (integration.Adapter, error) {
 		return schedulerAdapter{descriptor: descriptor}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -117,7 +118,7 @@ func TestSchedulerReadRunsProviderIsNotStarvedByWriteOnlyProvider(t *testing.T) 
 		{Provider: "jira", Name: "Jira", Capabilities: []integration.Capability{integration.CapabilityTestConnection}},
 	} {
 		registered := descriptor
-		if err := registry.Register(registered, func(integration.Integration, integration.CredentialBundle) (integration.Adapter, error) {
+		if err := registry.Register(registered, func(integration.Integration, integration.CredentialBundle, selfhosted.Rules) (integration.Adapter, error) {
 			return schedulerAdapter{descriptor: registered}, nil
 		}); err != nil {
 			t.Fatal(err)

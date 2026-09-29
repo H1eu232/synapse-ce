@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/integration"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/selfhosted"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
@@ -53,20 +54,18 @@ type UpdateInput struct {
 }
 
 type Service struct {
-	store               ports.IntegrationStore
-	registry            *integration.Registry
-	projects            ports.ProjectRepository
-	matcher             ports.IntegrationAnalysisMatcher
-	ids                 ports.IDGenerator
-	clock               ports.Clock
-	observer            ports.IntegrationObserver
-	runLock             ports.RunLocker
-	allowPrivateNetwork bool
+	store    ports.IntegrationStore
+	registry *integration.Registry
+	projects ports.ProjectRepository
+	matcher  ports.IntegrationAnalysisMatcher
+	ids      ports.IDGenerator
+	clock    ports.Clock
+	observer ports.IntegrationObserver
+	runLock  ports.RunLocker
 }
 
 func (service *Service) SetObserver(observer ports.IntegrationObserver) { service.observer = observer }
 func (service *Service) SetRunLock(runLock ports.RunLocker)             { service.runLock = runLock }
-func (service *Service) SetPrivateNetworkAllowed(allowed bool)          { service.allowPrivateNetwork = allowed }
 
 func NewService(store ports.IntegrationStore, registry *integration.Registry, projects ports.ProjectRepository, matcher ports.IntegrationAnalysisMatcher, ids ports.IDGenerator, clock ports.Clock) (*Service, error) {
 	if store == nil || registry == nil || projects == nil || matcher == nil || ids == nil || clock == nil {
@@ -80,9 +79,6 @@ func (service *Service) ProviderDescriptors() []integration.ProviderDescriptor {
 }
 
 func (service *Service) Create(ctx context.Context, input CreateInput) (integration.Integration, error) {
-	if input.AllowPrivateNetwork && !service.allowPrivateNetwork {
-		return integration.Integration{}, fmt.Errorf("%w: private-network integrations are disabled by the operator", shared.ErrValidation)
-	}
 	provider, err := integration.NormalizeProvider(input.Provider)
 	if err != nil {
 		return integration.Integration{}, err
@@ -108,6 +104,9 @@ func (service *Service) Create(ctx context.Context, input CreateInput) (integrat
 		PollInterval: input.PollInterval, Version: 1, ConnectionRevision: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := item.Normalize(); err != nil {
+		return integration.Integration{}, err
+	}
+	if err := checkEndpointRules(service.registry.SelfHostedRules(), descriptor, item.Endpoint, item.AllowPrivateNetwork); err != nil {
 		return integration.Integration{}, err
 	}
 	tenantCtx := shared.WithTenant(ctx, item.TenantID)
@@ -145,9 +144,6 @@ func (service *Service) Get(ctx context.Context, tenantID, id shared.ID) (integr
 }
 
 func (service *Service) Update(ctx context.Context, tenantID, id shared.ID, input UpdateInput) (integration.Integration, error) {
-	if input.AllowPrivateNetwork && !service.allowPrivateNetwork {
-		return integration.Integration{}, fmt.Errorf("%w: private-network integrations are disabled by the operator", shared.ErrValidation)
-	}
 	tenantID = shared.TenantOrDefault(tenantID)
 	tenantCtx := shared.WithTenant(ctx, tenantID)
 	current, err := service.store.GetIntegration(tenantCtx, id)
@@ -175,6 +171,9 @@ func (service *Service) Update(ctx context.Context, tenantID, id shared.ID, inpu
 	current.PollInterval = input.PollInterval
 	current.Version = input.Version
 	if err := current.Normalize(); err != nil {
+		return integration.Integration{}, err
+	}
+	if err := checkEndpointRules(service.registry.SelfHostedRules(), descriptor, current.Endpoint, current.AllowPrivateNetwork); err != nil {
 		return integration.Integration{}, err
 	}
 	audit := service.auditEntry(input.Actor, "integration.updated", id, integrationAuditMetadata(current))
@@ -745,4 +744,13 @@ func encodeCheckpoints(checkpoints map[string]string) (string, error) {
 
 func IsRetryable(err error) bool {
 	return integration.IsRetryable(err) || errors.Is(err, ports.ErrRetryable) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
+// checkEndpointRules applies the operator's rules on save: the private-network switch to every
+// provider, and the host allowlist and private CIDRs to self-hosted ones.
+func checkEndpointRules(rules selfhosted.Rules, descriptor integration.ProviderDescriptor, endpoint string, requestPrivate bool) error {
+	if descriptor.SelfHosted {
+		return rules.CheckSave(endpoint, requestPrivate)
+	}
+	return rules.CheckPrivateRequest(requestPrivate)
 }

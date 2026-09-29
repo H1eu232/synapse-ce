@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/consolelink"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/selfhosted"
 )
 
 const (
@@ -449,6 +450,12 @@ type Config struct {
 	// tenant administrators to configure integrations targeting private address space.
 	// It is intentionally off by default because the API flag alone must not weaken SSRF controls.
 	IntegrationAllowPrivateNetwork bool
+	// IntegrationHostAllowlist, when set, is the only set of hosts a self-hosted integration
+	// (Jenkins, Jira Data Center) may be saved with or dial. Entries are host, host:port or
+	// *.domain. Empty keeps the default: any public host.
+	IntegrationHostAllowlist []string
+	// IntegrationPrivateCIDRs narrows IntegrationAllowPrivateNetwork to these private-use ranges.
+	IntegrationPrivateCIDRs []string
 	// Vulnerability rollout gates default off. Tenant-scoped mutations additionally require
 	// an explicit tenant allowlist entry; "*" enables all tenants. Dry-run records correlation
 	// differences without mutating occurrences, findings, actions, or notification outbox rows.
@@ -1036,6 +1043,8 @@ func Load() Config {
 		IntegrationSchedulerDispatch:                getint("SYNAPSE_INTEGRATION_SCHEDULER_DISPATCH_LIMIT", 10),
 		IntegrationSchedulerQueueDepth:              getint("SYNAPSE_INTEGRATION_SCHEDULER_MAX_QUEUE_DEPTH", 100),
 		IntegrationAllowPrivateNetwork:              getbool("SYNAPSE_INTEGRATION_ALLOW_PRIVATE_NETWORK", false),
+		IntegrationHostAllowlist:                    splitList(os.Getenv("SYNAPSE_INTEGRATION_HOST_ALLOWLIST")),
+		IntegrationPrivateCIDRs:                     splitList(os.Getenv("SYNAPSE_INTEGRATION_PRIVATE_CIDRS")),
 		VulnerabilityProviderSyncEnabled:            getbool("SYNAPSE_VULNERABILITY_PROVIDER_SYNC_ENABLED", false),
 		VulnerabilityInlineWorkerEnabled:            getbool("SYNAPSE_VULNERABILITY_INLINE_WORKER_ENABLED", false),
 		VulnerabilitySyncSchedulerInterval:          getduration("SYNAPSE_VULNERABILITY_SYNC_SCHEDULER_INTERVAL", 0),
@@ -1697,6 +1706,25 @@ func (c Config) EffectivePublicBaseURL() string {
 		return c.PublicBaseURL
 	}
 	return c.OIDCFrontendURL
+}
+
+// IntegrationSelfHostedRules parses the operator's self-hosted integration endpoint rules. An
+// invalid value is an error that names its variable, so the process refuses to start rather than
+// running with an allowlist that admits nothing, or everything, by mistake.
+func (c Config) IntegrationSelfHostedRules() (selfhosted.Rules, error) {
+	hosts, err := selfhosted.ParseHostAllowlist(c.IntegrationHostAllowlist)
+	if err != nil {
+		return selfhosted.Rules{}, fmt.Errorf("SYNAPSE_INTEGRATION_HOST_ALLOWLIST: %w", err)
+	}
+	cidrs, err := selfhosted.ParsePrivateCIDRs(c.IntegrationPrivateCIDRs)
+	if err != nil {
+		return selfhosted.Rules{}, fmt.Errorf("SYNAPSE_INTEGRATION_PRIVATE_CIDRS: %w", err)
+	}
+	rules, err := selfhosted.NewRules(c.IntegrationAllowPrivateNetwork, hosts, cidrs)
+	if err != nil {
+		return selfhosted.Rules{}, fmt.Errorf("SYNAPSE_INTEGRATION_PRIVATE_CIDRS requires SYNAPSE_INTEGRATION_ALLOW_PRIVATE_NETWORK=true: %w", err)
+	}
+	return rules, nil
 }
 
 // ValidatePublicBaseURL rejects unsafe origins without echoing credential-bearing input.

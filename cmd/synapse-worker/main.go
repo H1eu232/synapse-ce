@@ -324,12 +324,17 @@ func main() {
 		log.Error("integration provider registry init failed", "err", err)
 		os.Exit(1)
 	}
+	integrationRules, err := cfg.IntegrationSelfHostedRules()
+	if err != nil {
+		log.Error("integration endpoint configuration invalid", "err", err)
+		os.Exit(1)
+	}
+	integrationRegistry.SetSelfHostedRules(integrationRules)
 	integrationService, err := integrationuc.NewService(integrationStore, integrationRegistry, postgres.NewProjectRepository(pool), postgres.NewProjectAnalysisStore(pool), ids, clock)
 	if err != nil {
 		log.Error("integration service init failed", "err", err)
 		os.Exit(1)
 	}
-	integrationService.SetPrivateNetworkAllowed(cfg.IntegrationAllowPrivateNetwork)
 	integrationService.SetRunLock(postgres.NewLeaseRunLock(pool, ids.NewID().String(), time.Minute))
 	var integrationMaintenanceTasks []func(context.Context)
 	if cfg.IntegrationSchedulerEnabled {

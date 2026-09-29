@@ -20,6 +20,7 @@ import (
 	"unicode"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/integration"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/selfhosted"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/safehttp"
 )
@@ -51,7 +52,9 @@ type Adapter struct {
 
 func Register(registry *integration.Registry) error { return registry.Register(descriptor, New) }
 
-func New(item integration.Integration, credentials integration.CredentialBundle) (integration.Adapter, error) {
+// New builds the adapter. Azure DevOps Services is SaaS: the host is pinned to dev.azure.com below,
+// so the operator's self-hosted endpoint rules do not apply.
+func New(item integration.Integration, credentials integration.CredentialBundle, _ selfhosted.Rules) (integration.Adapter, error) {
 	// Check the raw path before generic endpoint normalization cleans dot segments.
 	raw, rawErr := url.Parse(item.Endpoint)
 	if rawErr != nil || raw.ForceQuery || raw.RawQuery != "" || raw.User != nil || raw.Fragment != "" {
