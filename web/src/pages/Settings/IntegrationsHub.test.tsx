@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, type NotificationChannel, type NotificationDelivery } from '../../lib/api'
 import { resetCapabilityCache } from '../../lib/capabilities'
 import type { Capability, Integration, IntegrationOperation, IntegrationProviderDescriptor } from '../../lib/types'
-import { ciHealth, channelHealth, IntegrationsHub } from './IntegrationsHub'
+import { channelHealth, channelLastError, ciHealth, IntegrationsHub } from './IntegrationsHub'
 
 vi.mock('../../lib/api', async () => {
   const client = await vi.importActual<typeof import('../../lib/api/client')>('../../lib/api/client')
@@ -197,6 +197,19 @@ describe('IntegrationsHub', () => {
     expect(await screen.findByText('Test delivery queued for Security Slack (d3).')).toBeInTheDocument()
   })
 
+  it('shows a paused channel as Paused even when its last delivery succeeded', async () => {
+    vi.mocked(api.listCapabilities).mockResolvedValue([capability({ key: 'notifications', switch: 'SYNAPSE_NOTIFICATIONS_ENABLED' })])
+    vi.mocked(api.listNotificationChannels).mockResolvedValue([{
+      ...channel,
+      health: { state: 'paused', paused_at: '2026-09-04T00:00:00Z', paused_reason: 'consecutive_permanent_failures', consecutive_failures: 5, last_failure_code: 'destination_blocked' },
+    }])
+    vi.mocked(api.notificationDeliveryPage).mockResolvedValue({ items: [delivery({ state: 'delivered' })] })
+    renderHub()
+    const card = within(await screen.findByRole('listitem', { name: 'Security Slack' }))
+    expect(card.getByText('Paused')).toBeInTheDocument()
+    expect(card.queryByText('Healthy')).not.toBeInTheDocument()
+  })
+
   it('shows a disabled capability as off with its switch and planned ones as not available', async () => {
     vi.mocked(api.listCapabilities).mockResolvedValue([
       capability({ key: 'notifications', name: 'Tenant notifications', enabled: false, switch: 'SYNAPSE_NOTIFICATIONS_ENABLED' }),
@@ -249,5 +262,24 @@ describe('health derivation', () => {
     expect(channelHealth({ ...channel, enabled: false }, [delivery({})]).label).toBe('Disabled')
     expect(channelHealth(channel, [delivery({ state: 'cancelled' }), delivery({ state: 'dead_letter' })]).label).toBe('Failing')
     expect(channelHealth(channel, [delivery({ state: 'retrying' })]).label).toBe('Retrying')
+  })
+
+  it('reads the worker pause before the delivery history', () => {
+    const paused = { ...channel, health: { state: 'paused' as const, consecutive_failures: 5 } }
+    expect(channelHealth(paused, [delivery({ state: 'delivered' })])).toEqual({ label: 'Paused', tone: 'danger' })
+    expect(channelHealth({ ...paused, enabled: false }, []).label).toBe('Disabled')
+    expect(channelHealth({ ...channel, health: { state: 'active', consecutive_failures: 2 } }, [delivery({})]).label).toBe('Healthy')
+  })
+
+  it('shows the failure that paused a channel when the delivery page has no newer error', () => {
+    const paused = {
+      ...channel,
+      health: { state: 'paused' as const, consecutive_failures: 5, last_failure_code: 'http_404', last_failure_at: '2026-09-03T00:00:00Z' },
+    }
+    expect(channelLastError(paused, [])).toEqual({ at: '2026-09-03T00:00:00Z', detail: 'http_404' })
+    // An older delivery error loses to the health record; a newer one wins.
+    expect(channelLastError(paused, [delivery({ last_error: 'http_503', updated_at: '2026-09-02T00:00:00Z' })]).detail).toBe('http_404')
+    expect(channelLastError(paused, [delivery({ last_error: 'http_503', updated_at: '2026-09-04T00:00:00Z' })]).detail).toBe('http_503')
+    expect(channelLastError(channel, [])).toEqual({ at: null })
   })
 })

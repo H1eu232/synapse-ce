@@ -249,6 +249,9 @@ type Config struct {
 	// test or deliver to. Parsed trimmed, lowercased and deduplicated; the API and the worker check
 	// each name against the notification driver registry at startup.
 	NotificationProvidersDisabled []string
+	// NotificationChannelPauseThreshold is how many consecutive permanent delivery failures pause
+	// a notification channel (#1464). Zero keeps counting but never pauses. Read by the worker.
+	NotificationChannelPauseThreshold int
 	// ReconViaWorker routes recon runs through the durable queue: the API enqueues
 	// and the non-root synapse-worker claims and executes them. Scoped egress is
 	// configured by a separate root-owned broker. Requires Postgres. Default false
@@ -1189,6 +1192,8 @@ func Load() Config {
 		MCPToken:        getenv("SYNAPSE_MCP_TOKEN", ""),
 		MCPAddr:         getenv("SYNAPSE_MCP_ADDR", ":8081"),
 		MCPEngagementID: getenv("SYNAPSE_MCP_ENGAGEMENT_ID", ""),
+
+		NotificationChannelPauseThreshold: getint("SYNAPSE_NOTIFICATION_CHANNEL_PAUSE_THRESHOLD", 5),
 	}
 }
 
@@ -1601,6 +1606,14 @@ func (c Config) ValidateMigrationPosture() error {
 func (c Config) ValidateWorkerConcurrency() error {
 	if c.WorkerConcurrency < 1 || c.WorkerConcurrency > maxWorkerConcurrency {
 		return fmt.Errorf("SYNAPSE_WORKER_CONCURRENCY must be between 1 and %d (got %d)", maxWorkerConcurrency, c.WorkerConcurrency)
+	}
+	return nil
+}
+
+// ValidateNotificationChannelHealth bounds the channel auto-pause threshold (0 disables pausing).
+func (c Config) ValidateNotificationChannelHealth() error {
+	if c.NotificationChannelPauseThreshold < 0 || c.NotificationChannelPauseThreshold > 100 {
+		return fmt.Errorf("SYNAPSE_NOTIFICATION_CHANNEL_PAUSE_THRESHOLD must be between 0 and 100 (got %d)", c.NotificationChannelPauseThreshold)
 	}
 	return nil
 }

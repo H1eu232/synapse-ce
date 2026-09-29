@@ -178,6 +178,10 @@ func main() {
 		log.Error("worker concurrency invalid", "err", err)
 		os.Exit(1)
 	}
+	if err := cfg.ValidateNotificationChannelHealth(); err != nil {
+		log.Error("notification channel health configuration invalid", "err", err)
+		os.Exit(1)
+	}
 	if err := cfg.ValidateSecretVerification(); err != nil {
 		log.Error("active secret verification configuration invalid", "err", err)
 		os.Exit(1)
@@ -698,6 +702,13 @@ func main() {
 		if len(disabledNotificationTypes) > 0 {
 			log.Warn("notification channel types disabled by the operator; their deliveries are cancelled with provider_disabled", "types", cfg.NotificationProvidersDisabled)
 		}
+		// Channel health (#1464): the attempt result, the failure count, an automatic pause and its
+		// admin notice commit in one tenant transaction.
+		if err := notificationService.SetPauseThreshold(cfg.NotificationChannelPauseThreshold); err != nil {
+			log.Error("notification channel pause threshold invalid", "err", err)
+			os.Exit(1)
+		}
+		notificationService.SetTransactionRunner(postgres.NewTenantTransactionRunner(pool))
 		// Delivery metrics are emitted by this worker only: the API exposes
 		// aggregate queue health but never observes worker transport outcomes.
 		if cfg.MetricsEnabled {

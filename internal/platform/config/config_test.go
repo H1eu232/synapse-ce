@@ -396,6 +396,32 @@ func TestWorkerConcurrencyValidation(t *testing.T) {
 	}
 }
 
+func TestNotificationChannelPauseThresholdValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+		want  int
+		valid bool
+	}{
+		{"default", "", 5, true},
+		{"disabled", "0", 0, true},
+		{"maximum", "100", 100, true},
+		{"negative", "-1", -1, false},
+		{"above maximum", "101", 101, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("SYNAPSE_NOTIFICATION_CHANNEL_PAUSE_THRESHOLD", tt.value)
+			cfg := Load()
+			if cfg.NotificationChannelPauseThreshold != tt.want {
+				t.Fatalf("threshold = %d, want %d", cfg.NotificationChannelPauseThreshold, tt.want)
+			}
+			if err := cfg.ValidateNotificationChannelHealth(); (err == nil) != tt.valid {
+				t.Fatalf("ValidateNotificationChannelHealth() error = %v, valid=%v", err, tt.valid)
+			}
+		})
+	}
+}
+
 func TestLoadVulnerabilitySchedulerDefaultsAndOverrides(t *testing.T) {
 	keys := []string{
 		"SYNAPSE_VULNERABILITY_SCHEDULER_ENABLED",

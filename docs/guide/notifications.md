@@ -122,6 +122,7 @@ with any other filter is rejected when it is saved:
 | `incident.created` | severity floor, engagements (when the incident has one) |
 | `finding.ownership_changed` | engagements, teams (required) |
 | `notification.destination_changed` | none; operator-driven, and a rule cannot target it |
+| `notification.channel_paused` | none; sent in-app to tenant administrators when a channel pauses, and a rule cannot target it |
 
 The severity floor is inclusive. Quality gate and fleet events carry no engagement,
 so an engagement scope on them could never match. Rules of that shape saved before
@@ -173,7 +174,7 @@ When notifications are enabled, each human user has an inbox at `/inbox` and a b
 
 Inbox rows are written in the same database transaction as the notification event. In-app delivery does not create a channel delivery or a job. Replaying an event after retention does not recreate a deleted row. Mark-all-read uses the server time of that request, so a message that arrives while the request is running stays unread.
 
-Personal recipients come from structured IDs already on the event: the canonical finding assignee and active ownership team members. A legacy assignee label, an email address, or a display name is never resolved into a recipient. Mentioned users, approvers, and engagement leads stay unsupported until a producer records a verified identity. `notification.destination_changed` is mandatory in-app for enabled tenant admins. It is not a routing rule and cannot be muted. One notice is stored per channel revision: repeating that save is a no-op, and changing only the secret or the URL path is not a host change. Changing back to an earlier host writes a new notice. The payload contains the actor, the action, the channel class, and the scheme plus host. It does not contain a URL path, query, port secret, or credential.
+Personal recipients come from structured IDs already on the event: the canonical finding assignee and active ownership team members. A legacy assignee label, an email address, or a display name is never resolved into a recipient. Mentioned users, approvers, and engagement leads stay unsupported until a producer records a verified identity. `notification.destination_changed` is mandatory in-app for enabled tenant admins. It is not a routing rule and cannot be muted. One notice is stored per channel revision: repeating that save is a no-op, and changing only the secret or the URL path is not a host change. Changing back to an earlier host writes a new notice. The payload contains the actor, the action, the channel class, and the scheme plus host. It does not contain a URL path, query, port secret, or credential. `notification.channel_paused` is mandatory in-app for enabled tenant admins in the same way, once per automatic pause (see [Channel health and automatic pause](#channel-health-and-automatic-pause)).
 
 `PUT /api/v1/me/notification-preferences` stores `inherit`, `enabled`, or `disabled` for the signed-in user. Mandatory in-app wins over an explicit mute, and an explicit mute wins over the default for every other choice. Personal email is sent only to the verified contact version captured when the event was projected. A later email change does not retarget a message that is still queued. Personal delivery is currently available for finding ownership changes, approaching SLAs, and destination-change notices. Other framework event types, Slack direct messages, and Teams personal delivery are shown as unavailable until they have a structured personal recipient and subject.
 
@@ -211,7 +212,9 @@ or receiving a new heartbeat cancels the old pending reminder.
 
 Channel tests return `202` with a delivery ID. This means the test is durably
 queued; inspect Delivery history for the final result. Disabling or deleting a
-channel cancels pending deliveries. Existing in-flight requests cannot be recalled.
+channel cancels pending deliveries, and so does an automatic pause (see
+[Channel health and automatic pause](#channel-health-and-automatic-pause)).
+Existing in-flight requests cannot be recalled.
 
 ## Webhook contract
 
@@ -293,6 +296,65 @@ The fixed combinations are `webhook/generic`, `slack/slack`,
 channel ID, recipient, host, URL, provider credentials or raw error text
 can become a metric label. Counters restart with each worker process;
 the pending-age gauge reads durable state at scrape time.
+
+## Channel health and automatic pause
+
+The worker keeps a failure count on every channel so that a broken destination is
+not retried forever. After `SYNAPSE_NOTIFICATION_CHANNEL_PAUSE_THRESHOLD`
+(default `5`) consecutive **permanent** failures the channel is paused and every
+enabled tenant administrator gets one in-app notice.
+
+What counts:
+
+| Attempt result | Effect on the count |
+| --- | --- |
+| Delivered | Resets it to zero |
+| Final failure the channel owns: `destination_blocked`, `smtp_destination_blocked`, `channel_config_invalid`, `smtp_recipient_invalid`, HTTP 4xx other than 408 and 429 (`http_4xx`), SMTP 5xx (`smtp_5xx`) other than the RFC 4954 AUTH replies 530, 534, 535 and 538, which describe the shared relay credential | Adds one |
+| Retryable failure: network errors, HTTP 408, 429 and 5xx, SMTP 4xx, including the eighth one that exhausts a delivery | None: it neither adds nor resets |
+| Final failure the operator owns: `smtp_not_configured`, `smtp_sender_invalid`, `smtp_tls_required`, `smtp_auth_unavailable`, `channel_secret_unavailable`, and internal codes such as `encode_failed` | None |
+
+Failures only count while the channel is active. The attempt result, the count and
+a pause commit in one transaction, so a crash cannot record a failure without
+counting it or pause twice. `0` disables pausing but the count is still kept and shown.
+
+When a channel pauses:
+
+- Pending and retrying deliveries that have not started are **cancelled** with
+  `last_error: channel_paused`, the same way disabling a channel cancels them.
+  They are not held for later: a backlog of stale alerts released on resume would be
+  worse than none. An attempt already in flight finishes; its result no longer
+  changes the paused state (a late success does not resume the channel).
+- New events do not create deliveries for the channel, and a channel test returns
+  `409 Conflict`.
+- A `paused` row is appended to the channel's health history with the delivery and
+  attempt that tripped it, and the worker writes a `notification.channel.paused`
+  audit entry with actor `system`.
+- Enabled tenant administrators get a mandatory in-app notice
+  ([`notification.channel_paused`](schemas/events/README.md)), once per pause. It
+  names the channel, its type, the failure count and the last failure code. It never
+  contains the destination URL, a recipient, a response body or error text. Users can
+  opt in to an email copy in their inbox preferences. The notice is not a routing
+  event: a rule cannot target it and it is never sent to a channel.
+
+Resume a channel from **Settings > Alerting** (the **Resume** button next to the
+**Paused** badge) or with `POST /api/v1/notifications/channels/{id}/resume` and the
+body `{"revision": <current revision>}`. Only tenant administrators can resume. A
+resume clears the pause and the count, bumps the channel revision, appends a
+`resumed` row naming the administrator and writes a `notification.channel.resumed`
+audit entry. Deliveries cancelled during the pause are not re-sent. Fix the
+destination first: if it still fails, the channel pauses again after another
+run of permanent failures, and administrators get a new notice.
+
+A pause is health, not configuration, so it does not change the channel revision:
+an edit an administrator started before the pause still saves, and it does not
+clear the pause. Replacing the URL or secret resets the count of an active channel.
+
+`GET /api/v1/notifications/channels/{id}` returns `health` with `state`
+(`active` or `paused`), `paused_at`, `paused_reason`
+(`consecutive_permanent_failures`), `consecutive_failures`, `last_failure_code`
+and `last_failure_at`. `GET /api/v1/notifications/channels/{id}/health-events`
+returns the append-only pause and resume history, newest first. The Integrations
+hub shows a paused channel as **Paused** on its Messaging card.
 
 ### Legacy incident webhook (deprecated)
 
