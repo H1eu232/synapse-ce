@@ -196,7 +196,7 @@ func (s *Service) update(ctx context.Context, actor string, id shared.ID, in Sin
 		return siem.Sink{}, conflict("sink version")
 	}
 	if in.OriginPresent || in.Origin != "" {
-		origin, err := siem.NormalizeOrigin(in.Origin)
+		origin, err := siem.NormalizeOriginFor(current.Provider, in.Origin)
 		if err != nil {
 			return siem.Sink{}, err
 		}
@@ -256,11 +256,11 @@ func (s *Service) rotateSecret(ctx context.Context, actor string, id shared.ID, 
 	if err := s.human(actor); err != nil {
 		return siem.Sink{}, err
 	}
-	if err := validateSecret(secret); err != nil {
-		return siem.Sink{}, err
-	}
 	current, err := s.store.GetSink(ctx, id)
 	if err != nil {
+		return siem.Sink{}, err
+	}
+	if err := validateSecretFor(current.Provider, secret); err != nil {
 		return siem.Sink{}, err
 	}
 	if version != current.Version {
@@ -298,17 +298,17 @@ func (s *Service) changeOrigin(ctx context.Context, actor string, id shared.ID, 
 	if !in.Replay.Valid() {
 		return siem.Sink{}, invalid("replay must be cursor or head")
 	}
-	if err := validateSecret(in.Secret); err != nil {
-		return siem.Sink{}, err
-	}
 	current, err := s.store.GetSink(ctx, id)
 	if err != nil {
+		return siem.Sink{}, err
+	}
+	if err := validateSecretFor(current.Provider, in.Secret); err != nil {
 		return siem.Sink{}, err
 	}
 	if in.Version != current.Version {
 		return siem.Sink{}, conflict("sink version")
 	}
-	origin, err := siem.NormalizeOrigin(in.Origin)
+	origin, err := siem.NormalizeOriginFor(current.Provider, in.Origin)
 	if err != nil {
 		return siem.Sink{}, err
 	}
@@ -458,14 +458,14 @@ func (s *Service) Test(ctx context.Context, actor string, id shared.ID) (string,
 }
 
 func (s *Service) newSink(ctx context.Context, tenant shared.ID, in SinkInput) (siem.Sink, string, error) {
-	if err := validateSecret(in.Secret); err != nil {
+	provider := in.Provider
+	if err := validateSecretFor(provider, in.Secret); err != nil {
 		return siem.Sink{}, "", err
 	}
-	origin, err := siem.NormalizeOrigin(in.Origin)
+	origin, err := siem.NormalizeOriginFor(provider, in.Origin)
 	if err != nil {
 		return siem.Sink{}, "", err
 	}
-	provider := in.Provider
 	channel, err := newChannel()
 	if err != nil {
 		return siem.Sink{}, "", err
@@ -660,6 +660,9 @@ func defaultAck(provider siem.Provider, mode siem.AckMode) siem.AckMode {
 	if provider == siem.ProviderElasticsearch {
 		return siem.AckBulkItem
 	}
+	if provider == siem.ProviderSyslogTLS {
+		return siem.AckTransportWrite
+	}
 	return siem.AckHECAcceptance
 }
 
@@ -670,11 +673,18 @@ func defaultTarget(provider siem.Provider, target string) string {
 	if provider == siem.ProviderSplunk {
 		return "/services/collector/event"
 	}
+	if provider == siem.ProviderSyslogTLS {
+		return "synapse"
+	}
 	return target
 }
 
-func validateSecret(secret string) error {
-	if len(secret) < 8 || len(secret) > 4096 {
+func validateSecretFor(provider siem.Provider, secret string) error {
+	minimum := 8
+	if provider == siem.ProviderSyslogTLS {
+		minimum = 2 // `{}` selects the system trust store without client credentials.
+	}
+	if len(secret) < minimum || len(secret) > 4096 {
 		return invalid("siem secret length is invalid")
 	}
 	if strings.ContainsAny(secret, "\r\n") {
