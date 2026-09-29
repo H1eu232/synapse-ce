@@ -78,8 +78,20 @@ func (r *NotificationRepository) UpdateChannel(ctx context.Context, c notificati
 		}
 		recipients, _ := json.Marshal(c.Recipients)
 		_, err := tx.Exec(ctx, `UPDATE notification_channels SET name=$3,channel_type=$4,enabled=$5,destination=$6,recipients=$7,revision=$8,secret_version=$9,updated_at=$10 WHERE tenant_id=$1 AND id=$2`, c.TenantID, c.ID, c.Name, c.Type, c.Enabled, c.Destination, recipients, c.Revision, c.SecretVersion, c.UpdatedAt)
-		if err == nil && !c.Enabled {
-			_, err = tx.Exec(ctx, `UPDATE notification_deliveries d SET state='cancelled',last_error='channel_disabled',next_attempt_at=NULL,updated_at=$3 WHERE tenant_id=$1 AND channel_id=$2 AND state IN ('pending','retrying') AND NOT EXISTS(SELECT 1 FROM notification_delivery_attempts a WHERE a.tenant_id=d.tenant_id AND a.delivery_id=d.id AND a.outcome='started')`, c.TenantID, c.ID, c.UpdatedAt)
+		// channel_disabled takes priority: a delivery already cancelled for it needs no second,
+		// redundant UPDATE for a destination or secret change made in the same call.
+		//
+		// replace means a new secret_version was just sealed above: the delivery's sealed config
+		// would otherwise still open under the retired version at send time (service.go opens
+		// work.Sealed by the channel_version stamped on the delivery at projection, never
+		// revisited).
+		if err == nil {
+			switch {
+			case !c.Enabled:
+				err = cancelPendingDeliveries(ctx, tx, c.TenantID, c.ID, "channel_disabled", c.UpdatedAt)
+			case replace || c.Destination != previousDestination:
+				err = cancelPendingDeliveries(ctx, tx, c.TenantID, c.ID, "destination_changed", c.UpdatedAt)
+			}
 		}
 		if err != nil || !replace || notification.SameEndpoint(previousDestination, c.Destination) {
 			return err
@@ -87,6 +99,14 @@ func (r *NotificationRepository) UpdateChannel(ctx context.Context, c notificati
 		return r.maybeDestinationNotice(ctx, tx, c, "host_changed")
 	})
 	return c, err
+}
+
+// cancelPendingDeliveries cancels a channel's undelivered deliveries with reason. A delivery
+// whose current attempt has started is left alone: FinishAttempt is racing to close it out, and
+// canceling underneath that attempt would let a delivery end up both cancelled and finished.
+func cancelPendingDeliveries(ctx context.Context, tx pgx.Tx, tenant, channelID shared.ID, reason string, at time.Time) error {
+	_, err := tx.Exec(ctx, `UPDATE notification_deliveries d SET state='cancelled',last_error=$3,next_attempt_at=NULL,updated_at=$4 WHERE tenant_id=$1 AND channel_id=$2 AND state IN ('pending','retrying') AND NOT EXISTS(SELECT 1 FROM notification_delivery_attempts a WHERE a.tenant_id=d.tenant_id AND a.delivery_id=d.id AND a.outcome='started')`, tenant, channelID, reason, at)
+	return err
 }
 
 func (r *NotificationRepository) DeleteChannel(ctx context.Context, tenant, id shared.ID, revision int, at time.Time) error {
@@ -98,8 +118,7 @@ func (r *NotificationRepository) DeleteChannel(ctx context.Context, tenant, id s
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("notification channel revision is stale: %w", shared.ErrConflict)
 		}
-		_, err = tx.Exec(ctx, `UPDATE notification_deliveries d SET state='cancelled',last_error='channel_deleted',next_attempt_at=NULL,updated_at=$3 WHERE tenant_id=$1 AND channel_id=$2 AND state IN ('pending','retrying') AND NOT EXISTS(SELECT 1 FROM notification_delivery_attempts a WHERE a.tenant_id=d.tenant_id AND a.delivery_id=d.id AND a.outcome='started')`, tenant, id, at)
-		return err
+		return cancelPendingDeliveries(ctx, tx, tenant, id, "channel_deleted", at)
 	})
 }
 
