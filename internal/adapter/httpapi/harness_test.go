@@ -1009,3 +1009,20 @@ func concreteHarnessPath(route string) string {
 		path = path[:open] + value + path[open+closeAt+1:]
 	}
 }
+
+// The real root Router keeps tenant resolution entirely on the endpoint ID.
+// The hostile harness exercises both directions with an otherwise valid MAC.
+func TestHostileInboundHookCrossTenantNoBodyOverride(t *testing.T) {
+	handler, _, receiver, _ := setupHook(t)
+	tenantA := "/api/v1/hooks/" + hookIDA
+	tenantB := "/api/v1/hooks/" + hookIDB
+	body := []byte(`{"tenant_id":"tenant-B","owner_id":"integration-B"}`)
+	aSignature := webhookSig(hookSecret('a'), body)
+	assertHookCode(t, requestHook(handler, http.MethodPost, tenantA, body, aSignature), http.StatusAccepted)
+	for _, path := range []string{tenantB, tenantB + "?tenant_id=tenant-A", tenantA + "?tenant_id=tenant-B"} {
+		assertHookCode(t, requestHook(handler, http.MethodPost, path, body, aSignature), http.StatusUnauthorized)
+	}
+	if got := receiver.snapshot(); len(got) != 1 || got[0].tenant != "tenant-A" {
+		t.Fatalf("hostile inbound hook crossed tenant: %#v", got)
+	}
+}
