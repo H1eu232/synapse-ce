@@ -28,6 +28,8 @@ type RenderedLink struct {
 type FormattedMessage struct {
 	ContentType string
 	Body        []byte
+	// Subject is the email subject, already safe for a header; empty for other channels.
+	Subject string
 }
 
 // NotificationFormatter converts a RenderedMessage into the wire payload of one channel type and
