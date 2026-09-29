@@ -5,8 +5,10 @@ import type {
   NotificationChannel,
   NotificationChannelType,
   NotificationDelivery,
+  NotificationEventSpec,
   NotificationEventType,
   NotificationRule,
+  NotificationRuleFilter,
 } from '../../lib/api'
 import {
   Button,
@@ -20,18 +22,18 @@ import {
   Spinner,
 } from '../../components/ui'
 import { useToast } from '../../components/synapse/Toast'
+import { capabilityHint, disabledCapability, loadCapabilities, useCapabilities } from '../../lib/capabilities'
+import type { Capability } from '../../lib/types'
 import { useFetch } from '../../hooks'
 import { RuleTargetPicker } from './RuleTargetPicker'
 
-const EVENTS: { value: NotificationEventType; label: string }[] = [
-  { value: 'vulnerability_action.created', label: 'Vulnerability risk action' },
-  { value: 'quality_gate.failed', label: 'Quality gate failed' },
-  { value: 'sla.approaching_deadline', label: 'SLA approaching deadline' },
-  { value: 'fleet.agent.offline', label: 'Fleet agent offline' },
-  { value: 'scan.completed', label: 'Scan completed' },
-  { value: 'incident.created', label: 'Incident created' },
-  { value: 'finding.ownership_changed', label: 'Finding ownership changed' },
-]
+// A new rule starts on the most common subscription when the catalog offers it.
+const DEFAULT_RULE_EVENT = 'vulnerability_action.created'
+// eventLabel names an event type from the server catalog, falling back to the raw type for one the
+// catalog no longer declares.
+function eventLabel(eventTypes: NotificationEventSpec[], type: string) {
+  return eventTypes.find((e) => e.type === type)?.label ?? type
+}
 const stateTone: Record<string, string> = {
   delivered: 'text-success-primary',
   pending: 'text-tertiary',
@@ -53,20 +55,40 @@ export function Alerting() {
   const [editingRule, setEditingRule] = useState<NotificationRule | undefined>()
   const [historyVersion, setHistoryVersion] = useState(0)
   const [rules, setRules] = useState<NotificationRule[]>([])
-  const [unsupported, setUnsupported] = useState(false)
+  const [eventTypes, setEventTypes] = useState<NotificationEventSpec[]>()
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [disabled, setDisabled] = useState<Capability | null>(null)
+  const [channelTypes, setChannelTypes] = useState<string[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The catalog loads on its own so a failure there leaves channels and rules usable.
+  const loadCatalog = useCallback(async () => {
+    setCatalogError(null)
+    try {
+      setEventTypes(await api.listNotificationEventTypes())
+    } catch (e) {
+      setCatalogError(
+        e instanceof Error ? e.message : 'Could not load notification event types',
+      )
+    }
+  }, [])
   const load = useCallback(async () => {
     setError(null)
+    // The capability catalog says whether the framework is on. A deployment that does not report
+    // capabilities is assumed on, so a working framework is never hidden.
+    const capabilities = await loadCapabilities()
+    const off = disabledCapability(capabilities, 'notifications')
+    if (off) {
+      setDisabled(off)
+      setChannels([])
+      return
+    }
+    setDisabled(null)
+    const types = capabilities?.get('notifications.channel_types')?.values
+    setChannelTypes(types && types.length > 0 ? types : null)
     try {
-      const c = await api.listNotificationChannels()
-      if (c === null) {
-        setUnsupported(true)
-        setChannels([])
-        return
-      }
-      setUnsupported(false)
-      setChannels(c)
-      setRules((await api.listNotificationRules()) ?? [])
+      setChannels(await api.listNotificationChannels())
+      void loadCatalog()
+      setRules(await api.listNotificationRules())
       setHistoryVersion((v) => v + 1)
     } catch (e) {
       setChannels([])
@@ -74,7 +96,7 @@ export function Alerting() {
         e instanceof Error ? e.message : 'Failed to load notification settings',
       )
     }
-  }, [])
+  }, [loadCatalog])
   useEffect(() => {
     if (canAdmin) void load()
   }, [load, canAdmin])
@@ -89,11 +111,11 @@ export function Alerting() {
           title="Administrator access required"
           hint="Only tenant administrators can manage notification settings and delivery history."
         />
-      ) : unsupported ? (
+      ) : disabled ? (
         <EmptyState
           icon={BellRinging01}
           title="Notification framework is not enabled"
-          hint="Contact your deployment administrator to enable notifications."
+          hint={capabilityHint(disabled)}
         />
       ) : (
         <>
@@ -101,6 +123,7 @@ export function Alerting() {
             key={editingChannel?.id ?? 'new-channel'}
             initial={editingChannel}
             canAdmin={canAdmin}
+            types={channelTypes}
             onCreated={() => {
               setEditingChannel(undefined)
               void load()
@@ -119,9 +142,38 @@ export function Alerting() {
               onEdit={setEditingChannel}
             />
           )}
-          {channels && channels.length > 0 && (
+          {channels && channels.length > 0 && catalogError && (
+            <Card title="Add routing rule">
+              <ErrorState message={catalogError} />
+              <div className="mt-3">
+                <Button variant="secondary" onClick={() => void loadCatalog()}>
+                  Retry
+                </Button>
+              </div>
+            </Card>
+          )}
+          {channels &&
+            channels.length > 0 &&
+            !eventTypes &&
+            !catalogError &&
+            !error && <Spinner label="Loading event types…" />}
+          {channels &&
+            channels.length > 0 &&
+            eventTypes &&
+            !eventTypes.some((e) => !e.operator_only) && (
+              <EmptyState
+                icon={BellRinging01}
+                title="No routable event types"
+                hint="This deployment declares no event types that routing rules can match."
+              />
+            )}
+          {channels &&
+            channels.length > 0 &&
+            eventTypes &&
+            eventTypes.some((e) => !e.operator_only) && (
             <RuleCreate
               channels={channels}
+              eventTypes={eventTypes}
               canAdmin={canAdmin}
               key={editingRule?.id ?? 'new-rule'}
               initial={editingRule}
@@ -135,11 +187,16 @@ export function Alerting() {
             onEdit={setEditingRule}
             rules={rules}
             channels={channels ?? []}
+            eventTypes={eventTypes ?? []}
             canAdmin={canAdmin}
             refresh={load}
           />
           {canAdmin && channels !== undefined && (
-            <DeliveryHistory key={historyVersion} channels={channels ?? []} />
+            <DeliveryHistory
+              key={historyVersion}
+              channels={channels ?? []}
+              eventTypes={eventTypes ?? []}
+            />
           )}
         </>
       )}
@@ -178,8 +235,9 @@ function LegacyAlertTest({ canAdmin }: { canAdmin: boolean }) {
   return (
     <Card title="Legacy incident webhook">
       <p className="text-sm text-secondary">
-        Compatibility path configured with SYNAPSE_ALERT_WEBHOOK_*. New tenant
-        rules below use the durable worker pipeline.
+        Compatibility path configured with SYNAPSE_ALERT_WEBHOOK_*. It is
+        deprecated and will be removed in 0.4.0. Use an Incident created rule
+        below, which is delivered through the durable worker pipeline.
       </p>
       {!available && (
         <p className="mt-3 text-sm font-medium text-tertiary">
@@ -225,17 +283,31 @@ function LegacyAlertTest({ canAdmin }: { canAdmin: boolean }) {
   )
 }
 
+const CHANNEL_TYPES: { value: NotificationChannelType; label: string }[] = [
+  { value: 'webhook', label: 'Signed webhook' },
+  { value: 'slack', label: 'Slack incoming webhook' },
+  { value: 'email', label: 'Email (SMTP)' },
+]
+
 function ChannelCreate({
   initial,
   canAdmin,
+  types,
   onCreated,
 }: {
   initial?: NotificationChannel
   canAdmin: boolean
+  /** Channel types the server advertises; null means it does not say, so offer every known type. */
+  types: string[] | null
   onCreated: () => void
 }) {
+  // An existing channel keeps its type in the list even if the server no longer offers it.
+  const typeOptions = CHANNEL_TYPES.filter(
+    (option) =>
+      !types || types.includes(option.value) || option.value === initial?.type,
+  )
   const [type, setType] = useState<NotificationChannelType>(
-    initial?.type ?? 'webhook',
+    initial?.type ?? typeOptions[0]?.value ?? 'webhook',
   )
   const [name, setName] = useState(initial?.name ?? '')
   const [url, setURL] = useState('')
@@ -295,11 +367,7 @@ function ChannelCreate({
             disabled={!!initial}
             value={type}
             onValueChange={(v) => setType(v as NotificationChannelType)}
-            options={[
-              { value: 'webhook', label: 'Signed webhook' },
-              { value: 'slack', label: 'Slack incoming webhook' },
-              { value: 'email', label: 'Email (SMTP)' },
-            ]}
+            options={typeOptions}
           />
         </Field>
         <Field label="Name" htmlFor="notification-name">
@@ -507,21 +575,75 @@ function teamCursor(cursor?: string): { offset: number; apiCursor?: string } {
   return { offset: 0, apiCursor: cursor }
 }
 
+/**
+ * Blocking notice for incident.created rules while the deprecated deployment-wide webhook is set
+ * (#1347). Both paths deliver every incident and are not deduplicated against each other, so the
+ * administrator must acknowledge the overlap before the rule can be saved.
+ */
+function LegacyIncidentWebhookWarning({
+  acknowledged,
+  onAcknowledge,
+  disabled,
+}: {
+  acknowledged: boolean
+  onAcknowledge: (value: boolean) => void
+  disabled: boolean
+}) {
+  return (
+    <div
+      role="alert"
+      className="space-y-2 rounded-lg border border-warning-primary bg-warning-primary p-4 text-sm text-secondary md:col-span-2"
+    >
+      <p className="font-semibold text-warning-primary">
+        The legacy incident webhook is also configured
+      </p>
+      <p>
+        This deployment sets SYNAPSE_ALERT_WEBHOOK_URL. Every incident is sent
+        to that webhook and to the channels this rule selects. The two paths
+        are not deduplicated, so a receiver on both gets each incident twice.
+        The legacy webhook is deprecated and will be removed in 0.4.0. Ask your
+        deployment administrator to remove it once this rule is tested.
+      </p>
+      <label className="flex gap-2 font-medium text-primary">
+        <input
+          type="checkbox"
+          checked={acknowledged}
+          disabled={disabled}
+          onChange={(e) => onAcknowledge(e.target.checked)}
+        />
+        I understand incidents will be delivered through both paths
+      </label>
+    </div>
+  )
+}
+
 function RuleCreate({
   initial,
   channels,
+  eventTypes,
   canAdmin,
   onCreated,
 }: {
   initial?: NotificationRule
   channels: NotificationChannel[]
+  eventTypes: NotificationEventSpec[]
   canAdmin: boolean
   onCreated: () => void
 }) {
+  // Operator-only events are sent on demand and never matched by rules, so the form omits them.
+  const ruleEvents = eventTypes.filter((e) => !e.operator_only)
   const [name, setName] = useState(initial?.name ?? '')
   const [event, setEvent] = useState<NotificationEventType>(
-    initial?.event_type ?? 'vulnerability_action.created',
+    initial?.event_type ??
+      (ruleEvents.find((e) => e.type === DEFAULT_RULE_EVENT) ?? ruleEvents[0])
+        ?.type ??
+      '',
   )
+  // Each field below renders only when the catalog says this event type accepts its filter, so the
+  // form cannot build a rule the server would reject or that could never match.
+  const spec = eventTypes.find((e) => e.type === event)
+  const allows = (filter: NotificationRuleFilter) =>
+    spec?.filters.includes(filter) ?? false
   const [selected, setSelected] = useState<string[]>(
     initial?.channel_ids ?? [channels[0]?.id].filter(Boolean),
   )
@@ -579,40 +701,47 @@ function RuleCreate({
     String((initial?.lead_time_seconds ?? 86400) / 3600),
   )
   const [busy, setBusy] = useState(false)
+  // #1347: while the deprecated SYNAPSE_ALERT_WEBHOOK_URL is set, an incident.created rule delivers
+  // in addition to the legacy webhook. The capability catalog carries only a boolean, never the URL.
+  // A deployment that does not report capabilities shows no warning, matching the catalog contract.
+  const capabilities = useCapabilities()
+  const legacyWebhook =
+    capabilities?.get('legacy_alert_webhook')?.enabled === true
+  const legacyAckRequired = legacyWebhook && event === 'incident.created'
+  const [legacyAck, setLegacyAck] = useState(false)
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      if (event === 'finding.ownership_changed' && !allTeams && teams.length === 0) {
+      if (allows('team_ids') && !allTeams && teams.length === 0) {
         throw new Error('Choose at least one team or select all teams.')
+      }
+      if (legacyAckRequired && !legacyAck) {
+        throw new Error(
+          'Acknowledge that the legacy incident webhook also delivers this event.',
+        )
       }
       const input = {
         name: name.trim(),
         enabled: initial?.enabled ?? true,
         event_type: event,
         channel_ids: selected,
-        engagement_ids: engagements,
-        team_ids: event === 'finding.ownership_changed' && !allTeams ? teams : undefined,
-        all_teams: event === 'finding.ownership_changed' ? allTeams : undefined,
-        action_types:
-          event === 'vulnerability_action.created'
-            ? actions
-                .split(',')
-                .map((x) => x.trim())
-                .filter(Boolean)
-            : undefined,
+        // A saved engagement scope on an event without engagements is cleared rather than resent.
+        engagement_ids: allows('engagement_ids') ? engagements : [],
+        team_ids: allows('team_ids') && !allTeams ? teams : undefined,
+        all_teams: allows('team_ids') ? allTeams : undefined,
+        action_types: allows('action_types')
+          ? actions
+              .split(',')
+              .map((x) => x.trim())
+              .filter(Boolean)
+          : undefined,
         min_severity:
-          event === 'vulnerability_action.created' ||
-          event === 'incident.created'
-            ? severity === 'any'
-              ? undefined
-              : severity
-            : undefined,
-        lead_time_seconds:
-          event === 'sla.approaching_deadline'
-            ? Number(leadHours) * 3600
-            : undefined,
+          allows('min_severity') && severity !== 'any' ? severity : undefined,
+        lead_time_seconds: allows('lead_time_seconds')
+          ? Number(leadHours) * 3600
+          : undefined,
       }
       if (initial)
         await api.updateNotificationRule(initial.id, {
@@ -643,8 +772,14 @@ function RuleCreate({
           <Select
             id="notification-event"
             value={event}
-            onValueChange={(v) => setEvent(v as NotificationEventType)}
-            options={EVENTS}
+            onValueChange={setEvent}
+            options={[
+              ...ruleEvents.map((e) => ({ value: e.type, label: e.label })),
+              // Keep a saved rule's type selectable even if the catalog stopped offering it.
+              ...(event && !ruleEvents.some((e) => e.type === event)
+                ? [{ value: event, label: eventLabel(eventTypes, event) }]
+                : []),
+            ]}
           />
         </Field>
         <fieldset className="space-y-2">
@@ -668,15 +803,17 @@ function RuleCreate({
             </label>
           ))}
         </fieldset>
-        <RuleTargetPicker
-          label="Engagements (optional)"
-          hint="Leave unselected to match every engagement. A saved engagement that is missing from this directory stays on the rule until you remove it."
-          selected={engagements}
-          onChange={setEngagements}
-          disabled={!canAdmin}
-          search={searchEngagements}
-        />
-        {event === 'vulnerability_action.created' && (
+        {allows('engagement_ids') && (
+          <RuleTargetPicker
+            label="Engagements (optional)"
+            hint="Leave unselected to match every engagement. A saved engagement that is missing from this directory stays on the rule until you remove it."
+            selected={engagements}
+            onChange={setEngagements}
+            disabled={!canAdmin}
+            search={searchEngagements}
+          />
+        )}
+        {allows('action_types') && (
           <Field
             label="Action types (optional)"
             htmlFor="notification-actions"
@@ -689,7 +826,7 @@ function RuleCreate({
             />
           </Field>
         )}
-        {event === 'finding.ownership_changed' && (
+        {allows('team_ids') && (
           <fieldset className="space-y-3 md:col-span-2">
             <legend className="text-sm font-medium text-secondary">Affected teams</legend>
             <label className="flex gap-2 text-sm text-secondary">
@@ -710,8 +847,7 @@ function RuleCreate({
             />
           </fieldset>
         )}
-        {(event === 'vulnerability_action.created' ||
-          event === 'incident.created') && (
+        {allows('min_severity') && (
           <Field label="Minimum severity" htmlFor="notification-severity">
             <Select
               id="notification-severity"
@@ -727,7 +863,7 @@ function RuleCreate({
             />
           </Field>
         )}
-        {event === 'sla.approaching_deadline' && (
+        {allows('lead_time_seconds') && (
           <Field label="Lead time (hours)" htmlFor="notification-lead">
             <Input
               id="notification-lead"
@@ -739,6 +875,13 @@ function RuleCreate({
             />
           </Field>
         )}
+        {legacyAckRequired && (
+          <LegacyIncidentWebhookWarning
+            acknowledged={legacyAck}
+            onAcknowledge={setLegacyAck}
+            disabled={!canAdmin}
+          />
+        )}
         {error && <ErrorState message={error} />}
         <div className="flex justify-end gap-2 md:col-span-2">
           <Button
@@ -747,8 +890,10 @@ function RuleCreate({
             disabled={
               !canAdmin ||
               !name.trim() ||
+              !event ||
               selected.length === 0 ||
-              (event === 'sla.approaching_deadline' &&
+              (legacyAckRequired && !legacyAck) ||
+              (allows('lead_time_seconds') &&
                 (!Number.isFinite(Number(leadHours)) ||
                   Number(leadHours) < 1 ||
                   Number(leadHours) > 720))
@@ -772,12 +917,14 @@ function RuleList({
   onEdit,
   rules,
   channels,
+  eventTypes,
   canAdmin,
   refresh,
 }: {
   onEdit: (rule: NotificationRule) => void
   rules: NotificationRule[]
   channels: NotificationChannel[]
+  eventTypes: NotificationEventSpec[]
   canAdmin: boolean
   refresh: () => void
 }) {
@@ -812,7 +959,7 @@ function RuleList({
                 </Pill>
               </div>
               <p className="text-sm text-tertiary">
-                {EVENTS.find((e) => e.value === r.event_type)?.label} →{' '}
+                {eventLabel(eventTypes, r.event_type)} →{' '}
                 {r.channel_ids.map(channelName).join(', ')}
               </p>
               {r.engagement_ids && r.engagement_ids.length > 0 && (
@@ -866,7 +1013,13 @@ function RuleList({
   )
 }
 
-function DeliveryHistory({ channels }: { channels: NotificationChannel[] }) {
+function DeliveryHistory({
+  channels,
+  eventTypes,
+}: {
+  channels: NotificationChannel[]
+  eventTypes: NotificationEventSpec[]
+}) {
   const historyRequest = useRef(0)
   const attemptRequest = useRef(0)
   const [items, setItems] = useState<NotificationDelivery[]>([])
@@ -958,8 +1111,8 @@ function DeliveryHistory({ channels }: { channels: NotificationChannel[] }) {
             onValueChange={setEvent}
             options={[
               { value: 'all', label: 'All events' },
-              { value: 'notification.test', label: 'Channel test' },
-              ...EVENTS,
+              // Operator-only events such as channel tests also leave deliveries, so all are listed.
+              ...eventTypes.map((e) => ({ value: e.type, label: e.label })),
             ]}
           />
         </Field>

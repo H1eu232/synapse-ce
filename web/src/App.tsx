@@ -47,6 +47,7 @@ const Profile = lazy(() => import('./pages/Profile/ProfilePage').then(m => ({ de
 const Inbox = lazy(() => import('./pages/Inbox/InboxPage').then(m => ({ default: m.InboxPage })))
 const SettingsConfig = lazy(() => import('./pages/Settings/SettingsConfig').then(m => ({ default: m.SettingsConfig })))
 const Integrations = lazy(() => import('./pages/Settings/Integrations').then(m => ({ default: m.Integrations })))
+const IntegrationsHub = lazy(() => import('./pages/Settings/IntegrationsHub').then(m => ({ default: m.IntegrationsHub })))
 const Connectors = lazy(() => import('./pages/Settings/Connectors').then(m => ({ default: m.Connectors })))
 const TelemetryPrivacy = lazy(() => import('./pages/Settings/TelemetryPrivacy').then(m => ({ default: m.TelemetryPrivacy })))
 const ResponseOps = lazy(() => import('./pages/BlueTeam/ResponseOps').then(m => ({ default: m.ResponseOps })))
@@ -61,6 +62,7 @@ const SLAPolicy = lazy(() => import('./pages/Settings/SLAPolicy').then(m => ({ d
 const OffensivePolicy = lazy(() => import('./pages/Settings/OffensivePolicy').then(m => ({ default: m.OffensivePolicy })))
 const Alerting = lazy(() => import('./pages/Settings/Alerting').then(m => ({ default: m.Alerting })))
 const SIEM = lazy(() => import('./pages/Settings/SIEM').then(m => ({ default: m.SIEM })))
+const RegionalSettings = lazy(() => import('./pages/Settings/RegionalSettings').then(m => ({ default: m.RegionalSettings })))
 const OwnershipInbox = lazy(() => import('./pages/Ownership/OwnershipInbox').then(m => ({ default: m.OwnershipInbox })))
 const OwnershipSettings = lazy(() => import('./pages/Ownership/OwnershipSettings').then(m => ({ default: m.OwnershipSettings })))
 const AssigneeReview = lazy(() => import('./pages/Settings/AssigneeReview').then(m => ({ default: m.AssigneeReview })))
@@ -139,7 +141,8 @@ function Gate() {
         <Route path="settings" element={<Settings />}>
           <Route index element={<Audit />} />
           <Route path="team" element={<Team />} />
-          <Route path="integrations" element={<Integrations />} />
+          <Route path="integrations" element={<IntegrationsHub />} />
+          <Route path="integrations/ci" element={<Integrations />} />
           <Route path="connectors" element={<Connectors />} />
           <Route path="privacy" element={<TelemetryPrivacy />} />
 
@@ -149,6 +152,7 @@ function Gate() {
           <Route path="offensive-policy" element={<OffensivePolicy />} />
           <Route path="alerting" element={<Alerting />} />
           <Route path="siem" element={<SIEM />} />
+          <Route path="regional" element={<RegionalSettings />} />
           <Route path="ownership" element={<OwnershipSettings />} />
           <Route path="assignee-review" element={<AssigneeReview />} />
         </Route>

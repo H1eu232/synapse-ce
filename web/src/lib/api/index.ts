@@ -14,8 +14,9 @@ export { type AttackPathResult, type AttackPath, type AttackPathNode, type Attac
 export { type SLAPoliciesView, type SLAPolicy, type SLAConfig, type SLAWeights, type SLAThresholds, type SLADueRange, type SLADueRanges, type SLADueTier, type SLAActivateResult, nsToDays, daysToNs } from './sla'
 export { type OffensivePolicy, type OffensiveTechnique, type OffensiveLegalReview } from './offensivepolicy'
 export { type AlertTestResult, type AlertTestOutcome, AlertNotEnabledError } from './alerting'
-export { type NotificationChannel, type NotificationChannelInput, type NotificationChannelType, type NotificationRule, type NotificationRuleInput, type NotificationEventType, type NotificationDelivery, type NotificationDeliveryState, type NotificationAttempt } from './notifications'
+export { type NotificationChannel, type NotificationChannelInput, type NotificationChannelType, type NotificationRule, type NotificationRuleInput, type NotificationEventType, type NotificationEventSpec, type NotificationRuleFilter, type NotificationDelivery, type NotificationDeliveryState, type NotificationAttempt } from './notifications'
 export { type SIEMSink, type SIEMSinkInput, type SIEMProvider, type SIEMDataClass, type SIEMAckMode, type SIEMReplay, type SIEMStatus, type SIEMPartition } from './siem'
+export { type TenantLocale, type TenantSettings, type TenantSettingsInput } from './tenant-settings'
 export { type UserContact } from './user-contacts'
 export { type InboxItem, type InboxPreference } from './inbox'
 export { type EngagementCredential } from './engagements'
@@ -54,6 +55,7 @@ import { offensivePolicyApi } from './offensivepolicy'
 import { alertingApi } from './alerting'
 import { notificationsApi } from './notifications'
 import { siemApi } from './siem'
+import { tenantSettingsApi } from './tenant-settings'
 import { ownershipApi } from './ownership'
 import { userContactsApi } from './user-contacts'
 import { inboxApi } from './inbox'
@@ -110,6 +112,7 @@ export const api = {
   ...alertingApi,
   ...notificationsApi,
   ...siemApi,
+  ...tenantSettingsApi,
   ...privacyApi,
   ...writeupApi,
   ...cspmApi,

@@ -224,6 +224,11 @@ by default and has no authentication. Exported series have bounded labels (prior
 
 ## Alerting
 
+**Deprecated.** `SYNAPSE_ALERT_WEBHOOK_*` is deprecated and will be removed in 0.4.0. Use an
+`incident.created` notification rule instead; see
+[Legacy incident webhook](notifications.md#legacy-incident-webhook-deprecated). While both are
+configured, each incident is delivered through both paths.
+
 Set `SYNAPSE_ALERT_WEBHOOK_URL` and the control plane posts a signed JSON alert to that URL every time
 correlation opens an incident. Correlation itself runs after every detection batch that seals new
 detections, off the agent's request, one run per engagement at a time (batches that arrive during a run

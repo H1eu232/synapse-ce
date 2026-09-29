@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	userdom "github.com/KKloudTarus/synapse-ce/internal/domain/user"
@@ -73,6 +74,27 @@ func TestCapabilitiesReportsDisabledSubsystemWithItsSwitchName(t *testing.T) {
 	}
 }
 
+// TestCapabilitiesReportsNotificationChannelsAndPlannedSubsystems pins the #1350 wire shape: the
+// channel type list rides in `values`, and a subsystem this build does not ship answers `planned`
+// with an empty switch.
+func TestCapabilitiesReportsNotificationChannelsAndPlannedSubsystems(t *testing.T) {
+	rt := newCapabilityRouter(t, capabilities.Flags{Notifications: true})
+	_, byKey := getCapabilities(t, rt, "readonly")
+	if got := byKey["notifications"]; !got.Enabled || got.Switch != "SYNAPSE_NOTIFICATIONS_ENABLED" {
+		t.Errorf("notifications = %+v, want enabled with its switch", got)
+	}
+	types := byKey["notifications.channel_types"]
+	if !types.Enabled || strings.Join(types.Values, ",") != "webhook,slack,email" {
+		t.Errorf("notifications.channel_types = %+v, want enabled with webhook, slack and email", types)
+	}
+	for _, key := range []string{"ticketing", "docpublish"} {
+		got, ok := byKey[key]
+		if !ok || !got.Planned || got.Enabled || got.Switch != "" {
+			t.Errorf("%s = %+v (present %v), want planned and disabled without a switch", key, got, ok)
+		}
+	}
+}
+
 func TestCapabilitiesReportsEnabledSubsystem(t *testing.T) {
 	rt := newCapabilityRouter(t, capabilities.Flags{Fleet: true, FleetAssets: true, SLA: true})
 	_, byKey := getCapabilities(t, rt, "readonly")
@@ -84,6 +106,27 @@ func TestCapabilitiesReportsEnabledSubsystem(t *testing.T) {
 	// An ingest switch left off stays off even when its transport is on.
 	if byKey["fleet_host_ingest"].Enabled {
 		t.Error("fleet_host_ingest reported enabled with its own switch off")
+	}
+}
+
+// TestCapabilitiesReportsLegacyAlertWebhookAsABoolean backs the rule-form warning (#1347): the console
+// learns whether the deprecated SYNAPSE_ALERT_WEBHOOK_URL is set, and only that. The response carries
+// the variable name, never a configured value.
+func TestCapabilitiesReportsLegacyAlertWebhookAsABoolean(t *testing.T) {
+	for _, set := range []bool{false, true} {
+		rt := newCapabilityRouter(t, capabilities.Flags{LegacyAlertWebhook: set})
+		rec, byKey := getCapabilities(t, rt, "admin")
+		got, ok := byKey["legacy_alert_webhook"]
+		if !ok {
+			t.Fatal("legacy_alert_webhook is missing from the response")
+		}
+		if got.Enabled != set || got.Switch != "SYNAPSE_ALERT_WEBHOOK_URL" {
+			t.Fatalf("legacy_alert_webhook = %+v, want enabled=%v", got, set)
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, "http://") || strings.Contains(body, "https://") {
+			t.Fatalf("capability response carries a URL: %s", body)
+		}
 	}
 }
 

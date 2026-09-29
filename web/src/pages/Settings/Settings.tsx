@@ -12,6 +12,7 @@ const TABS = [
   { label: 'Offensive policy', to: '/settings/offensive-policy' },
   { label: 'Alerting', to: '/settings/alerting' },
   { label: 'SIEM', to: '/settings/siem' },
+  { label: 'Language & time zone', to: '/settings/regional' },
   { label: 'Telemetry Privacy', to: '/settings/privacy' },
 
   { label: 'Relationships', to: '/settings/relationships' },

@@ -42,6 +42,7 @@ import (
 	scauc "github.com/KKloudTarus/synapse-ce/internal/usecase/sca"
 	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/slauc"
+	tenancyuc "github.com/KKloudTarus/synapse-ce/internal/usecase/tenancy"
 	transferuc "github.com/KKloudTarus/synapse-ce/internal/usecase/transfer"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/usercontacts"
 	usersuc "github.com/KKloudTarus/synapse-ce/internal/usecase/users"
@@ -163,6 +164,7 @@ type Router struct {
 	notifications            *notificationuc.Service     // optional; nil ⇒ tenant notification management routes are not registered
 	inbox                    *inboxuc.Service
 	siem                     *siemuc.Service
+	tenantSettings           *tenancyuc.Service // optional; nil ⇒ the tenant settings routes are not registered
 }
 
 // findingVerifier is the narrow slice of the exploitation use-case the verify endpoint needs:
@@ -499,6 +501,7 @@ func (rt *Router) routes() *http.ServeMux {
 		mux.HandleFunc("POST /api/v1/alerts/test", rt.authz(userdom.PermAdminister, rt.testAlert))
 	}
 	if rt.notifications != nil {
+		mux.HandleFunc("GET /api/v1/notifications/event-types", rt.authz(userdom.PermView, rt.listNotificationEventTypes))
 		mux.HandleFunc("GET /api/v1/notifications/channels", rt.authz(userdom.PermAdminister, rt.listNotificationChannels))
 		mux.HandleFunc("POST /api/v1/notifications/channels", rt.authz(userdom.PermAdminister, rt.createNotificationChannel))
 		mux.HandleFunc("GET /api/v1/notifications/channels/{nid}", rt.authz(userdom.PermAdminister, rt.getNotificationChannel))
@@ -536,6 +539,10 @@ func (rt *Router) routes() *http.ServeMux {
 		mux.HandleFunc("POST /api/v1/me/inbox/{id}/read", rt.authz(userdom.PermView, rt.readMyInbox))
 		mux.HandleFunc("GET /api/v1/me/notification-preferences", rt.authz(userdom.PermView, rt.listMyNotificationPreferences))
 		mux.HandleFunc("PUT /api/v1/me/notification-preferences", rt.authz(userdom.PermView, rt.saveMyNotificationPreference))
+	}
+	if rt.tenantSettings != nil {
+		mux.HandleFunc("GET /api/v1/tenant/settings", rt.authz(userdom.PermView, rt.getTenantSettings))
+		mux.HandleFunc("PUT /api/v1/tenant/settings", rt.authz(userdom.PermAdminister, rt.putTenantSettings))
 	}
 	if rt.businessAssets != nil {
 		if rt.eng != nil && rt.findings != nil {

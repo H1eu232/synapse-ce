@@ -13,9 +13,10 @@ describe('notification API', () => {
       json: async () => body,
     } as Response)
   }
-  it('distinguishes an absent framework from an empty tenant', async () => {
+  it('surfaces a 404 instead of reading it as a disabled framework', async () => {
+    // Whether notifications are on comes from the `notifications` capability (#1350).
     respond({ error: 'not found' }, 404)
-    expect(await notificationsApi.listNotificationChannels()).toBeNull()
+    await expect(notificationsApi.listNotificationChannels()).rejects.toThrow()
     respond({ items: [] })
     expect(await notificationsApi.listNotificationChannels()).toEqual([])
   })
@@ -46,6 +47,34 @@ describe('notification API', () => {
     expect(body).toMatchObject({ revision: 2, enabled: false })
     expect(body).not.toHaveProperty('id')
     expect(body).not.toHaveProperty('created_at')
+  })
+  it('resends the team scope when updating an ownership rule', async () => {
+    // The server replaces the rule on PATCH and rejects an ownership rule without a team scope.
+    respond({})
+    await notificationsApi.updateNotificationRule('r', {
+      name: 'Ownership',
+      enabled: false,
+      event_type: 'finding.ownership_changed',
+      team_ids: ['pay', 'ops'],
+      channel_ids: ['c'],
+      revision: 4,
+    })
+    respond({})
+    await notificationsApi.updateNotificationRule('r', {
+      name: 'Ownership',
+      enabled: true,
+      event_type: 'finding.ownership_changed',
+      all_teams: true,
+      channel_ids: ['c'],
+      revision: 5,
+    })
+    const [teams, all] = vi
+      .mocked(fetch)
+      .mock.calls.map(([, options]) => JSON.parse(String(options?.body)))
+    expect(teams).toMatchObject({ team_ids: ['pay', 'ops'], revision: 4 })
+    expect(teams).not.toHaveProperty('all_teams')
+    expect(all).toMatchObject({ all_teams: true, revision: 5 })
+    expect(all).not.toHaveProperty('team_ids')
   })
   it('encodes delivery cursor and filters', async () => {
     respond({ items: [], next: 'next' })

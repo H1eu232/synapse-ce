@@ -263,7 +263,7 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	source := NewNotificationSource(pool, repo, time.Minute, true)
+	source := NewNotificationSource(pool, repo, time.Minute)
 	if _, err := source.Poll(ctx, now, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -347,21 +347,25 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 			}
 		}
 	}
-	// Legacy routing consumes the inbox without a second durable incident send.
+	// #1347: a deployment that also runs the deprecated SYNAPSE_ALERT_WEBHOOK_URL sink still projects
+	// every incident.created onto the framework. The source has no legacy switch any more, so a second
+	// incident is published once and a replayed poll never sends it twice.
 	exec(`INSERT INTO incident_events(tenant_id,incident_id,seq,kind,occurred_at,actor,payload) VALUES('notify-a','legacy-incident',1,'created',$1,'correlator','{"Severity":"high","Title":"Legacy"}')`, now.Add(4*time.Minute))
-	legacy := NewNotificationSource(pool, repo, time.Minute, false)
-	if _, err := legacy.Poll(ctx, now.Add(4*time.Minute), 100); err != nil {
-		t.Fatal(err)
-	}
-	// Keep the heartbeat fresh while switching routing back to the framework.
-	exec("UPDATE fleet_agents SET last_seen_at=$1 WHERE id='agent'", now.Add(5*time.Minute))
-	if _, err := source.Poll(ctx, now.Add(5*time.Minute), 100); err != nil {
-		t.Fatal(err)
+	exec("UPDATE fleet_agents SET last_seen_at=$1 WHERE id='agent'", now.Add(4*time.Minute))
+	for _, at := range []time.Time{now.Add(4 * time.Minute), now.Add(5 * time.Minute)} {
+		if _, err := source.Poll(ctx, at, 100); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var count int
 	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT count(*) FROM notification_events WHERE source_kind='incident'`).Scan(&count)
-	}); err != nil || count != 1 {
-		t.Fatalf("legacy incident replayed: %d %v", count, err)
+	}); err != nil || count != 2 {
+		t.Fatalf("incident events=%d, want 2 (each incident projected exactly once): %v", count, err)
+	}
+	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM notification_deliveries d JOIN notification_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id WHERE e.source_kind='incident'`).Scan(&count)
+	}); err != nil || count != 2 {
+		t.Fatalf("incident deliveries=%d, want 2: %v", count, err)
 	}
 }
