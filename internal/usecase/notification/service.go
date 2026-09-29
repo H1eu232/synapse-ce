@@ -32,13 +32,46 @@ type Service struct {
 	clock     ports.Clock
 	ids       ports.IDGenerator
 	observer  ports.NotificationDeliveryObserver
+	// disabled holds the channel types the operator switched off deployment-wide.
+	disabled map[domain.ChannelType]bool
+	// pauseThreshold is the number of consecutive permanent failures that pauses a channel (#1464).
+	pauseThreshold int
+}
+
+// SetDisabledChannelTypes installs the operator kill switch (SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED),
+// already checked against the driver registry by the composition root. A disabled type cannot be
+// created, enabled, re-pointed or tested, and its queued deliveries are cancelled with
+// provider_disabled. Existing channels are kept so turning the type back on restores them.
+func (s *Service) SetDisabledChannelTypes(types []domain.ChannelType) {
+	s.disabled = make(map[domain.ChannelType]bool, len(types))
+	for _, channelType := range types {
+		s.disabled[channelType] = true
+	}
+}
+
+// refuseDisabled is the validation error an administrator sees for a disabled channel type.
+func (s *Service) refuseDisabled(channelType domain.ChannelType) error {
+	if s.disabled[channelType] {
+		return fmt.Errorf("%w: channel type %q is disabled by the operator (SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED)", shared.ErrValidation, channelType)
+	}
+	return nil
 }
 
 func NewService(repo ports.NotificationRepository, protector ports.NotificationSecretProtector, sender ports.NotificationSender, audit ports.AuditLogger, clock ports.Clock, ids ports.IDGenerator) (*Service, error) {
 	if repo == nil || protector == nil || audit == nil || clock == nil || ids == nil {
 		return nil, fmt.Errorf("%w: notification dependencies are required", shared.ErrValidation)
 	}
-	return &Service{repo: repo, protector: protector, sender: sender, audit: audit, clock: clock, ids: ids}, nil
+	return &Service{repo: repo, protector: protector, sender: sender, audit: audit, clock: clock, ids: ids, pauseThreshold: domain.DefaultPauseThreshold}, nil
+}
+
+// SetPauseThreshold sets how many consecutive permanent failures pause a channel; zero keeps
+// counting but never pauses. Values outside the documented bounds are refused.
+func (s *Service) SetPauseThreshold(n int) error {
+	if !domain.ValidPauseThreshold(n) {
+		return fmt.Errorf("%w: channel pause threshold must be between 0 and %d", shared.ErrValidation, domain.MaxPauseThreshold)
+	}
+	s.pauseThreshold = n
+	return nil
 }
 
 // SetDeliveryObserver installs optional worker-owned metrics instrumentation.
@@ -71,6 +104,9 @@ type ChannelInput struct {
 func (s *Service) createChannel(ctx context.Context, actor string, in ChannelInput) (domain.Channel, error) {
 	tenant, err := tenantFrom(ctx)
 	if err != nil {
+		return domain.Channel{}, err
+	}
+	if err = s.refuseDisabled(in.Type); err != nil {
 		return domain.Channel{}, err
 	}
 	channels, err := s.repo.ListChannels(ctx, tenant)
@@ -119,6 +155,13 @@ func (s *Service) updateChannel(ctx context.Context, actor string, id shared.ID,
 		return domain.Channel{}, fmt.Errorf("%w: channel type is immutable", shared.ErrValidation)
 	}
 	replace := strings.TrimSpace(in.URL) != "" || strings.TrimSpace(in.Secret) != "" || in.Type != current.Type
+	// A channel of a disabled type can still be renamed, switched off or deleted, but not switched
+	// on or pointed at a new destination.
+	if replace || (in.Enabled && !current.Enabled) {
+		if err = s.refuseDisabled(current.Type); err != nil {
+			return domain.Channel{}, err
+		}
+	}
 	var sealed string
 	destination := current.Destination
 	recipients := current.Recipients
@@ -280,6 +323,15 @@ func (s *Service) testChannel(ctx context.Context, actor string, cid shared.ID) 
 	if err != nil {
 		return "", err
 	}
+	if len(s.disabled) > 0 {
+		channel, getErr := s.repo.GetChannel(ctx, tenant, cid)
+		if getErr != nil {
+			return "", getErr
+		}
+		if err = s.refuseDisabled(channel.Type); err != nil {
+			return "", err
+		}
+	}
 	now := s.clock.Now().UTC()
 	data, _ := json.Marshal(map[string]any{"title": "Synapse notification test"})
 	event := domain.Event{TenantID: tenant, ID: s.ids.NewID(), Type: domain.EventTest, SourceKind: "channel_test", SourceID: s.ids.NewID().String(), SchemaVersion: 1, OccurredAt: now, Data: data}
@@ -375,8 +427,17 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	if work.Delivery.State == domain.DeliveryDead || job.Attempts > 8 {
 		return &DeliveryError{terminal: true, cause: errors.New("notification_delivery_exhausted")}
 	}
+	// The operator switched this type off. Cancelling is not a channel failure, so the delivery is
+	// not retried and the channel's own health is untouched.
+	if s.disabled[work.Channel.Type] {
+		return s.repo.CancelDelivery(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, domain.CodeProviderDisabled)
+	}
 	if !work.Channel.Enabled {
 		return s.repo.CancelDelivery(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, "channel_disabled")
+	}
+	if work.Channel.Health.Paused() {
+		// No new sends to a paused channel: its queued work is cancelled like a disabled channel's.
+		return s.repo.CancelDelivery(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, "channel_paused")
 	}
 	relevant, err := s.repo.DeliveryStillRelevant(ctx, work)
 	if err != nil {
@@ -390,10 +451,12 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	if _, err = s.repo.BeginAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, now); err != nil {
 		return err
 	}
+	attempt := finishedAttempt{job: job, work: work, deliveryID: payload.DeliveryID, attemptID: aid}
 	raw, err := s.protector.Open(work.Sealed, channelAAD(job.TenantID, work.Channel.ID, work.Channel.SecretVersion))
 	if err != nil {
 		finished := s.clock.Now().UTC()
-		if finishErr := s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, "failed", 0, "channel_secret_unavailable", nil); finishErr != nil {
+		// The vault key is the operator's, not the channel's, so this never counts towards a pause.
+		if finishErr := s.finishAttempt(ctx, attempt, finished, "failed", 0, "channel_secret_unavailable", nil, domain.AttemptIgnored); finishErr != nil {
 			return finishErr
 		}
 		s.observeAttempt(work.Delivery.ChannelType, now, finished, false, false)
@@ -403,7 +466,7 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	cfg, configErr := decodeChannelConfig(work.Channel.Type, raw)
 	if configErr != "" {
 		finished := s.clock.Now().UTC()
-		if finishErr := s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, "failed", 0, configErr, nil); finishErr != nil {
+		if finishErr := s.finishAttempt(ctx, attempt, finished, "failed", 0, configErr, nil, domain.ClassifyAttempt(false, configErr, false)); finishErr != nil {
 			return finishErr
 		}
 		s.observeAttempt(work.Delivery.ChannelType, now, finished, false, false)
@@ -413,7 +476,7 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	result := s.sender.Send(ctx, work, cfg)
 	finished := s.clock.Now().UTC()
 	if result.ErrorCode == "" && result.StatusCode >= 200 && result.StatusCode < 300 {
-		if err = s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, "delivered", result.StatusCode, "", nil); err != nil {
+		if err = s.finishAttempt(ctx, attempt, finished, "delivered", result.StatusCode, "", nil, domain.AttemptDelivered); err != nil {
 			return err
 		}
 		s.observeAttempt(work.Delivery.ChannelType, now, finished, true, result.TemplateFallback)
@@ -438,7 +501,9 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	if code == "" {
 		code = "delivery_failed"
 	}
-	if err = s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, outcome, result.StatusCode, code, nextPtr); err != nil {
+	// The health class reads the sender's own Retryable flag, so a retry that finally exhausts
+	// its attempts (a 5xx eight times) still never counts towards a pause.
+	if err = s.finishAttempt(ctx, attempt, finished, outcome, result.StatusCode, code, nextPtr, domain.ClassifyAttempt(false, code, result.Retryable)); err != nil {
 		return err
 	}
 	s.observeAttempt(work.Delivery.ChannelType, now, finished, false, result.TemplateFallback)

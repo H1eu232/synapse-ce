@@ -13,12 +13,15 @@ import (
 // context's `Provider` claim (for example "github-actions", "gitlab-ci", "bitbucket-pipelines",
 // "azure-pipelines") or a bare forge name; the concrete cloud host is chosen by the adapter.
 // An unsupported provider is a validation error so the caller can skip decoration rather than guess.
-func ForProvider(provider string, credentials ports.GitCredentialResolver) (ports.PRDecorator, error) {
+//
+// Options reach the adapters that support a self-hosted forge (GitHub and GitLab); see
+// WithSelfHostedRules.
+func ForProvider(provider string, credentials ports.GitCredentialResolver, opts ...Option) (ports.PRDecorator, error) {
 	switch normalizeProvider(provider) {
 	case "github":
-		return NewGitHubDecorator(credentials)
+		return NewGitHubDecorator(credentials, opts...)
 	case "gitlab":
-		return NewGitLabDecorator(credentials)
+		return NewGitLabDecorator(credentials, opts...)
 	case "bitbucket":
 		return NewBitbucketDecorator(credentials)
 	case "azure-devops":

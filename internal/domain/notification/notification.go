@@ -24,6 +24,11 @@ func (v ChannelType) Valid() bool {
 	return v == ChannelWebhook || v == ChannelSlack || v == ChannelEmail
 }
 
+// CodeProviderDisabled is the reason a delivery is cancelled when the operator switched its channel
+// type off with SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED. The operator owns it: it is never a fault
+// of the channel, so channel health must not count it and the channel is not retried for it.
+const CodeProviderDisabled = "provider_disabled"
+
 type EventType string
 
 const (
@@ -35,6 +40,7 @@ const (
 	EventIncidentCreated     EventType = "incident.created"
 	EventOwnershipChanged    EventType = "finding.ownership_changed"
 	EventDestinationChanged  EventType = "notification.destination_changed"
+	EventChannelPaused       EventType = "notification.channel_paused"
 	EventTest                EventType = "notification.test"
 )
 
@@ -73,6 +79,8 @@ type Channel struct {
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
 	DeletedAt     *time.Time  `json:"deleted_at,omitempty"`
+	// Health is maintained by the delivery worker (#1464); administrators change it only by resuming.
+	Health ChannelHealth `json:"health"`
 }
 
 func (c Channel) Validate() error {

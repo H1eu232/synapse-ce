@@ -56,6 +56,19 @@ func TestCheckEndpointAppliesTheHostAllowlist(t *testing.T) {
 	}
 }
 
+func TestCheckListedEndpointNeedsAnAllowlistEntry(t *testing.T) {
+	if err := (Rules{}).CheckListedEndpoint("https://ghe.corp.example/api/v3", false); !errors.Is(err, shared.ErrValidation) {
+		t.Fatalf("empty allowlist: err = %v, want validation", err)
+	}
+	rules := Rules{Hosts: mustAllowlist(t, "ghe.corp.example")}
+	if err := rules.CheckListedEndpoint("https://ghe.corp.example/api/v3", false); err != nil {
+		t.Fatalf("listed host: %v", err)
+	}
+	if err := rules.CheckListedEndpoint("https://other.example/api/v3", false); !errors.Is(err, shared.ErrValidation) {
+		t.Fatalf("unlisted host: err = %v, want validation", err)
+	}
+}
+
 func TestCheckEndpointNamesTheHostNotTheURL(t *testing.T) {
 	rules := Rules{Hosts: mustAllowlist(t, "jenkins.corp.example")}
 	err := rules.CheckEndpoint("https://other.example/token-in-path/abc123", false)

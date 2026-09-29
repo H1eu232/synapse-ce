@@ -78,7 +78,7 @@ func TestCapabilitiesReportsDisabledSubsystemWithItsSwitchName(t *testing.T) {
 // channel type list rides in `values`, and a subsystem this build does not ship answers `planned`
 // with an empty switch.
 func TestCapabilitiesReportsNotificationChannelsAndPlannedSubsystems(t *testing.T) {
-	rt := newCapabilityRouter(t, capabilities.Flags{Notifications: true})
+	rt := newCapabilityRouter(t, capabilities.Flags{Notifications: true, NotificationChannelTypes: []string{"webhook", "slack", "email"}})
 	_, byKey := getCapabilities(t, rt, "readonly")
 	if got := byKey["notifications"]; !got.Enabled || got.Switch != "SYNAPSE_NOTIFICATIONS_ENABLED" {
 		t.Errorf("notifications = %+v, want enabled with its switch", got)

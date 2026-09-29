@@ -110,6 +110,8 @@ func (s *InboxStore) ListInboxPreferences(ctx context.Context, tenant, user shar
 	}
 	add(notification.EventDestinationChanged, notification.PersonalInApp, true, "")
 	add(notification.EventDestinationChanged, notification.PersonalEmail, false, "")
+	add(notification.EventChannelPaused, notification.PersonalInApp, true, "")
+	add(notification.EventChannelPaused, notification.PersonalEmail, false, "")
 	out = append(out, ports.InboxPreference{EventType: string(notification.EventOwnershipChanged), Channel: "slack", State: notification.PreferenceDisabled, Available: false, Reason: "Slack direct messages are not available yet."})
 	out = append(out, ports.InboxPreference{EventType: string(notification.EventOwnershipChanged), Channel: "teams", State: notification.PreferenceDisabled, Available: false, Reason: "Teams personal delivery is not available yet."})
 	return out, nil

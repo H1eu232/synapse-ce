@@ -47,6 +47,10 @@ var catalog = map[EventType]EventSpec{
 		Type: EventDestinationChanged, Label: "Destination changed", SchemaVersion: 1, SubjectKind: "user_contact",
 		MaxDataClass: DataClassSummary, OperatorOnly: true,
 	},
+	EventChannelPaused: {
+		Type: EventChannelPaused, Label: "Channel paused", SchemaVersion: 1, SubjectKind: "channel",
+		MaxDataClass: DataClassSummary, OperatorOnly: true,
+	},
 	EventTest: {
 		Type: EventTest, Label: "Channel test", SchemaVersion: 1, SubjectKind: "channel",
 		MaxDataClass: DataClassSignal, OperatorOnly: true,

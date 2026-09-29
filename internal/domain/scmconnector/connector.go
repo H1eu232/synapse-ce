@@ -82,13 +82,17 @@ var (
 // Connector is a tenant-scoped source-control credential binding. The token never lives
 // on this type; the store seals it separately. Matching to a clone URL is by Host.
 type Connector struct {
-	ID        shared.ID `json:"id"`
-	TenantID  shared.ID `json:"tenant_id"`
-	Name      string    `json:"name"`
-	Provider  Provider  `json:"provider"`
-	Host      string    `json:"host"`
-	Username  string    `json:"username"`
-	AuthKind  AuthKind  `json:"auth_kind"`
+	ID       shared.ID `json:"id"`
+	TenantID shared.ID `json:"tenant_id"`
+	Name     string    `json:"name"`
+	Provider Provider  `json:"provider"`
+	Host     string    `json:"host"`
+	Username string    `json:"username"`
+	AuthKind AuthKind  `json:"auth_kind"`
+	// APIBase is the REST API base of a self-hosted forge (GitHub Enterprise Server, self-managed
+	// GitLab) used for pull request decoration. Empty means the provider's public SaaS API. It is set
+	// through SetAPIBase, so its origin is always this connector's Host.
+	APIBase   string    `json:"api_base,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

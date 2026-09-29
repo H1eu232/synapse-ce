@@ -111,15 +111,6 @@ func TestNotificationPostgresDurability(t *testing.T) {
 	if err != nil || len(work.Delivery.MatchedRuleIDs) != 2 {
 		t.Fatalf("work=%+v err=%v", work, err)
 	}
-	// Rotation must preserve the selected encrypted version for pending work.
-	channel, err = svc.UpdateChannel(ctx, "admin", channel.ID, notificationuc.ChannelInput{Name: channel.Name, Type: channel.Type, Enabled: true, URL: "https://example.net/replacement", Secret: "replacement-secret", Revision: channel.Revision})
-	if err != nil {
-		t.Fatal(err)
-	}
-	work, err = repo.LoadWork(ctx, tenant, did)
-	if err != nil || work.Channel.SecretVersion != 1 {
-		t.Fatalf("snapshot version=%d err=%v", work.Channel.SecretVersion, err)
-	}
 	if _, err = svc.GetChannel(shared.WithTenant(ctx, "notify-b"), channel.ID); !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("cross tenant read=%v", err)
 	}
@@ -202,6 +193,17 @@ func TestNotificationPostgresDurability(t *testing.T) {
 	})
 	if err != nil || count != 0 {
 		t.Fatalf("undrained audits=%d %v", count, err)
+	}
+	// Rotating the channel after did is delivered must not retarget its pinned configuration: a
+	// historical delivery keeps the channel_version it was sent under. #1352 covers the opposite
+	// case, a delivery still pending or retrying when the channel rotates.
+	channel, err = svc.UpdateChannel(ctx, "admin", channel.ID, notificationuc.ChannelInput{Name: channel.Name, Type: channel.Type, Enabled: true, URL: "https://example.net/replacement", Secret: "replacement-secret", Revision: channel.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err = repo.LoadWork(ctx, tenant, did)
+	if err != nil || work.Channel.SecretVersion != 1 || work.Delivery.State != notification.DeliverySucceeded {
+		t.Fatalf("snapshot version=%d state=%s err=%v", work.Channel.SecretVersion, work.Delivery.State, err)
 	}
 	// Rate-limited synthetic tests share the production fanout.
 	for n := 0; n < 10; n++ {

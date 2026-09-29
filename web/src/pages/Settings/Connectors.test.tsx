@@ -27,6 +27,13 @@ const CONNECTORS = [
 describe('Connectors', () => {
   beforeEach(() => vi.resetAllMocks())
 
+  it('stops the loading spinner when the list cannot be loaded', async () => {
+    vi.mocked(api.listConnectors).mockRejectedValue(new Error('insufficient permissions: this action requires the administer capability'))
+    render(<Connectors />)
+    expect(await screen.findByText(/insufficient permissions/)).toBeInTheDocument()
+    expect(screen.queryByText('Loading connectors…')).not.toBeInTheDocument()
+  })
+
   it('lists connectors with provider and host, never a token', async () => {
     vi.mocked(api.listConnectors).mockResolvedValue(CONNECTORS as never)
     render(<Connectors />)
@@ -55,6 +62,77 @@ describe('Connectors', () => {
     await waitFor(() => expect(api.createConnector).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'Prod', provider: 'github', host: 'github.com', token: 'ghp_secret' }),
     ))
+  })
+
+  it('sends an optional GitHub Enterprise API base and shows it on the list', async () => {
+    vi.mocked(api.listConnectors).mockResolvedValue([] as never)
+    vi.mocked(api.createConnector).mockResolvedValue({ id: 'conn-ghes' } as never)
+    render(<Connectors />)
+    await screen.findByText('No connectors yet')
+
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'GHES' } })
+    fireEvent.change(screen.getByLabelText(/^Host/), { target: { value: 'ghe.example.com' } })
+    fireEvent.change(screen.getByLabelText(/^API base URL/), { target: { value: 'https://ghe.example.com/api/v3' } })
+    fireEvent.change(screen.getByLabelText(/Personal access token/), { target: { value: 'ghp_secret' } })
+    fireEvent.click(screen.getByRole('button', { name: /Add connector/ }))
+
+    await waitFor(() => expect(api.createConnector).toHaveBeenCalledWith(
+      expect.objectContaining({ host: 'ghe.example.com', apiBase: 'https://ghe.example.com/api/v3', token: 'ghp_secret' }),
+    ))
+  })
+
+  it('shows an inline error and blocks submit for an unsafe API base', async () => {
+    vi.mocked(api.listConnectors).mockResolvedValue([] as never)
+    render(<Connectors />)
+    await screen.findByText('No connectors yet')
+
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'GHES' } })
+    fireEvent.change(screen.getByLabelText(/^Host/), { target: { value: 'ghe.example.com' } })
+    fireEvent.change(screen.getByLabelText(/Personal access token/), { target: { value: 'ghp_secret' } })
+    const apiBase = screen.getByLabelText(/^API base URL/)
+    const submit = screen.getByRole('button', { name: /Add connector/ })
+
+    for (const [value, message] of [
+      ['http://ghe.example.com/api/v3', 'must use https'],
+      ['https://bot:pw@ghe.example.com/api/v3', 'must not contain credentials'],
+      ['https://ghe.example.com/api/v3?x=1', 'must not have a query'],
+      ['https://ghe.example.com/api/v4', 'must end in /api/v3'],
+    ] as const) {
+      fireEvent.change(apiBase, { target: { value } })
+      expect(screen.getByRole('alert')).toHaveTextContent(message)
+      expect(apiBase).toHaveAttribute('aria-invalid', 'true')
+      expect(submit).toBeDisabled()
+    }
+    expect(api.createConnector).not.toHaveBeenCalled()
+  })
+
+  it('shows a server refusal of the API base', async () => {
+    vi.mocked(api.listConnectors).mockResolvedValue([] as never)
+    const { ApiError } = await import('../../lib/api')
+    vi.mocked(api.createConnector).mockRejectedValue(new ApiError(400, 'integration host "ghe.example.com" is not on the operator\'s allowlist'))
+    render(<Connectors />)
+    await screen.findByText('No connectors yet')
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'GHES' } })
+    fireEvent.change(screen.getByLabelText(/^Host/), { target: { value: 'ghe.example.com' } })
+    fireEvent.change(screen.getByLabelText(/^API base URL/), { target: { value: 'https://ghe.example.com/api/v3' } })
+    fireEvent.change(screen.getByLabelText(/Personal access token/), { target: { value: 'ghp_secret' } })
+    fireEvent.click(screen.getByRole('button', { name: /Add connector/ }))
+    expect(await screen.findByText(/not on the operator's allowlist/)).toBeInTheDocument()
+  })
+
+  it('lists a connector API base and offers no API base field for Bitbucket', async () => {
+    vi.mocked(api.listConnectors).mockResolvedValue([
+      { ...CONNECTORS[1], apiBase: 'https://gitlab.corp.internal/api/v4' },
+    ] as never)
+    render(<Connectors />)
+    expect(await screen.findByText('API https://gitlab.corp.internal/api/v4')).toBeInTheDocument()
+    expect(screen.getByLabelText(/^API base URL/)).toBeInTheDocument()
+
+    const nativeProvider = document.querySelector('select') as HTMLSelectElement
+    fireEvent.change(nativeProvider, { target: { value: 'bitbucket' } })
+    expect(screen.queryByLabelText(/^API base URL/)).not.toBeInTheDocument()
+    fireEvent.change(nativeProvider, { target: { value: 'gitlab' } })
+    expect(screen.getByPlaceholderText('https://gitlab.example.com/api/v4')).toBeInTheDocument()
   })
 
   it('says so when connectors are not enabled on the deployment', async () => {

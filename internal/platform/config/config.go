@@ -244,6 +244,14 @@ type Config struct {
 	NotificationSMTPUsername   string
 	NotificationSMTPPassword   string
 	NotificationSMTPRequireTLS bool
+	// NotificationProvidersDisabled is the operator kill switch
+	// (SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED): channel and provider types no tenant may create,
+	// test or deliver to. Parsed trimmed, lowercased and deduplicated; the API and the worker check
+	// each name against the notification driver registry at startup.
+	NotificationProvidersDisabled []string
+	// NotificationChannelPauseThreshold is how many consecutive permanent delivery failures pause
+	// a notification channel (#1464). Zero keeps counting but never pauses. Read by the worker.
+	NotificationChannelPauseThreshold int
 	// ReconViaWorker routes recon runs through the durable queue: the API enqueues
 	// and the non-root synapse-worker claims and executes them. Scoped egress is
 	// configured by a separate root-owned broker. Requires Postgres. Default false
@@ -924,6 +932,8 @@ func Load() Config {
 
 		ReconAllowCapabilitySensitive: getbool("SYNAPSE_RECON_ALLOW_CAPABILITY_SENSITIVE", false),
 
+		NotificationProvidersDisabled: parseLowerSet(getenv("SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED", "")),
+
 		EvidenceSigningSeed:        getenv("SYNAPSE_EVIDENCE_SIGNING_SEED", ""),
 		TSAURL:                     getenv("SYNAPSE_TSA_URL", ""),
 		SandboxEnabled:             getbool("SYNAPSE_SANDBOX_ENABLED", false),
@@ -1182,6 +1192,8 @@ func Load() Config {
 		MCPToken:        getenv("SYNAPSE_MCP_TOKEN", ""),
 		MCPAddr:         getenv("SYNAPSE_MCP_ADDR", ":8081"),
 		MCPEngagementID: getenv("SYNAPSE_MCP_ENGAGEMENT_ID", ""),
+
+		NotificationChannelPauseThreshold: getint("SYNAPSE_NOTIFICATION_CHANNEL_PAUSE_THRESHOLD", 5),
 	}
 }
 
@@ -1193,6 +1205,21 @@ func splitList(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
 		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// parseLowerSet parses a comma-separated list of names into trimmed, lowercased, deduplicated
+// entries in first-seen order. Empty entries are ignored and "" yields nil.
+func parseLowerSet(s string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range splitList(s) {
+		p = strings.ToLower(p)
+		if !seen[p] {
+			seen[p] = true
 			out = append(out, p)
 		}
 	}
@@ -1583,6 +1610,14 @@ func (c Config) ValidateWorkerConcurrency() error {
 	return nil
 }
 
+// ValidateNotificationChannelHealth bounds the channel auto-pause threshold (0 disables pausing).
+func (c Config) ValidateNotificationChannelHealth() error {
+	if c.NotificationChannelPauseThreshold < 0 || c.NotificationChannelPauseThreshold > 100 {
+		return fmt.Errorf("SYNAPSE_NOTIFICATION_CHANNEL_PAUSE_THRESHOLD must be between 0 and 100 (got %d)", c.NotificationChannelPauseThreshold)
+	}
+	return nil
+}
+
 // ValidateAssessmentLifecycleRollout rejects rollout settings that can create
 // unbounded migration work or expose UI/closure paths before their read inputs.
 func (c Config) ValidateAssessmentLifecycleRollout() error {
@@ -1732,6 +1767,33 @@ func (c Config) IntegrationSelfHostedRules() (selfhosted.Rules, error) {
 		return selfhosted.Rules{}, fmt.Errorf("SYNAPSE_INTEGRATION_PRIVATE_CIDRS requires SYNAPSE_INTEGRATION_ALLOW_PRIVATE_NETWORK=true: %w", err)
 	}
 	return rules, nil
+}
+
+// ValidateNotificationProvidersDisabled rejects a SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED entry
+// that cannot be a channel or provider type name. Whether the name is one this build knows is
+// checked against the driver registry by the composition root, so a typo stops startup there.
+func (c Config) ValidateNotificationProvidersDisabled() error {
+	for _, name := range c.NotificationProvidersDisabled {
+		if !validProviderTypeName(name) {
+			return fmt.Errorf("SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED entry %q is not a channel or provider type name", name)
+		}
+	}
+	return nil
+}
+
+// validProviderTypeName accepts 1-64 characters of a-z, 0-9, '_' and '-', starting with a letter
+// or number.
+func validProviderTypeName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i, r := range name {
+		alnum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if !alnum && (i == 0 || (r != '_' && r != '-')) {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidatePublicBaseURL rejects unsafe origins without echoing credential-bearing input.
