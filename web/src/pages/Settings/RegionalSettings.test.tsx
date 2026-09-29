@@ -23,6 +23,22 @@ describe('language and time zone settings', () => {
     vi.mocked(api.getTenantSettings).mockResolvedValue(defaults)
   })
 
+  it('shows a saved Vietnamese locale and zone as stored', async () => {
+    // Regression: the form used to start at en and copy the stored values in after mount, which
+    // left the language select on its placeholder.
+    vi.mocked(api.getTenantSettings).mockResolvedValue({
+      ...defaults,
+      defaultLocale: 'vi',
+      timeZone: 'Asia/Ho_Chi_Minh',
+      revision: 1,
+      updatedAt: '2026-09-29T04:00:11Z',
+    })
+    render(<RegionalSettings />)
+    expect(await screen.findByLabelText('Time zone')).toHaveValue('Asia/Ho_Chi_Minh')
+    expect(screen.getByRole('combobox', { name: 'Default language' })).toHaveTextContent('Tiếng Việt (Vietnamese)')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
   it('shows the defaults for a tenant that never saved settings', async () => {
     render(<RegionalSettings />)
     expect(await screen.findByLabelText('Time zone')).toHaveValue('UTC')
