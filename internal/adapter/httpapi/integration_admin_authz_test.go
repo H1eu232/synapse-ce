@@ -11,6 +11,7 @@ import (
 	domain "github.com/KKloudTarus/synapse-ce/internal/domain/notification"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 	userdom "github.com/KKloudTarus/synapse-ce/internal/domain/user"
+	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/persistence/memory"
 	integrationuc "github.com/KKloudTarus/synapse-ce/internal/usecase/integrations"
 	notificationuc "github.com/KKloudTarus/synapse-ce/internal/usecase/notification"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
@@ -71,6 +72,14 @@ var integrationRoutePermissions = map[string]string{
 	"GET /api/v1/notifications/quarantined-sources":            "PermManageIntegrations",
 	"GET /api/v1/notifications/deliveries/{nid}":               "PermManageIntegrations",
 	"GET /api/v1/notifications/deliveries/{nid}/attempts":      "PermManageIntegrations",
+	"GET /api/v1/notifications/templates":                      "PermManageIntegrations",
+	"POST /api/v1/notifications/templates":                     "PermManageIntegrations",
+	"GET /api/v1/notifications/templates/{nid}":                "PermManageIntegrations",
+	"PATCH /api/v1/notifications/templates/{nid}":              "PermManageIntegrations",
+	"GET /api/v1/notifications/templates/{nid}/versions":       "PermManageIntegrations",
+	"POST /api/v1/notifications/templates/{nid}/activate":      "PermManageIntegrations",
+	"POST /api/v1/notifications/templates/{nid}/rollback":      "PermManageIntegrations",
+	"POST /api/v1/notifications/templates/{nid}/archive":       "PermManageIntegrations",
 	"GET /api/v1/siem/sinks":                                   "PermManageIntegrations",
 	"POST /api/v1/siem/sinks":                                  "PermAdminister",
 	"GET /api/v1/siem/sinks/{id}":                              "PermManageIntegrations",
@@ -129,7 +138,9 @@ func TestIntegrationSurfacePermissions(t *testing.T) {
 // below is refused by rt.authz before a handler touches one.
 func integrationSurfaceRouter() *Router {
 	rt := &Router{log: discardLog()}
-	rt.SetNotifications(&notificationuc.Service{})
+	notifications := &notificationuc.Service{}
+	notifications.SetTemplateStore(memory.NewNotificationTemplateStore())
+	rt.SetNotifications(notifications)
 	rt.SetIntegrations(&integrationuc.Service{})
 	rt.SetSIEM(&siemuc.Service{})
 	rt.SetConnectors(&fakeConnectors{})

@@ -522,6 +522,19 @@ func (rt *Router) routes() *http.ServeMux {
 		mux.HandleFunc("GET /api/v1/notifications/quarantined-sources", rt.authz(userdom.PermManageIntegrations, rt.listNotificationSourceFailures))
 		mux.HandleFunc("GET /api/v1/notifications/deliveries/{nid}", rt.authz(userdom.PermManageIntegrations, rt.getNotificationDelivery))
 		mux.HandleFunc("GET /api/v1/notifications/deliveries/{nid}/attempts", rt.authz(userdom.PermManageIntegrations, rt.listNotificationAttempts))
+		if rt.notifications.TemplatesEnabled() {
+			// Custom message templates (#1370): every route needs manage_integrations. The tenant
+			// comes from the session; every mutation is revision-guarded and audited with a diff
+			// summary that never quotes template source.
+			mux.HandleFunc("GET /api/v1/notifications/templates", rt.authz(userdom.PermManageIntegrations, rt.listNotificationTemplates))
+			mux.HandleFunc("POST /api/v1/notifications/templates", rt.authz(userdom.PermManageIntegrations, rt.createNotificationTemplate))
+			mux.HandleFunc("GET /api/v1/notifications/templates/{nid}", rt.authz(userdom.PermManageIntegrations, rt.getNotificationTemplate))
+			mux.HandleFunc("PATCH /api/v1/notifications/templates/{nid}", rt.authz(userdom.PermManageIntegrations, rt.updateNotificationTemplate))
+			mux.HandleFunc("GET /api/v1/notifications/templates/{nid}/versions", rt.authz(userdom.PermManageIntegrations, rt.listNotificationTemplateVersions))
+			mux.HandleFunc("POST /api/v1/notifications/templates/{nid}/activate", rt.authz(userdom.PermManageIntegrations, rt.activateNotificationTemplate))
+			mux.HandleFunc("POST /api/v1/notifications/templates/{nid}/rollback", rt.authz(userdom.PermManageIntegrations, rt.rollbackNotificationTemplate))
+			mux.HandleFunc("POST /api/v1/notifications/templates/{nid}/archive", rt.authz(userdom.PermManageIntegrations, rt.archiveNotificationTemplate))
+		}
 	}
 	if rt.siem != nil {
 		// Reading, pausing, resuming and testing a sink need manage_integrations. Creating a

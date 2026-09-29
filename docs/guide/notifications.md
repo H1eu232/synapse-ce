@@ -168,6 +168,66 @@ tenant administrators can change them with `PUT /api/v1/tenant/settings`, which
 takes the `revision` the caller read and answers `409` when another
 administrator saved first. Each change is written to the audit log.
 
+## Custom message templates
+
+A tenant can replace the wording of a message with its own template. Templates
+are managed over the API; the console editor follows in a later release. Every
+route needs `manage_integrations` (`admin` or `integration_admin`), takes the
+tenant from the session, and is registered only when notifications are enabled.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/v1/notifications/templates` | List templates; filter by `event_type`, `family`, `locale`, `status`; page with `after` and `limit` |
+| `POST /api/v1/notifications/templates` | Create a draft with version 1 |
+| `GET /api/v1/notifications/templates/{id}` | The template, its newest version (`latest`) and the version that renders (`active`) |
+| `PATCH /api/v1/notifications/templates/{id}` | Save a new version (and optionally rename); what renders does not change |
+| `GET /api/v1/notifications/templates/{id}/versions` | Versions, newest first; page with `before` and `limit` |
+| `POST /api/v1/notifications/templates/{id}/activate` | Make a version render (`version` omitted or `0` means the newest) |
+| `POST /api/v1/notifications/templates/{id}/rollback` | Activate an earlier `version` |
+| `POST /api/v1/notifications/templates/{id}/archive` | Retire the template |
+
+A template is keyed by event type (a catalog type or `*`), channel family and
+locale (`en`, `vi` or `*`); the key never changes. Each family has fixed
+content fields: `chat` has `title` and `body`, `email` has `subject` and
+`body`, `pager` has `summary`, `ticket` has `summary` and `description`, and
+`webhook` has `body`. At most one template per key is active: activating one
+archives the key's previous active template in the same transaction and returns
+its ID as `archived_template_id`. Versions are append-only, so a rollback
+activates an earlier version instead of rewriting one. Every mutation takes the
+`revision` the caller read and answers `409` when it is stale.
+
+Every non-empty field is compiled when it is saved, and again when a version is
+activated, by the template engine against the variables the event type declares
+in the event catalog (`GET /api/v1/notifications/event-types`). A `*` template
+is compiled against every catalog event type, so it can only use variables all
+of them declare. A rejected field answers `400` with the field, the event type,
+the engine code (for example `unknown_variable`, `forbidden_function`,
+`parse_error` or `iteration_bound_exceeded`) and the line. The message ends with
+the engine's short detail, such as the unknown name or the parser's message, capped
+at 200 characters; the response never repeats the template source:
+
+```json
+{"error": "template field \"body\" is invalid for event type incident.created: unknown_variable at line 2: nope",
+ "field": "body", "event_type": "incident.created", "code": "unknown_variable", "line": 2}
+```
+
+The event catalog does not declare template variables yet, so for now a
+template can contain literal text and functions applied to literals only; any
+`{{.variable}}` is rejected until the event builders declare their variables.
+List variables will also need their item fields declared before a template can
+`range` over them. The `webhook` family's `body` is compiled as text; the
+structured JSON body of a custom webhook is validated separately when that
+feature lands. Channels carry no data class and cannot be bound to a template
+yet, so saving does not yet warn about bound channels whose class is below a
+variable the template uses.
+
+Every create, update, activation, rollback and archive is written to the audit
+log (`notification.template.created`, `.updated`, `.activated`, `.rolled_back`,
+`.archived`) with the actor, the key, the status, the versions involved, the new
+version's checksum, and a diff summary. The summary lists each changed field as
+`field:+added/-removed`, counting lines added and removed (for example
+`body:+2/-1,title:+1/-0`), or `none`. It never quotes template source.
+
 ## Personal inbox
 
 When notifications are enabled, each human user has an inbox at `/inbox` and a bell in the application header. `GET /api/v1/me/inbox` and `GET /api/v1/me/inbox/unread` are scoped to the signed-in user. Machine roles are denied. The bell polls at most every 30 seconds and pauses while the tab is hidden. A deployment without the inbox returns 404 and the bell stops asking.

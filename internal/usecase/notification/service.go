@@ -36,6 +36,8 @@ type Service struct {
 	disabled map[domain.ChannelType]bool
 	// pauseThreshold is the number of consecutive permanent failures that pauses a channel (#1464).
 	pauseThreshold int
+	// templates stores tenant message templates (#1370); nil disables the template API.
+	templates ports.NotificationTemplateStore
 }
 
 // SetDisabledChannelTypes installs the operator kill switch (SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED),
