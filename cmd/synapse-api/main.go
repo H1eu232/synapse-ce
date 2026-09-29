@@ -1013,8 +1013,10 @@ func main() {
 	// (project.DecoratePullRequests). One multiplexing decorator serves all forges, resolving the
 	// write credential from the tenant-scoped SCM connector store per call. It stays off for every
 	// project by default, so composing it here performs no outward write until a project opts in.
+	// A project hosted on GHES or self-managed GitLab is decorated through its connector's API base,
+	// only while that host stays on the operator's integration host allowlist.
 	if scmConnectorStore != nil {
-		if decorator, decErr := scmdecoration.NewMultiplexDecorator(scmConnectorStore); decErr != nil {
+		if decorator, decErr := scmdecoration.NewMultiplexDecorator(scmConnectorStore, scmdecoration.WithSelfHostedRules(integrationRules)); decErr != nil {
 			log.Warn("pr decoration disabled: multiplex decorator not constructed", "error", decErr.Error())
 		} else {
 			projectService.SetPRDecorator(decorator)
@@ -2118,6 +2120,9 @@ func main() {
 			log.Error("source-control connector service init failed", "err", connErr)
 			os.Exit(1)
 		}
+		// A connector's self-hosted API base (GHES, self-managed GitLab) must be on the operator's
+		// integration host allowlist, the same rules the decorator re-checks on every call.
+		connectorSvc.SetSelfHostedRules(integrationRules)
 		router.SetConnectors(connectorSvc)
 		log.Info("source-control connectors ENABLED (manage at /api/v1/connectors; private-repo clone auth)")
 	}

@@ -3145,7 +3145,9 @@ paths:
         Stores a tenant-scoped git-host + username + personal access token. The token is sealed at
         rest (AES-256-GCM) and is write-only: it is accepted here and never returned. A server-initiated
         scan of a Project whose git source host matches this connector authenticates the clone with it.
-        One connector per host per tenant. Requires the administer permission.
+        One connector per host per tenant. Requires the administer permission. An optional `api_base`
+        lets pull request decoration reach GitHub Enterprise Server or self-managed GitLab on that
+        host; it must be on the operator's host allowlist.
       requestBody:
         required: true
         content: {application/json: {schema: {$ref: '#/components/schemas/SCMConnectorCreate'}}}
@@ -9599,6 +9601,7 @@ components:
         host: {type: string, description: Normalized git host, e.g. github.com.}
         username: {type: string, description: The git username the token authenticates as.}
         auth_kind: {type: string, enum: [pat]}
+        api_base: {type: string, description: 'Self-hosted forge REST API base used for pull request decoration (GitHub Enterprise Server or self-managed GitLab). Empty means the provider''s public SaaS API.'}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
     SCMConnectorCreate:
@@ -9610,6 +9613,17 @@ components:
         host: {type: string, description: The git host, bare or as an https URL; only the host is kept.}
         username: {type: string, description: Optional git username; defaults per provider (x-access-token for GitHub, oauth2 for GitLab, pat for Azure DevOps).}
         token: {type: string, description: Personal access token. Write-only; sealed at rest and never returned.}
+        api_base:
+          type: string
+          description: >
+            Optional REST API base of a self-hosted forge, for pull request decoration:
+            https://<host>/api/v3 for GitHub Enterprise Server, https://<host>[/<root>]/api/v4 for
+            self-managed GitLab. Leave empty for github.com, gitlab.com and every other provider.
+            Must be https, without credentials, query or fragment, on the same host (and port) as
+            `host`, and that host must be on the operator's SYNAPSE_INTEGRATION_HOST_ALLOWLIST;
+            otherwise the request is refused with 400. Bitbucket Data Center is not supported yet.
+            The token is bound to this base: pointing a connector at another API means deleting it
+            and adding it again with the token.
     FleetAsset:
       type: object
       description: Serialized from the fleet asset domain struct (PascalCase keys).

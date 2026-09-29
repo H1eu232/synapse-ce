@@ -11,6 +11,36 @@ const PROVIDERS: { value: ConnectorProvider; label: string; hint: string; scope:
   { value: 'generic', label: 'Generic', hint: 'Any git host that authenticates a token over HTTPS basic auth.', scope: 'Needs read access to the repositories you will scan.' },
 ]
 
+// The REST API suffix a self-hosted forge serves; only these providers take an API base URL.
+const API_SUFFIX: Partial<Record<ConnectorProvider, string>> = { github: '/api/v3', gitlab: '/api/v4' }
+
+const API_BASE_HINT: Partial<Record<ConnectorProvider, string>> = {
+  github: 'Optional. For GitHub Enterprise Server, e.g. https://ghe.example.com/api/v3, so pull request decoration reaches it. Leave empty for github.com. The host must match Host and be on the operator allowlist.',
+  gitlab: 'Optional. For self-managed GitLab, e.g. https://gitlab.example.com/api/v4, so merge request decoration reaches it. Leave empty for gitlab.com. The host must match Host and be on the operator allowlist.',
+}
+
+/**
+ * Mirrors the server's shape checks so an obvious mistake is shown before submitting. The server
+ * still decides: it also checks that the host equals the connector host and is allowlisted.
+ */
+function apiBaseError(provider: ConnectorProvider, raw: string): string | null {
+  const value = raw.trim()
+  if (value === '') return null
+  const suffix = API_SUFFIX[provider]
+  if (!suffix) return 'An API base URL applies only to GitHub Enterprise Server and self-managed GitLab.'
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return 'Enter an absolute URL such as https://host' + suffix + '.'
+  }
+  if (url.protocol !== 'https:') return 'The API base URL must use https.'
+  if (url.username || url.password || value.includes('@')) return 'The API base URL must not contain credentials.'
+  if (value.includes('?') || value.includes('#')) return 'The API base URL must not have a query or fragment.'
+  if (!url.pathname.replace(/\/$/, '').endsWith(suffix)) return `The API base URL path must end in ${suffix}.`
+  return null
+}
+
 const PROVIDER_LABEL: Record<string, string> = { github: 'GitHub', gitlab: 'GitLab', bitbucket: 'Bitbucket', 'azure-devops': 'Azure DevOps', generic: 'Generic' }
 
 /**
@@ -82,6 +112,7 @@ function AddConnector({ onCreated }: { onCreated: () => void }) {
   const [host, setHost] = useState('')
   const [username, setUsername] = useState('')
   const [token, setToken] = useState('')
+  const [apiBase, setApiBase] = useState('')
   const [showToken, setShowToken] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -89,7 +120,11 @@ function AddConnector({ onCreated }: { onCreated: () => void }) {
   const providerMeta = PROVIDERS.find((p) => p.value === provider)
   const providerHint = providerMeta?.hint ?? ''
   const providerScope = providerMeta?.scope ?? ''
-  const canSubmit = name.trim() !== '' && host.trim() !== '' && token.trim() !== '' && !busy
+  const apiBaseHint = API_BASE_HINT[provider]
+  // The field is shown only for providers that take it; a value typed for another provider is not sent.
+  const effectiveApiBase = apiBaseHint ? apiBase.trim() : ''
+  const apiBaseProblem = apiBaseError(provider, effectiveApiBase)
+  const canSubmit = name.trim() !== '' && host.trim() !== '' && token.trim() !== '' && apiBaseProblem === null && !busy
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -97,11 +132,19 @@ function AddConnector({ onCreated }: { onCreated: () => void }) {
     setBusy(true)
     setError(null)
     try {
-      await api.createConnector({ name: name.trim(), provider, host: host.trim(), username: username.trim() || undefined, token })
+      await api.createConnector({
+        name: name.trim(),
+        provider,
+        host: host.trim(),
+        username: username.trim() || undefined,
+        token,
+        apiBase: effectiveApiBase || undefined,
+      })
       setName('')
       setHost('')
       setUsername('')
       setToken('')
+      setApiBase('')
       setShowToken(false)
       onCreated()
     } catch (err) {
@@ -133,6 +176,27 @@ function AddConnector({ onCreated }: { onCreated: () => void }) {
         <Field label="Username" htmlFor="conn-user" hint="Optional; a sensible default is used per provider.">
           <Input id="conn-user" value={username} onChange={(e) => setUsername(e.target.value)} placeholder={provider === 'azure-devops' ? 'pat' : 'x-access-token'} autoComplete="off" spellCheck={false} />
         </Field>
+        {apiBaseHint && (
+          <Field label="API base URL" htmlFor="conn-api-base" hint={apiBaseHint}>
+            <div>
+              <Input
+                id="conn-api-base"
+                value={apiBase}
+                onChange={(e) => setApiBase(e.target.value)}
+                placeholder={provider === 'gitlab' ? 'https://gitlab.example.com/api/v4' : 'https://ghe.example.com/api/v3'}
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={apiBaseProblem !== null}
+                aria-describedby={apiBaseProblem ? 'conn-api-base-error' : undefined}
+              />
+              {apiBaseProblem && (
+                <p id="conn-api-base-error" role="alert" className="mt-1 text-xs text-critical">
+                  {apiBaseProblem}
+                </p>
+              )}
+            </div>
+          </Field>
+        )}
         <Field label="Personal access token" htmlFor="conn-token" hint={providerScope}>
           <div className="relative">
             <Input
@@ -208,6 +272,7 @@ function ConnectorRow({ connector, onDeleted }: { connector: Connector; onDelete
         <p className="mt-0.5 truncate font-mono text-xs text-tertiary">
           {connector.host} · {connector.username}
         </p>
+        {connector.apiBase && <p className="mt-0.5 truncate font-mono text-xs text-tertiary">API {connector.apiBase}</p>}
         {error && <p className="mt-1 text-xs text-critical">{error}</p>}
       </div>
       <Button variant="secondary" onClick={remove} loading={busy} className="shrink-0" aria-label={`Remove connector ${connector.name}`}>

@@ -584,8 +584,9 @@ Every external system Synapse talks to, grouped by capability: CI/CD, Source con
 Source-control hosts a scan can clone a private repository from.
 
 1. Pick the **Provider**, then fill **Name**, **Host**, **Username** and the **Personal access token**.
-2. The token is encrypted at rest and supplied to git only at clone time.
-3. `Add connector` saves it.
+2. For GitHub Enterprise Server or self-managed GitLab, optionally fill **API base URL** (`https://<host>/api/v3` or `https://<host>/api/v4`) so PR decoration reaches that forge. The host must match **Host** and be on the operator's allowlist; see [Self-hosted forges](configuration.md#self-hosted-forges-github-enterprise-server-self-managed-gitlab).
+3. The token is encrypted at rest and supplied to git only at clone time.
+4. `Add connector` saves it.
 
 === "Desktop"
 

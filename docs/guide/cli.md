@@ -766,6 +766,9 @@ The server decorates automatically too: a project that opts in (the **PR decorat
 project header in the console, or `PUT /api/v1/projects/{key}/decoration {"enabled": true}`; both need
 the operate permission) has every PR-ref analysis decorated using
 the tenant's configured SCM connector, so a CI push through the import route needs no `--decorate` flag.
+The server picks the connector for the host of the project's git source, so a project on GitHub
+Enterprise Server or self-managed GitLab is decorated through that connector's API base URL
+(see [Self-hosted forges](configuration.md#self-hosted-forges-github-enterprise-server-self-managed-gitlab)).
 Decoration is off for every project by default, so no project performs an outward forge write until it
 opts in.
 

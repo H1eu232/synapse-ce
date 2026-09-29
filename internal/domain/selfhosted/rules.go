@@ -74,6 +74,17 @@ func (r Rules) CheckEndpoint(endpoint string, requestPrivate bool) error {
 	return nil
 }
 
+// CheckListedEndpoint is CheckEndpoint for an endpoint that is allowed only when the operator has
+// named its host: a self-hosted forge API base a tenant attaches to a source-control connector. An
+// empty allowlist admits nothing here, unlike CheckEndpoint, so a deployment that has not set
+// SYNAPSE_INTEGRATION_HOST_ALLOWLIST cannot send a forge token to a tenant-chosen host.
+func (r Rules) CheckListedEndpoint(endpoint string, requestPrivate bool) error {
+	if r.Hosts.Empty() {
+		return fmt.Errorf("%w: a self-hosted endpoint needs its host on the operator's allowlist (SYNAPSE_INTEGRATION_HOST_ALLOWLIST), which is not set", shared.ErrValidation)
+	}
+	return r.CheckEndpoint(endpoint, requestPrivate)
+}
+
 func (r Rules) privateAddressAllowed(address netip.Addr, requestPrivate bool) bool {
 	if !r.PrivateAllowed(requestPrivate) {
 		return false
