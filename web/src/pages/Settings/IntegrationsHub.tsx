@@ -507,9 +507,18 @@ function channelLastSuccess(deliveries: NotificationDelivery[]): CardFact {
   return delivery ? { at: delivery.delivered_at ?? delivery.updated_at } : { at: null }
 }
 
-function channelLastError(deliveries: NotificationDelivery[]): CardFact {
+/**
+ * The newer of the last delivery error and the channel's own health record. A paused channel's
+ * failures can be older than the newest 50 deliveries, or their deliveries cancelled, so the
+ * delivery page alone would show "None" for a channel that paused on http_404.
+ */
+export function channelLastError(channel: NotificationChannel, deliveries: NotificationDelivery[]): CardFact {
   const delivery = deliveries.find((item) => !!item.last_error)
-  return delivery ? { at: delivery.updated_at, detail: delivery.last_error } : { at: null }
+  const fromDelivery: CardFact = delivery ? { at: delivery.updated_at, detail: delivery.last_error } : { at: null }
+  const health = channel.health
+  if (!health?.last_failure_code || !health.last_failure_at) return fromDelivery
+  if (fromDelivery.at && new Date(fromDelivery.at) >= new Date(health.last_failure_at)) return fromDelivery
+  return { at: health.last_failure_at, detail: health.last_failure_code }
 }
 
 interface ChannelItem {
@@ -593,8 +602,16 @@ function MessagingGroup({ canAdmin, capabilities }: { canAdmin: boolean; capabil
                   detail={item.channel.destination}
                   health={item.deliveries ? channelHealth(item.channel, item.deliveries) : 'unavailable'}
                   lastSuccess={item.deliveries ? channelLastSuccess(item.deliveries) : 'unavailable'}
-                  lastError={item.deliveries ? channelLastError(item.deliveries) : 'unavailable'}
-                  test={<TestButton name={item.channel.name} canAdmin={canAdmin} onTest={() => test(item)} />}
+                  lastError={item.deliveries ? channelLastError(item.channel, item.deliveries) : 'unavailable'}
+                  test={
+                    <TestButton
+                      name={item.channel.name}
+                      canAdmin={canAdmin}
+                      // The API refuses a test on a paused channel (409), as the Alerting page shows.
+                      disabledReason={item.channel.health?.state === 'paused' ? 'Resume the channel on the Alerting page before sending a test.' : undefined}
+                      onTest={() => test(item)}
+                    />
+                  }
                 />
               ))}
             </CardGrid>

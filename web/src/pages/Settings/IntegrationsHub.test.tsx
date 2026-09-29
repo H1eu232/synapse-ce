@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError, type NotificationChannel, type NotificationDelivery } from '../../lib/api'
 import { resetCapabilityCache } from '../../lib/capabilities'
 import type { Capability, Integration, IntegrationOperation, IntegrationProviderDescriptor } from '../../lib/types'
-import { ciHealth, channelHealth, IntegrationsHub } from './IntegrationsHub'
+import { channelHealth, channelLastError, ciHealth, IntegrationsHub } from './IntegrationsHub'
 
 vi.mock('../../lib/api', async () => {
   const client = await vi.importActual<typeof import('../../lib/api/client')>('../../lib/api/client')
@@ -269,5 +269,17 @@ describe('health derivation', () => {
     expect(channelHealth(paused, [delivery({ state: 'delivered' })])).toEqual({ label: 'Paused', tone: 'danger' })
     expect(channelHealth({ ...paused, enabled: false }, []).label).toBe('Disabled')
     expect(channelHealth({ ...channel, health: { state: 'active', consecutive_failures: 2 } }, [delivery({})]).label).toBe('Healthy')
+  })
+
+  it('shows the failure that paused a channel when the delivery page has no newer error', () => {
+    const paused = {
+      ...channel,
+      health: { state: 'paused' as const, consecutive_failures: 5, last_failure_code: 'http_404', last_failure_at: '2026-09-03T00:00:00Z' },
+    }
+    expect(channelLastError(paused, [])).toEqual({ at: '2026-09-03T00:00:00Z', detail: 'http_404' })
+    // An older delivery error loses to the health record; a newer one wins.
+    expect(channelLastError(paused, [delivery({ last_error: 'http_503', updated_at: '2026-09-02T00:00:00Z' })]).detail).toBe('http_404')
+    expect(channelLastError(paused, [delivery({ last_error: 'http_503', updated_at: '2026-09-04T00:00:00Z' })]).detail).toBe('http_503')
+    expect(channelLastError(channel, [])).toEqual({ at: null })
   })
 })
