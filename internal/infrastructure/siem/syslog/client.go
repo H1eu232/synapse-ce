@@ -84,7 +84,7 @@ func (c *Client) Deliver(ctx context.Context, req siem.Delivery) (siem.DeliveryR
 		return retryFrom(len(req.Records), 0, "syslog connection failed"), nil
 	}
 	conn := c.wrapTLS(raw, tlsConfig)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	deadline := time.Now().Add(c.duration())
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline

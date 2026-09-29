@@ -70,7 +70,7 @@ func (c *Client) Deliver(ctx context.Context, req siem.Delivery) (siem.DeliveryR
 	if err != nil {
 		return siem.DeliveryResult{}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, err := readLimited(response.Body)
 	if err != nil {
 		return siem.DeliveryResult{}, err
@@ -135,7 +135,7 @@ func (c *Client) PollAck(ctx context.Context, req siem.Delivery, ackID int64) (b
 	if err != nil {
 		return false, 0, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, err := readLimited(response.Body)
 	if err != nil {
 		return false, 0, err
