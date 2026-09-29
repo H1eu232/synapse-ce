@@ -97,6 +97,7 @@ func TestNotificationPostgresRiskAndSLA(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		assertPublishedEventSchema(t, w.Event)
 		if w.Event.Type == notification.EventVulnerabilityAction && w.Event.Severity != shared.SeverityHigh {
 			t.Fatal("used mutable finding severity")
 		}

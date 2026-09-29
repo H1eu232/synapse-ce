@@ -62,4 +62,44 @@ describe('Connectors', () => {
     render(<Connectors />)
     expect(await screen.findByText('Connectors are not enabled on this deployment')).toBeInTheDocument()
   })
+  it('displays Azure DevOps connector metadata without exposing the PAT', async () => {
+    vi.mocked(api.listConnectors).mockResolvedValue([{
+      id: 'azure-conn', name: 'Azure project', provider: 'azure-devops',
+      host: 'dev.azure.com', username: 'pat', authKind: 'pat',
+      createdAt: '', updatedAt: '',
+    }] as never)
+    render(<Connectors />)
+    expect(await screen.findByText('Azure project')).toBeInTheDocument()
+    expect(screen.getAllByText('Azure DevOps').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('dev.azure.com · pat')).toBeInTheDocument()
+    expect(screen.queryByText('secret-azure-pat')).not.toBeInTheDocument()
+  })
+
+  it('creates an Azure DevOps connector with the provider-specific defaults', async () => {
+    vi.mocked(api.listConnectors).mockResolvedValue([] as never)
+    vi.mocked(api.createConnector).mockResolvedValue({ id: 'azure-new' } as never)
+    render(<Connectors />)
+    await screen.findByText('No connectors yet')
+
+    const nativeProvider = document.querySelector('select') as HTMLSelectElement | null
+    expect(nativeProvider).not.toBeNull()
+    fireEvent.change(nativeProvider!, { target: { value: 'azure-devops' } })
+    expect(screen.getByPlaceholderText('dev.azure.com')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('pat')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Azure DevOps PAT')).toHaveAttribute('type', 'password')
+    expect(screen.getByText(/Code \(Read & write\).*Code \(Status\)/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'Azure project' } })
+    fireEvent.change(screen.getByLabelText(/^Host/), { target: { value: 'dev.azure.com' } })
+    fireEvent.change(screen.getByLabelText(/Personal access token/), { target: { value: 'azure-secret-pat' } })
+    fireEvent.click(screen.getByRole('button', { name: /Add connector/ }))
+
+    await waitFor(() => expect(api.createConnector).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'Azure project',
+      provider: 'azure-devops',
+      host: 'dev.azure.com',
+      token: 'azure-secret-pat',
+    })))
+  })
+
 })

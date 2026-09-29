@@ -178,8 +178,17 @@ type Event struct {
 	Data          json.RawMessage `json:"data"`
 }
 
+// schemaVersionKnown accepts any envelope version from 1 up to the one the catalog declares for the
+// event type. The schema no longer pins version 1 (migration 0190), so a type can move to a new
+// version by changing its catalog entry; an event claiming a version this build does not know is
+// still refused.
+func (e Event) schemaVersionKnown() bool {
+	spec, ok := LookupEvent(e.Type)
+	return ok && e.SchemaVersion >= 1 && e.SchemaVersion <= spec.SchemaVersion
+}
+
 func (e Event) Validate() error {
-	if e.TenantID.IsZero() || e.ID.IsZero() || !e.Type.Valid() || strings.TrimSpace(e.SourceKind) == "" || strings.TrimSpace(e.SourceID) == "" || e.SchemaVersion != 1 || e.OccurredAt.IsZero() {
+	if e.TenantID.IsZero() || e.ID.IsZero() || !e.Type.Valid() || strings.TrimSpace(e.SourceKind) == "" || strings.TrimSpace(e.SourceID) == "" || !e.schemaVersionKnown() || e.OccurredAt.IsZero() {
 		return fmt.Errorf("%w: invalid notification event", shared.ErrValidation)
 	}
 	var data map[string]any
@@ -297,10 +306,19 @@ func containsID(in []shared.ID, v shared.ID) bool {
 	return false
 }
 
+// actionTypes is shared by rule validation and schema drift guards.
+var actionTypes = [...]string{"new_exposure", "escalation", "withdrawal", "reexposure", "retest_required", "risk_review"}
+
+// ActionTypes returns a defensive copy of the accepted action vocabulary.
+func ActionTypes() []string {
+	return append([]string(nil), actionTypes[:]...)
+}
+
 func validActionType(v string) bool {
-	switch v {
-	case "new_exposure", "escalation", "withdrawal", "reexposure", "retest_required", "risk_review":
-		return true
+	for _, allowed := range actionTypes {
+		if v == allowed {
+			return true
+		}
 	}
 	return false
 }

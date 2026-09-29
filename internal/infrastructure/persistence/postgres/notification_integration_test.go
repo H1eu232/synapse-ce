@@ -212,6 +212,30 @@ func TestNotificationPostgresDurability(t *testing.T) {
 	if _, err = svc.TestChannel(ctx, "admin", channel.ID); !errors.Is(err, shared.ErrSaturated) {
 		t.Fatalf("test rate limit=%v", err)
 	}
+	// Cover the operator-only notification.test event from its real service
+	// producer as well as the fixture and Event JSON-tag tests.
+	var testEvents []notification.Event
+	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, "SELECT id,event_type,source_kind,source_id,engagement_id,severity,schema_version,occurred_at,data FROM notification_events WHERE tenant_id=$1 AND event_type=$2", tenant, notification.EventTest)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			e := notification.Event{TenantID: tenant}
+			if err := rows.Scan(&e.ID, &e.Type, &e.SourceKind, &e.SourceID, &e.EngagementID, &e.Severity, &e.SchemaVersion, &e.OccurredAt, &e.Data); err != nil {
+				return err
+			}
+			testEvents = append(testEvents, e)
+		}
+		return rows.Err()
+	}); err != nil { t.Fatal(err) }
+	if len(testEvents) != 10 {
+		t.Fatalf("operator test events = %d; want 10", len(testEvents))
+	}
+	for _, e := range testEvents {
+		assertPublishedEventSchema(t, e)
+	}
 }
 
 func TestNotificationPostgresCapturedSources(t *testing.T) {
@@ -251,6 +275,48 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 	exec(`INSERT INTO project_analyses(id,tenant_id,project_id,created_at,payload) VALUES('analysis','notify-a','project',$1,'{"gate":{"Passed":false}}')`, now.Add(time.Second))
 	exec(`INSERT INTO incident_events(tenant_id,incident_id,seq,kind,occurred_at,actor,payload) VALUES('notify-a','incident',1,'created',$1,'correlator','{"Severity":"high","Title":"Detected"}')`, now.Add(time.Second))
 	exec(`INSERT INTO fleet_agents(id,tenant_id,name,token_hash,state,created_at,last_seen_at) VALUES('agent','notify-a','A','hash','active',$1,$2)`, now.Add(-time.Minute), now)
+	// Inspect real INSERT-trigger output before the poller consumes the JSONB.
+	var captured []notification.Event
+	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, "SELECT source_kind,source_id,event_type,engagement_id,severity,occurred_at,data FROM notification_source_records WHERE tenant_id=$1 ORDER BY event_type", tenant)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			e := notification.Event{TenantID: tenant, ID: "captured-schema-test", SchemaVersion: 1}
+			if err := rows.Scan(&e.SourceKind, &e.SourceID, &e.Type, &e.EngagementID, &e.Severity, &e.OccurredAt, &e.Data); err != nil {
+				return err
+			}
+			captured = append(captured, e)
+		}
+		return rows.Err()
+	}); err != nil { t.Fatal(err) }
+	seen := map[notification.EventType]bool{}
+	for _, e := range captured {
+		assertPublishedEventSchema(t, e)
+		if seen[e.Type] {
+			t.Errorf("duplicate SQL capture for %s", e.Type)
+		}
+		seen[e.Type] = true
+		if e.Type == notification.EventIncidentCreated {
+			var data map[string]any
+			if err := json.Unmarshal(e.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			if data["asset_id"] != "" {
+				t.Errorf("assetless incident must emit an empty string, got %v", data["asset_id"])
+			}
+		}
+	}
+	for _, typ := range []notification.EventType{notification.EventScanCompleted, notification.EventQualityGateFailed, notification.EventIncidentCreated} {
+		if !seen[typ] {
+			t.Errorf("SQL capture trigger failed to record %s", typ)
+		}
+	}
+	if len(captured) != 3 {
+		t.Fatalf("captured %d SQL events; want exactly 3", len(captured))
+	}
 	if _, err := source.Poll(ctx, now.Add(2*time.Second), 100); err != nil {
 		t.Fatal(err)
 	}
@@ -273,6 +339,7 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		assertPublishedEventSchema(t, w.Event)
 		if w.Event.Type == notification.EventFleetAgentOffline {
 			exec("UPDATE fleet_agents SET last_seen_at=$1 WHERE id='agent'", now.Add(3*time.Minute))
 			if relevant, e := repo.DeliveryStillRelevant(ctx, w); e != nil || relevant {

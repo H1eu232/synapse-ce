@@ -297,6 +297,29 @@ func TestDestinationNoticeIsOncePerRevisionAndSkipsSecretRotation(t *testing.T) 
 	if events() != 3 {
 		t.Fatalf("host changes produced %d notices", events())
 	}
+	// All three revisions must serialize to the published notice contract.
+	var notices []notification.Event
+	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, "SELECT id,event_type,source_kind,source_id,engagement_id,severity,schema_version,occurred_at,data FROM notification_events WHERE tenant_id=$1 AND event_type=$2 ORDER BY occurred_at,id", tenant, notification.EventDestinationChanged)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			e := notification.Event{TenantID: tenant}
+			if err := rows.Scan(&e.ID, &e.Type, &e.SourceKind, &e.SourceID, &e.EngagementID, &e.Severity, &e.SchemaVersion, &e.OccurredAt, &e.Data); err != nil {
+				return err
+			}
+			notices = append(notices, e)
+		}
+		return rows.Err()
+	}); err != nil { t.Fatal(err) }
+	if len(notices) != 3 {
+		t.Fatalf("stored %d destination notices; want 3", len(notices))
+	}
+	for _, e := range notices {
+		assertPublishedEventSchema(t, e)
+	}
 	if count := personalCount(t, ctx, pool, tenant, `SELECT count(*) FROM user_notifications WHERE tenant_id='notice' AND user_id='ada'`); count != 3 {
 		t.Fatalf("admin inbox %d", count)
 	}

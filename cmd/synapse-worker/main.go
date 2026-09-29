@@ -36,6 +36,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/cloudsandbox"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/ebpf"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/egressbroker"
+	azurepipelinesintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/azurepipelines"
 	jenkinsintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/jenkins"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/llm/openai"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/logstream"
@@ -316,6 +317,10 @@ func main() {
 	integrationStore := postgres.NewIntegrationStore(pool, vaultCipher)
 	integrationRegistry := integrationdom.NewRegistry()
 	if err := jenkinsintegration.Register(integrationRegistry); err != nil {
+		log.Error("integration provider registry init failed", "err", err)
+		os.Exit(1)
+	}
+	if err := azurepipelinesintegration.Register(integrationRegistry); err != nil {
 		log.Error("integration provider registry init failed", "err", err)
 		os.Exit(1)
 	}

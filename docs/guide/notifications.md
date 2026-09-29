@@ -181,6 +181,8 @@ channel cancels pending deliveries. Existing in-flight requests cannot be recall
 
 ## Webhook contract
 
+The [versioned event schemas and fixtures](schemas/events/README.md) cover every catalog event type, including operator-only channel tests and destination notices. Each schema validates the complete event envelope and event-specific `data` object. Optional additive fields retain v1; removing or renaming a field requires a new version.
+
 Signed webhooks receive JSON using schema version 1 and these headers:
 
 ```text

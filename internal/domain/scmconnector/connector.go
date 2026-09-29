@@ -25,16 +25,17 @@ import (
 type Provider string
 
 const (
-	ProviderGitHub    Provider = "github"
-	ProviderGitLab    Provider = "gitlab"
-	ProviderBitbucket Provider = "bitbucket"
-	ProviderGeneric   Provider = "generic"
+	ProviderGitHub      Provider = "github"
+	ProviderGitLab      Provider = "gitlab"
+	ProviderBitbucket   Provider = "bitbucket"
+	ProviderAzureDevOps Provider = "azure-devops"
+	ProviderGeneric     Provider = "generic"
 )
 
 // Valid reports whether p is a known provider.
 func (p Provider) Valid() bool {
 	switch p {
-	case ProviderGitHub, ProviderGitLab, ProviderBitbucket, ProviderGeneric:
+	case ProviderGitHub, ProviderGitLab, ProviderBitbucket, ProviderAzureDevOps, ProviderGeneric:
 		return true
 	default:
 		return false
@@ -43,14 +44,16 @@ func (p Provider) Valid() bool {
 
 // defaultUsername is the git username a provider's token authenticates as when the
 // operator leaves it blank. GitHub ignores the username for a PAT but requires it to be
-// non-empty; GitLab expects "oauth2"; Bitbucket and a generic host have no safe default,
-// so the operator must supply one.
+// non-empty; GitLab expects "oauth2"; Azure DevOps uses "pat" for Git clone credentials.
+// Bitbucket and a generic host have no safe default, so the operator must supply one.
 func (p Provider) defaultUsername() string {
 	switch p {
 	case ProviderGitHub:
 		return "x-access-token"
 	case ProviderGitLab:
 		return "oauth2"
+	case ProviderAzureDevOps:
+		return "pat"
 	default:
 		return ""
 	}

@@ -9440,7 +9440,7 @@ components:
       properties:
         id: {type: string}
         name: {type: string}
-        provider: {type: string, enum: [github, gitlab, bitbucket, generic]}
+        provider: {type: string, enum: [github, gitlab, bitbucket, azure-devops, generic]}
         host: {type: string, description: Normalized git host, e.g. github.com.}
         username: {type: string, description: The git username the token authenticates as.}
         auth_kind: {type: string, enum: [pat]}
@@ -9451,9 +9451,9 @@ components:
       required: [name, provider, host, token]
       properties:
         name: {type: string, description: A label for the connector.}
-        provider: {type: string, enum: [github, gitlab, bitbucket, generic]}
+        provider: {type: string, enum: [github, gitlab, bitbucket, azure-devops, generic]}
         host: {type: string, description: The git host, bare or as an https URL; only the host is kept.}
-        username: {type: string, description: Optional git username; defaults per provider (x-access-token for GitHub, oauth2 for GitLab).}
+        username: {type: string, description: Optional git username; defaults per provider (x-access-token for GitHub, oauth2 for GitLab, pat for Azure DevOps).}
         token: {type: string, description: Personal access token. Write-only; sealed at rest and never returned.}
     FleetAsset:
       type: object
