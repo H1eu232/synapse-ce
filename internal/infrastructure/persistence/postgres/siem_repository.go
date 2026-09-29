@@ -789,7 +789,11 @@ func (r *SIEMRepository) BackfillIncidents(ctx context.Context, limit int) (int,
 }
 
 func (r *SIEMRepository) TenantIDs(ctx context.Context) ([]shared.ID, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id FROM tenants ORDER BY id`)
+	// Migration 0002 seeded a tenants row with an empty id for the original single-tenant mode and
+	// every install still carries it. Nothing can be exported for it: WithTenant maps an empty id to
+	// NULL, which RLS denies. Returned here it would cost the SIEM tick an RLS-denied round trip per
+	// pass, which is the reconciler noise 0129 and the other seven listings already removed.
+	rows, err := r.pool.Query(ctx, `SELECT id FROM tenants WHERE id <> '' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
