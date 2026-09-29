@@ -3,6 +3,8 @@ package tenancy
 import (
 	"errors"
 	"testing"
+	// The package leaves the IANA database to the binaries; tests embed it so they pass on any host.
+	_ "time/tzdata"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 )

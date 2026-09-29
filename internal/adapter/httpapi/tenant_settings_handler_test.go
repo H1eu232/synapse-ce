@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	// The binaries embed the IANA database; tests embed it too so they pass on any host.
+	_ "time/tzdata"
 
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/persistence/memory"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
