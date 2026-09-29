@@ -508,6 +508,8 @@ func (rt *Router) routes() *http.ServeMux {
 		mux.HandleFunc("PATCH /api/v1/notifications/channels/{nid}", rt.authz(userdom.PermAdminister, rt.updateNotificationChannel))
 		mux.HandleFunc("DELETE /api/v1/notifications/channels/{nid}", rt.authz(userdom.PermAdminister, rt.deleteNotificationChannel))
 		mux.HandleFunc("POST /api/v1/notifications/channels/{nid}/test", rt.authz(userdom.PermAdminister, rt.testNotificationChannel))
+		mux.HandleFunc("POST /api/v1/notifications/channels/{nid}/resume", rt.authz(userdom.PermAdminister, rt.resumeNotificationChannel))
+		mux.HandleFunc("GET /api/v1/notifications/channels/{nid}/health-events", rt.authz(userdom.PermAdminister, rt.listNotificationChannelHealthEvents))
 		mux.HandleFunc("GET /api/v1/notifications/rules", rt.authz(userdom.PermAdminister, rt.listNotificationRules))
 		mux.HandleFunc("POST /api/v1/notifications/rules", rt.authz(userdom.PermAdminister, rt.createNotificationRule))
 		mux.HandleFunc("GET /api/v1/notifications/rules/{nid}", rt.authz(userdom.PermAdminister, rt.getNotificationRule))

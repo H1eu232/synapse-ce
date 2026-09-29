@@ -3038,6 +3038,48 @@ paths:
       responses:
         '202': {description: Queued, content: {application/json: {schema: {type: object, required: [delivery_id, state], properties: {delivery_id: {type: string}, state: {type: string, enum: [pending]}}}}}}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: The channel is paused; resume it before sending a test}
+
+  /api/v1/notifications/channels/{nid}/resume:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [notifications]
+      operationId: resumeNotificationChannel
+      summary: Resume a channel the worker paused after consecutive permanent failures
+      description: >-
+        Tenant administrators only (PermAdminister). Clears the pause and the failure count, bumps the channel
+        revision, appends a `resumed` row to the channel's health history and writes a
+        `notification.channel.resumed` audit entry. Deliveries cancelled while the channel was paused are not
+        re-sent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision]
+              properties:
+                revision: {type: integer, minimum: 1, description: The channel revision the administrator saw}
+      responses:
+        '200': {description: Resumed channel, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannel'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Stale revision, or the channel is not paused}
+
+  /api/v1/notifications/channels/{nid}/health-events:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    get:
+      tags: [notifications]
+      operationId: listNotificationChannelHealthEvents
+      summary: List a channel's pause and resume history, newest first (at most 50)
+      responses:
+        '200': {description: Health history, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NotificationChannelHealthEvent'}}}}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
 
   /api/v1/notifications/rules:
     get:
@@ -12460,7 +12502,7 @@ components:
 
     NotificationChannel:
       type: object
-      required: [id, name, type, enabled, destination, revision, secret_version, created_at, updated_at]
+      required: [id, name, type, enabled, destination, revision, secret_version, created_at, updated_at, health]
       properties:
         id: {type: string}
         name: {type: string}
@@ -12472,6 +12514,39 @@ components:
         secret_version: {type: integer}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        health: {$ref: '#/components/schemas/NotificationChannelHealth'}
+
+    NotificationChannelHealth:
+      type: object
+      description: >-
+        Delivery health kept by the worker. A channel pauses after SYNAPSE_NOTIFICATION_CHANNEL_PAUSE_THRESHOLD
+        consecutive permanent failures it owns (for example destination_blocked, channel_config_invalid, an HTTP
+        4xx other than 408 and 429, or an SMTP 5xx). Retryable failures never count; a delivered message resets
+        the count. A pause is not a configuration change and does not bump the channel revision. Codes are
+        bounded identifiers and never contain a destination, response body or error text.
+      required: [state, consecutive_failures]
+      properties:
+        state: {type: string, enum: [active, paused]}
+        paused_at: {type: string, format: date-time}
+        paused_reason: {type: string, enum: [consecutive_permanent_failures]}
+        consecutive_failures: {type: integer, minimum: 0}
+        last_failure_code: {type: string, pattern: '^[a-z0-9_-]{1,64}$'}
+        last_failure_at: {type: string, format: date-time}
+
+    NotificationChannelHealthEvent:
+      type: object
+      required: [id, channel_id, action, failures, actor, occurred_at]
+      properties:
+        id: {type: string}
+        channel_id: {type: string}
+        action: {type: string, enum: [paused, resumed]}
+        reason: {type: string, description: Pause reason code; on a resume, the reason of the pause it cleared}
+        failure_code: {type: string, pattern: '^[a-z0-9_-]{1,64}$'}
+        failures: {type: integer, minimum: 0}
+        delivery_id: {type: string, description: The delivery whose failure paused the channel (pause only)}
+        attempt_id: {type: string, description: The attempt that paused the channel (pause only)}
+        actor: {type: string, description: '`system` for an automatic pause; the administrator for a resume'}
+        occurred_at: {type: string, format: date-time}
 
     NotificationRuleInput:
       type: object

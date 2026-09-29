@@ -129,6 +129,44 @@ func (rt *Router) testNotificationChannel(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusAccepted, map[string]any{"delivery_id": delivery, "state": "pending"})
 }
 
+// resumeNotificationChannel clears an automatic pause (#1464). The body carries the revision the
+// administrator saw, so a resume never acts on a channel that changed underneath them.
+func (rt *Router) resumeNotificationChannel(w http.ResponseWriter, r *http.Request) {
+	id, err := notificationID(r)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	var in notificationuc.ResumeInput
+	if err = decodeNotificationBody(w, r, &in); err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	item, err := rt.notifications.ResumeChannel(r.Context(), PrincipalFrom(r.Context()), id, in)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (rt *Router) listNotificationChannelHealthEvents(w http.ResponseWriter, r *http.Request) {
+	id, err := notificationID(r)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	items, err := rt.notifications.ListChannelHealthEvents(r.Context(), id)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	if items == nil {
+		items = []domain.ChannelHealthEvent{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (rt *Router) listNotificationRules(w http.ResponseWriter, r *http.Request) {
 	items, err := rt.notifications.ListRules(r.Context())
 	if err != nil {

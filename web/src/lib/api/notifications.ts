@@ -39,6 +39,30 @@ export type NotificationDeliveryState =
   | 'dead_letter'
   | 'cancelled'
 
+/**
+ * Delivery health the worker keeps on a channel (#1464). A channel pauses after consecutive
+ * permanent failures; only an administrator resumes it. Codes are bounded identifiers, never a URL.
+ */
+export interface NotificationChannelHealth {
+  state: 'active' | 'paused'
+  paused_at?: string
+  paused_reason?: string
+  consecutive_failures: number
+  last_failure_code?: string
+  last_failure_at?: string
+}
+export interface NotificationChannelHealthEvent {
+  id: string
+  channel_id: string
+  action: 'paused' | 'resumed'
+  reason?: string
+  failure_code?: string
+  failures: number
+  delivery_id?: string
+  attempt_id?: string
+  actor: string
+  occurred_at: string
+}
 export interface NotificationChannel {
   id: string
   name: string
@@ -50,6 +74,8 @@ export interface NotificationChannel {
   secret_version: number
   created_at: string
   updated_at: string
+  /** Absent only from a server that predates channel health. */
+  health?: NotificationChannelHealth
 }
 export interface NotificationChannelInput {
   name: string
@@ -167,6 +193,23 @@ export const notificationsApi = {
     req(`/notifications/channels/${encodeURIComponent(id)}/test`, {
       method: 'POST',
     }),
+  // Resume sends only the revision the administrator saw; the server refuses a stale one.
+  resumeNotificationChannel: (
+    id: string,
+    revision: number,
+  ): Promise<NotificationChannel> =>
+    req(`/notifications/channels/${encodeURIComponent(id)}/resume`, {
+      method: 'POST',
+      body: JSON.stringify({ revision }),
+    }),
+  listNotificationChannelHealthEvents: async (
+    id: string,
+  ): Promise<NotificationChannelHealthEvent[]> =>
+    (
+      (await req(
+        `/notifications/channels/${encodeURIComponent(id)}/health-events`,
+      )) as { items?: NotificationChannelHealthEvent[] }
+    ).items ?? [],
   listNotificationRules: async (): Promise<NotificationRule[]> =>
     ((await req('/notifications/rules')) as { items?: NotificationRule[] })
       .items ?? [],

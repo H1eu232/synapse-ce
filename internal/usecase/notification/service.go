@@ -32,13 +32,25 @@ type Service struct {
 	clock     ports.Clock
 	ids       ports.IDGenerator
 	observer  ports.NotificationDeliveryObserver
+	// pauseThreshold is the number of consecutive permanent failures that pauses a channel (#1464).
+	pauseThreshold int
 }
 
 func NewService(repo ports.NotificationRepository, protector ports.NotificationSecretProtector, sender ports.NotificationSender, audit ports.AuditLogger, clock ports.Clock, ids ports.IDGenerator) (*Service, error) {
 	if repo == nil || protector == nil || audit == nil || clock == nil || ids == nil {
 		return nil, fmt.Errorf("%w: notification dependencies are required", shared.ErrValidation)
 	}
-	return &Service{repo: repo, protector: protector, sender: sender, audit: audit, clock: clock, ids: ids}, nil
+	return &Service{repo: repo, protector: protector, sender: sender, audit: audit, clock: clock, ids: ids, pauseThreshold: domain.DefaultPauseThreshold}, nil
+}
+
+// SetPauseThreshold sets how many consecutive permanent failures pause a channel; zero keeps
+// counting but never pauses. Values outside the documented bounds are refused.
+func (s *Service) SetPauseThreshold(n int) error {
+	if !domain.ValidPauseThreshold(n) {
+		return fmt.Errorf("%w: channel pause threshold must be between 0 and %d", shared.ErrValidation, domain.MaxPauseThreshold)
+	}
+	s.pauseThreshold = n
+	return nil
 }
 
 // SetDeliveryObserver installs optional worker-owned metrics instrumentation.
@@ -386,6 +398,10 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	if !work.Channel.Enabled {
 		return s.repo.CancelDelivery(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, "channel_disabled")
 	}
+	if work.Channel.Health.Paused() {
+		// No new sends to a paused channel: its queued work is cancelled like a disabled channel's.
+		return s.repo.CancelDelivery(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, "channel_paused")
+	}
 	relevant, err := s.repo.DeliveryStillRelevant(ctx, work)
 	if err != nil {
 		return err
@@ -398,10 +414,12 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	if _, err = s.repo.BeginAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, now); err != nil {
 		return err
 	}
+	attempt := finishedAttempt{job: job, work: work, deliveryID: payload.DeliveryID, attemptID: aid}
 	raw, err := s.protector.Open(work.Sealed, channelAAD(job.TenantID, work.Channel.ID, work.Channel.SecretVersion))
 	if err != nil {
 		finished := s.clock.Now().UTC()
-		if finishErr := s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, "failed", 0, "channel_secret_unavailable", nil); finishErr != nil {
+		// The vault key is the operator's, not the channel's, so this never counts towards a pause.
+		if finishErr := s.finishAttempt(ctx, attempt, finished, "failed", 0, "channel_secret_unavailable", nil, domain.AttemptIgnored); finishErr != nil {
 			return finishErr
 		}
 		s.observeAttempt(work.Delivery.ChannelType, now, finished, false, false)
@@ -411,7 +429,7 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	cfg, configErr := decodeChannelConfig(work.Channel.Type, raw)
 	if configErr != "" {
 		finished := s.clock.Now().UTC()
-		if finishErr := s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, "failed", 0, configErr, nil); finishErr != nil {
+		if finishErr := s.finishAttempt(ctx, attempt, finished, "failed", 0, configErr, nil, domain.ClassifyAttempt(false, configErr, false)); finishErr != nil {
 			return finishErr
 		}
 		s.observeAttempt(work.Delivery.ChannelType, now, finished, false, false)
@@ -421,7 +439,7 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	result := s.sender.Send(ctx, work, cfg)
 	finished := s.clock.Now().UTC()
 	if result.ErrorCode == "" && result.StatusCode >= 200 && result.StatusCode < 300 {
-		if err = s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, "delivered", result.StatusCode, "", nil); err != nil {
+		if err = s.finishAttempt(ctx, attempt, finished, "delivered", result.StatusCode, "", nil, domain.AttemptDelivered); err != nil {
 			return err
 		}
 		s.observeAttempt(work.Delivery.ChannelType, now, finished, true, result.TemplateFallback)
@@ -446,7 +464,9 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 	if code == "" {
 		code = "delivery_failed"
 	}
-	if err = s.repo.FinishAttempt(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, aid, finished, outcome, result.StatusCode, code, nextPtr); err != nil {
+	// The health class reads the sender's own Retryable flag, so a retry that finally exhausts
+	// its attempts (a 5xx eight times) still never counts towards a pause.
+	if err = s.finishAttempt(ctx, attempt, finished, outcome, result.StatusCode, code, nextPtr, domain.ClassifyAttempt(false, code, result.Retryable)); err != nil {
 		return err
 	}
 	s.observeAttempt(work.Delivery.ChannelType, now, finished, false, result.TemplateFallback)

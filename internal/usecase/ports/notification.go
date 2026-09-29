@@ -103,6 +103,37 @@ type NotificationRepository interface {
 	// DeadLetterDelivery reports whether this call durably transitioned a pending
 	// delivery to dead_letter. Concurrent or repeated callbacks return false.
 	DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) (bool, error)
+
+	// RecordChannelOutcome applies one finished attempt to its channel's health (#1464). When the
+	// observation pauses the channel, the same transaction appends the pause to the history,
+	// cancels the channel's queued deliveries with channel_paused and publishes the in-app notice
+	// to tenant administrators. Deleted channels are ignored.
+	RecordChannelOutcome(context.Context, shared.ID, NotificationChannelOutcome) (NotificationChannelTransition, error)
+	// ResumeChannel clears a pause for an administrator, guarded by the channel revision, and
+	// appends the resume to the history. It bumps the revision.
+	ResumeChannel(context.Context, shared.ID, shared.ID, int, string, time.Time) (notification.Channel, error)
+	// ListChannelHealthEvents returns a channel's pause and resume history, newest first.
+	ListChannelHealthEvents(context.Context, shared.ID, shared.ID, int) ([]notification.ChannelHealthEvent, error)
+}
+
+// NotificationChannelOutcome is one finished attempt as channel health reads it.
+type NotificationChannelOutcome struct {
+	ChannelID  shared.ID
+	DeliveryID shared.ID
+	AttemptID  shared.ID
+	Class      notification.AttemptClass
+	// Code is the sanitized attempt error code; empty for a delivered attempt.
+	Code string
+	At   time.Time
+	// Threshold is the pause threshold; zero counts failures without pausing.
+	Threshold int
+}
+
+// NotificationChannelTransition reports what RecordChannelOutcome committed.
+type NotificationChannelTransition struct {
+	Paused  bool
+	PauseID shared.ID
+	Health  notification.ChannelHealth
 }
 
 // NotificationSource scans durable source state and publishes due events. It is
