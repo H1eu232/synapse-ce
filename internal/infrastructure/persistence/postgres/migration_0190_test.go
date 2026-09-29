@@ -35,8 +35,8 @@ func TestMigration0190OpensTheNotificationSchema(t *testing.T) {
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("dialect: %v", err)
 	}
-	if err := goose.DownTo(db, ".", 189); err != nil {
-		t.Fatalf("down to 189: %v", err)
+	if err := goose.DownTo(db, ".", 186); err != nil {
+		t.Fatalf("down to 186 (before 0190): %v", err)
 	}
 	pool, err := Connect(ctx, dsn)
 	if err != nil {
@@ -54,8 +54,8 @@ func TestMigration0190OpensTheNotificationSchema(t *testing.T) {
 	t.Run("new columns are bounded", func(t *testing.T) { checkMigration0190ColumnBounds(ctx, t, pool) })
 	t.Run("row level security stays forced", func(t *testing.T) { checkMigration0190ForcedRLS(ctx, t, pool) })
 
-	if err := goose.DownTo(db, ".", 189); err != nil {
-		t.Fatalf("down to 189 after apply: %v", err)
+	if err := goose.DownTo(db, ".", 186); err != nil {
+		t.Fatalf("down to 186 after apply: %v", err)
 	}
 	if err := goose.Up(db, "."); err != nil {
 		t.Fatalf("up after down: %v", err)

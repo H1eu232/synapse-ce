@@ -72,7 +72,7 @@ func TestNotificationCIImportCapture(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	source := NewNotificationSource(pool, repo, time.Minute, true)
+	source := NewNotificationSource(pool, repo, time.Minute)
 	if _, err := source.Poll(ctx, now, 100); err != nil {
 		t.Fatal(err)
 	}

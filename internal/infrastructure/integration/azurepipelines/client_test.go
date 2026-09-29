@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/integration"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/selfhosted"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 )
 
@@ -47,12 +48,12 @@ func TestRegistrationAndOriginValidation(t *testing.T) {
 	}
 	for _, endpoint := range []string{"http://dev.azure.com/org/proj", "https://evil.example/org/proj", "https://dev.azure.com/org", "https://dev.azure.com/org/proj/extra", "https://dev.azure.com/org/proj?token=secret", "https://dev.azure.com/org/proj#fragment", "https://reader:token@dev.azure.com/org/proj", "https://dev.azure.com/org/%252e%252e", "https://dev.azure.com/org/proj/../other"} {
 		item := integration.Integration{ID: "i1", TenantID: shared.ID("tenant"), Name: "Azure", Provider: Provider, Version: 1, Endpoint: endpoint}
-		if _, err := New(item, integration.CredentialBundle{"pat": "read-only-secret"}); err == nil {
+		if _, err := New(item, integration.CredentialBundle{"pat": "read-only-secret"}, selfhosted.Rules{}); err == nil {
 			t.Errorf("accepted unsafe endpoint %q", endpoint)
 		}
 	}
 	item := integration.Integration{ID: "i1", TenantID: "tenant", Name: "Azure", Provider: Provider, Version: 1, Endpoint: "https://dev.azure.com/org/My%20Project"}
-	a, err := New(item, integration.CredentialBundle{"pat": "read-only-secret"})
+	a, err := New(item, integration.CredentialBundle{"pat": "read-only-secret"}, selfhosted.Rules{})
 	if err != nil {
 		t.Fatalf("safe endpoint rejected: %v", err)
 	}

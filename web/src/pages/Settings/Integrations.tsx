@@ -1,5 +1,6 @@
 import { Link01, Plus, RefreshCw01 } from '@untitledui/icons'
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { Button, Card, EmptyState, ErrorState, Field, Input, Pill, Select, Spinner, cn } from '../../components/ui'
 import { api } from '../../lib/api'
 import type {
@@ -198,6 +199,7 @@ export function Integrations() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
+          <Link to="/settings/integrations" className="text-sm font-semibold text-brand-secondary hover:underline">← All integrations</Link>
           <h2 className="text-lg font-semibold text-primary">CI/CD integrations</h2>
           <p className="mt-1 text-sm text-tertiary">Connect read-only providers, discover pipelines, and link external runs to Project analyses.</p>
         </div>

@@ -29,6 +29,20 @@ broken one both answer `404`. Read this endpoint first and render a disabled sub
 still report `enabled: false`. The response carries booleans and variable names, never a configured
 value. Any authenticated role may read it.
 
+Some entries carry more than a switch:
+
+- `notifications.channel_types` lists, in `values`, the channel types this build can deliver to
+  (`webhook`, `slack`, `email`). The console offers only these types when creating a channel.
+- `ticketing` and `docpublish` report `planned: true`. They are not in this build yet, so they are
+  always disabled and their `switch` is empty.
+
+```json
+{"key": "notifications.channel_types", "name": "Notification channel types", "enabled": true,
+ "switch": "SYNAPSE_NOTIFICATIONS_ENABLED", "requires": ["notifications"],
+ "values": ["webhook", "slack", "email"]}
+{"key": "ticketing", "name": "Ticketing", "enabled": false, "switch": "", "planned": true}
+```
+
 ## Required
 
 | Variable | Default | Description |
@@ -334,7 +348,7 @@ All off by default. The fleet needs PostgreSQL + `synapse-worker`; agents run on
 | `SYNAPSE_FLEET_CORRELATION_MAX_TIMELINE_REFS_PER_PAGE` | `500` | Maximum causal timeline references fetched by one materialization page; at least the per-detection cap (1–10000). |
 | `SYNAPSE_FLEET_KEY_REGISTRATION_ENABLED` | `false` | Serve agent signing-key registration (`POST /api/v1/fleet/keys`) + operator key list/revoke (A4, A0.2). |
 | `SYNAPSE_FLEET_STALE_AFTER` | `10m` | An agent older than this reads as stale (`<=0` disables the staleness view). |
-| `SYNAPSE_ALERT_WEBHOOK_URL` | (unset) | Enables operator alerting: each incident correlation opens is posted as signed JSON to this URL. `https` required, `http` only for a loopback host. `POST /api/v1/alerts/test` sends a test alert. |
+| `SYNAPSE_ALERT_WEBHOOK_URL` | (unset) | **Deprecated; removed in 0.4.0.** Use an `incident.created` notification rule instead; both paths deliver while this is set, and startup logs a warning. Enables operator alerting: each incident correlation opens is posted as signed JSON to this URL. `https` required, `http` only for a loopback host. `POST /api/v1/alerts/test` sends a test alert. |
 | `SYNAPSE_ALERT_WEBHOOK_SECRET` | (unset) | Signs each webhook body: `X-Synapse-Signature: sha256=<hex HMAC-SHA256 of "<X-Synapse-Timestamp>.<body>">`. At least 16 bytes when set. |
 | `SYNAPSE_ALERT_MIN_SEVERITY` | `medium` | Inclusive severity floor for delivered alerts (`critical`, `high`, `medium`, `low`, `info`). Test alerts always deliver. |
 | `SYNAPSE_ALERT_WEBHOOK_ALLOW_PRIVATE` | `false` | Let the webhook client dial private-use receivers (RFC 1918 and IPv6 unique-local). The SSRF guard refuses them otherwise. Loopback, link-local, cloud metadata (including `fd00:ec2::/32`) and other special-purpose addresses stay refused either way. |
@@ -369,7 +383,9 @@ All off by default. The fleet needs PostgreSQL + `synapse-worker`; agents run on
 | `SYNAPSE_INTEGRATION_SCHEDULER_DISPATCH_LIMIT` | `10` | Maximum integration poll operations created per scheduler tick. |
 | `SYNAPSE_INTEGRATION_SCHEDULER_MAX_QUEUE_DEPTH` | `100` | Stop integration dispatch when the durable queue reaches this aggregate depth. |
 | `SYNAPSE_ACCURACY_EVAL_INTERVAL` | `0` (off) | Interval at which the leader worker runs the detection-accuracy regression over the golden corpus and persists a run for the console trend. Zero disables it. |
-| `SYNAPSE_INTEGRATION_ALLOW_PRIVATE_NETWORK` | `false` | Operator gate allowing tenant administrators to request private-address Jenkins origins. Keep off unless internal egress is explicitly approved; loopback, link-local, metadata, CGNAT, 6to4, and well-known NAT64 ranges remain blocked. |
+| `SYNAPSE_INTEGRATION_ALLOW_PRIVATE_NETWORK` | `false` | Operator gate allowing tenant administrators to request private-address Jenkins origins. Keep off unless internal egress is explicitly approved; loopback, link-local, metadata, CGNAT, 6to4, and well-known NAT64 ranges remain blocked. Turning it off also stops integrations saved while it was on from reaching private addresses. |
+| `SYNAPSE_INTEGRATION_HOST_ALLOWLIST` | (unset) | Comma-separated hosts that self-hosted integrations (Jenkins) may be saved with and connect to: `host`, `host:port`, `*.domain` (subdomains only, not `domain` itself), or an IP literal (`[2001:db8::1]:8443` with a port). Unset allows any public host. When set, a tenant cannot save an endpoint on another host, and an integration saved before the list changed is refused before it connects. SaaS providers such as Azure Pipelines pin their vendor host and are not affected. An invalid entry stops startup. Leaving it unset lets any tenant administrator point the control plane at any public host. |
+| `SYNAPSE_INTEGRATION_PRIVATE_CIDRS` | (unset) | Comma-separated private-use CIDRs (inside `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` or `fc00::/7`) that private-network integrations are limited to. It only narrows `SYNAPSE_INTEGRATION_ALLOW_PRIVATE_NETWORK`, and setting it without that switch stops startup. Unset lets a private-network integration reach any private-use address. |
 | `SYNAPSE_VULNERABILITY_SCHEDULER_ENABLED` | `false` | Dispatch due vulnerability-source syncs and recover stale runs. PostgreSQL deployments must also enable leader election. |
 | `SYNAPSE_VULNERABILITY_SCHEDULER_POLL` | `1m` | Scheduler polling interval. |
 | `SYNAPSE_VULNERABILITY_SCHEDULER_STALE_AFTER` | `30m` | Age after which a queued/running sync is eligible for checkpoint-based recovery. |
@@ -498,6 +514,13 @@ All are best-effort and no-op without inputs. Set a flag to `false` to opt out.
 
 The settings below are intentionally grouped by owning process. They are real operator controls even
 when they are used only by a CLI, helper, or optional subsystem.
+
+### SIEM streams
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SYNAPSE_SIEM_ENABLED` | `true` | Set `false` on every API and worker replica to stop incident capture and SIEM sends. Pausing one sink does not stop capture. Events written while capture is off are not in the live partition; a historical backfill can still copy identities that were never captured. |
+| `SYNAPSE_SIEM_PUBLIC_BASE_URL` | empty | Optional absolute `https` console origin, with no path, added to exported SIEM records as a deep link. Empty omits links. It does not fall back to `SYNAPSE_PUBLIC_BASE_URL`, because that console builder can include a deployment prefix and uses different routes. |
 
 ### Database, project storage, and maintenance
 

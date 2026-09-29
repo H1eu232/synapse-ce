@@ -10,6 +10,7 @@ import (
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/integration"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/project"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/selfhosted"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/persistence/memory"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/vault"
@@ -121,7 +122,7 @@ func TestPrivateNetworkIntegrationsRequireOperatorApproval(t *testing.T) {
 	store := memory.NewIntegrationStore(queue, cipher, clock, &integrationTestAudit{})
 	registry := integration.NewRegistry()
 	descriptor := integration.ProviderDescriptor{Provider: "fake-ci", Name: "Fake CI"}
-	if err := registry.Register(descriptor, func(integration.Integration, integration.CredentialBundle) (integration.Adapter, error) {
+	if err := registry.Register(descriptor, func(integration.Integration, integration.CredentialBundle, selfhosted.Rules) (integration.Adapter, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -134,7 +135,7 @@ func TestPrivateNetworkIntegrationsRequireOperatorApproval(t *testing.T) {
 	if _, err := service.Create(ctx, input); !errors.Is(err, shared.ErrValidation) {
 		t.Fatalf("private integration without operator gate error=%v", err)
 	}
-	service.SetPrivateNetworkAllowed(true)
+	registry.SetSelfHostedRules(selfhosted.Rules{AllowPrivateNetwork: true})
 	created, err := service.Create(ctx, input)
 	if err != nil || !created.AllowPrivateNetwork {
 		t.Fatalf("approved private integration=%+v err=%v", created, err)
@@ -167,7 +168,7 @@ func TestServiceFullMemoryWorkflowIsIdempotentAndCancellationSafe(t *testing.T) 
 	}
 	adapter := &integrationTestAdapter{descriptor: descriptor, clock: clock}
 	registry := integration.NewRegistry()
-	if err := registry.Register(descriptor, func(_ integration.Integration, credentials integration.CredentialBundle) (integration.Adapter, error) {
+	if err := registry.Register(descriptor, func(_ integration.Integration, credentials integration.CredentialBundle, _ selfhosted.Rules) (integration.Adapter, error) {
 		if credentials["token"] != "secret" {
 			t.Fatalf("resolved credentials = %#v", credentials)
 		}

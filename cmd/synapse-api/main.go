@@ -22,6 +22,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// The tenant settings API validates IANA time zones (#1359). Embedding the database keeps that
+	// independent of whether the runtime image ships /usr/share/zoneinfo.
+	_ "time/tzdata"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -39,6 +42,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/domain/offensivepolicy"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/riskassessment"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/symbolcanon"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/taint"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/vulnerabilityreconcile"
@@ -69,6 +73,9 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/rulecatalog"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sandbox"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/scmdecoration"
+	elastic "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/elastic"
+	siemseal "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/seal"
+	splunk "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/splunk"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/signing"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sourceartifact"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sourceupload"
@@ -208,10 +215,12 @@ import (
 	scauc "github.com/KKloudTarus/synapse-ce/internal/usecase/sca"
 	scanrunuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scanrun"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/scmconnectoruc"
+	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/slauc"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/srcreach"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/symreach"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/taintscan"
+	tenancyuc "github.com/KKloudTarus/synapse-ce/internal/usecase/tenancy"
 	threatmodeluc "github.com/KKloudTarus/synapse-ce/internal/usecase/threatmodeluc"
 	transferuc "github.com/KKloudTarus/synapse-ce/internal/usecase/transfer"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/usercontacts"
@@ -610,6 +619,7 @@ func main() {
 		pool, err := postgres.ConnectPool(startup, cfg.DBDSN, postgres.PoolConfig{
 			MaxConns: int32(cfg.DBMaxConns), MinConns: int32(cfg.DBMinConns),
 			MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime,
+			SIEMCaptureEnabled: &cfg.SIEMEnabled,
 		})
 		if err != nil {
 			log.Error("db connect failed", "err", err)
@@ -617,7 +627,7 @@ func main() {
 		}
 		defer pool.Close()
 		databasePool = pool
-		haltPool, err := postgres.ConnectPool(startup, cfg.DBHaltWriterDSN, postgres.PoolConfig{MaxConns: 2, MinConns: 0, MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime})
+		haltPool, err := postgres.ConnectPool(startup, cfg.DBHaltWriterDSN, postgres.PoolConfig{MaxConns: 2, MinConns: 0, MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime, SIEMCaptureEnabled: &cfg.SIEMEnabled})
 		if err != nil {
 			log.Error("halt-writer database connect failed", "err", err)
 			os.Exit(1)
@@ -936,12 +946,17 @@ func main() {
 		log.Error("integration provider registry init failed", "err", err)
 		os.Exit(1)
 	}
+	integrationRules, err := cfg.IntegrationSelfHostedRules()
+	if err != nil {
+		log.Error("integration endpoint configuration invalid", "err", err)
+		os.Exit(1)
+	}
+	integrationRegistry.SetSelfHostedRules(integrationRules)
 	integrationService, err := integrationuc.NewService(integrationStore, integrationRegistry, projectRepo, integrationMatcher, ids, clock)
 	if err != nil {
 		log.Error("integration service init failed", "err", err)
 		os.Exit(1)
 	}
-	integrationService.SetPrivateNetworkAllowed(cfg.IntegrationAllowPrivateNetwork)
 	if cfg.DBDSN == "" {
 		integrationService.SetRunLock(memory.NewRunLock())
 	}
@@ -1469,6 +1484,17 @@ func main() {
 	} else {
 		router.SetOwnership(nil, "off", "disabled")
 	}
+	// Tenant language and time zone (#1359), read by message templates and digests.
+	var tenantSettingsStore ports.TenantSettingsStore = memory.NewTenantSettingsStore()
+	if databasePool != nil {
+		tenantSettingsStore = postgres.NewTenantSettingsStore(databasePool)
+	}
+	tenantSettingsService, err := tenancyuc.NewService(tenantSettingsStore, auditLog, clock)
+	if err != nil {
+		log.Error("tenant settings service init failed", "err", err)
+		os.Exit(1)
+	}
+	router.SetTenantSettings(tenantSettingsService)
 	var userContactService *usercontacts.Service
 	if databasePool != nil {
 		router.SetAssigneeReviewReader(postgres.NewAssigneeReviewReader(databasePool))
@@ -1511,6 +1537,26 @@ func main() {
 		inboxService.SetMailer(notificationSender)
 		router.SetInbox(inboxService)
 		log.Info("tenant notification management ENABLED")
+	}
+	var siemService *siemuc.Service
+	if databasePool != nil {
+		siemRepository := postgres.NewSIEMRepository(databasePool)
+		var siemErr error
+		siemService, siemErr = siemuc.NewService(siemRepository, siemRepository, siemRepository, siemseal.Vault{Cipher: vaultCipher}, map[siem.Provider]ports.SIEMDriver{
+			siem.ProviderSplunk:        splunk.New(5*time.Second, true),
+			siem.ProviderElasticsearch: elastic.New(5 * time.Second),
+		}, auditLog, clock, ids)
+		if siemErr != nil {
+			log.Error("siem service init failed", "err", siemErr)
+			os.Exit(1)
+		}
+		siemService.SetTransactions(postgres.NewTenantTransactionRunner(databasePool))
+		if err := siemService.SetPublicBase(cfg.SIEMPublicBaseURL); err != nil {
+			log.Error("siem public base URL is invalid", "err", err)
+			os.Exit(1)
+		}
+		router.SetSIEM(siemService)
+		log.Info("siem streams enabled")
 	}
 	router.SetIntegrations(integrationService)
 	if summaries, ok := findingRepo.(ports.FindingSummaryReader); ok {
@@ -1679,6 +1725,8 @@ func main() {
 		SingleTenant:         cfg.SingleTenant,
 		OIDC:                 cfg.OIDCEnabled,
 		Ownership:            cfg.OwnershipMode != "off" && databasePool != nil,
+		Notifications:        cfg.NotificationEnabled,
+		LegacyAlertWebhook:   cfg.AlertWebhookURL != "",
 	})
 	if err != nil {
 		log.Error("capability catalog init failed", "err", err)
@@ -2348,8 +2396,12 @@ func main() {
 
 	// Operator alerting (#822): a signed webhook that receives every incident correlation opens, plus the
 	// correlator handle detection ingest uses so an incident exists as soon as its detections are sealed.
+	// Deprecated (#1347): tenant notification rules for incident.created are delivered by the worker's
+	// notification framework whether or not this webhook is set, so both paths deliver while it is
+	// configured. It stays as a compatibility path until alertinguc.LegacyWebhookRemovalRelease.
 	var alertSvc *alertinguc.Service
 	if cfg.AlertWebhookURL != "" {
+		alertinguc.WarnLegacyWebhookDeprecated(log, true)
 		rule := alerting.Rule{MinSeverity: shared.Severity(strings.ToLower(strings.TrimSpace(cfg.AlertMinSeverity)))}
 		sink, aerr := alertwebhook.New(cfg.AlertWebhookURL, cfg.AlertWebhookSecret, 10*time.Second, cfg.AlertWebhookAllowPrivate, cfg.AlertWebhookAllowUnsigned)
 		if aerr != nil {

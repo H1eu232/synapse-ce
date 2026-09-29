@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/consolelink"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/selfhosted"
 )
 
 const (
@@ -42,6 +43,11 @@ type Config struct {
 	MetricsEnabled bool
 	// MetricsAddr is the loopback-by-default listen address for the metrics endpoint.
 	MetricsAddr string
+	// SIEMEnabled stops worker sends and, when set consistently on writers,
+	// disables incident capture. Events during an outage require backfill.
+	SIEMEnabled bool
+	// SIEMPublicBaseURL is an optional HTTPS console origin for exported links.
+	SIEMPublicBaseURL string
 	// AccessLogEnabled turns on the single structured access-log event per HTTP
 	// request (method, matched route, status, latency, request id). On by default.
 	AccessLogEnabled bool
@@ -449,6 +455,12 @@ type Config struct {
 	// tenant administrators to configure integrations targeting private address space.
 	// It is intentionally off by default because the API flag alone must not weaken SSRF controls.
 	IntegrationAllowPrivateNetwork bool
+	// IntegrationHostAllowlist, when set, is the only set of hosts a self-hosted integration
+	// (Jenkins, Jira Data Center) may be saved with or dial. Entries are host, host:port or
+	// *.domain. Empty keeps the default: any public host.
+	IntegrationHostAllowlist []string
+	// IntegrationPrivateCIDRs narrows IntegrationAllowPrivateNetwork to these private-use ranges.
+	IntegrationPrivateCIDRs []string
 	// Vulnerability rollout gates default off. Tenant-scoped mutations additionally require
 	// an explicit tenant allowlist entry; "*" enables all tenants. Dry-run records correlation
 	// differences without mutating occurrences, findings, actions, or notification outbox rows.
@@ -840,6 +852,8 @@ func Load() Config {
 		HTTPAddr:                         getenv("SYNAPSE_HTTP_ADDR", ":8080"),
 		MetricsEnabled:                   getbool("SYNAPSE_METRICS_ENABLED", false),
 		MetricsAddr:                      getenv("SYNAPSE_METRICS_ADDR", "127.0.0.1:9090"),
+		SIEMEnabled:                      getbool("SYNAPSE_SIEM_ENABLED", true),
+		SIEMPublicBaseURL:                getenv("SYNAPSE_SIEM_PUBLIC_BASE_URL", ""),
 		AccessLogEnabled:                 getbool("SYNAPSE_ACCESS_LOG_ENABLED", true),
 		Environment:                      normalizeEnv(getenv("SYNAPSE_ENV", "development")),
 		LogLevel:                         getenv("SYNAPSE_LOG_LEVEL", "info"),
@@ -948,38 +962,38 @@ func Load() Config {
 		// absent. Set the flag to false to opt out. Capabilities that need external setup or would be
 		// unsafe unsandboxed stay OFF by default (sandbox, agent/LLM, taint, maven/gradle resolvers,
 		// jarhash egress) – see their fields below.
-		JudgmentsEnabled:                  getbool("SYNAPSE_JUDGMENTS_ENABLED", true),
-		SASTEnabled:                       getbool("SYNAPSE_SAST_ENABLED", true),
-		SecretScanEnabled:                 getbool("SYNAPSE_SECRET_SCAN_ENABLED", true),
-		SecretHistoryEnabled:              getbool("SYNAPSE_SECRET_HISTORY_ENABLED", false),
-		SecretVerifyEnabled:               getbool("SYNAPSE_SECRET_VERIFY_ENABLED", false),
-		SecretVerifyRPS:                   getint("SYNAPSE_SECRET_VERIFY_RPS", 5),
-		SecretVerifyVaultAddr:             strings.TrimSpace(getenv("SYNAPSE_SECRET_VERIFY_VAULT_ADDR", "")),
-		MisconfigEnabled:                  getbool("SYNAPSE_MISCONFIG_ENABLED", true),
-		SuppressionEnabled:                getbool("SYNAPSE_SUPPRESSION_ENABLED", true),
-		VEXEnabled:                        getbool("SYNAPSE_VEX_ENABLED", true),
-		ComplianceEnabled:                 getbool("SYNAPSE_COMPLIANCE_ENABLED", true),
-		DetectionPriority:                 os.Getenv("SYNAPSE_DETECTION_PRIORITY"),
-		DBMaxAgeDays:                      getint("SYNAPSE_DB_MAX_AGE_DAYS", 30),
-		ScanCacheEnabled:                  getbool("SYNAPSE_SCAN_CACHE_ENABLED", true),
-		ScanCacheDir:                      os.Getenv("SYNAPSE_SCAN_CACHE_DIR"),
-		ImageRootFSEnabled:                getbool("SYNAPSE_IMAGE_ROOTFS_ENABLED", true),
-		OwnedAdvisoryEnabled:              getbool("SYNAPSE_OWNED_ADVISORY", true),
-		SymbolOverlayDir:                  getenv("SYNAPSE_SYMBOL_OVERLAY_DIR", ""),
-		ReachabilityEnabled:               getbool("SYNAPSE_REACHABILITY_ENABLED", true),
-		PyReachabilityEnabled:             getbool("SYNAPSE_PYREACH_ENABLED", true),
-		PySemanticReachabilityEnabled:     getbool("SYNAPSE_PYREACH_TIER2_ENABLED", false),
-		ASTBin:                            os.Getenv("SYNAPSE_AST_BIN"),
-		PythonTaintEnabled:                getbool("SYNAPSE_PYTAINT_ENABLED", true),
-		TaintRulesFile:                    strings.TrimSpace(getenv("SYNAPSE_TAINT_RULES_FILE", "")),
-		JsTaintEnabled:                    getbool("SYNAPSE_JSTAINT_ENABLED", false),
-		JavaTaintEnabled:                  getbool("SYNAPSE_JAVATAINT_ENABLED", false),
-		TriScoreReassessEnabled:           getbool("SYNAPSE_TRISCORE_REASSESS_ENABLED", false),
-		FleetCorrelationEnabled:           getbool("SYNAPSE_FLEET_CORRELATION_ENABLED", false),
-		FleetCorrelationWindow:            getduration("SYNAPSE_FLEET_CORRELATION_WINDOW", 30*time.Minute),
-		FleetCorrelationMaxPerIncident:    getint("SYNAPSE_FLEET_CORRELATION_MAX_PER_INCIDENT", 100),
-		FleetCorrelationPageSize:          getint("SYNAPSE_FLEET_CORRELATION_PAGE_SIZE", 100),
-		FleetCorrelationMaxActiveSessions: getint("SYNAPSE_FLEET_CORRELATION_MAX_ACTIVE_SESSIONS", 500),
+		JudgmentsEnabled:                            getbool("SYNAPSE_JUDGMENTS_ENABLED", true),
+		SASTEnabled:                                 getbool("SYNAPSE_SAST_ENABLED", true),
+		SecretScanEnabled:                           getbool("SYNAPSE_SECRET_SCAN_ENABLED", true),
+		SecretHistoryEnabled:                        getbool("SYNAPSE_SECRET_HISTORY_ENABLED", false),
+		SecretVerifyEnabled:                         getbool("SYNAPSE_SECRET_VERIFY_ENABLED", false),
+		SecretVerifyRPS:                             getint("SYNAPSE_SECRET_VERIFY_RPS", 5),
+		SecretVerifyVaultAddr:                       strings.TrimSpace(getenv("SYNAPSE_SECRET_VERIFY_VAULT_ADDR", "")),
+		MisconfigEnabled:                            getbool("SYNAPSE_MISCONFIG_ENABLED", true),
+		SuppressionEnabled:                          getbool("SYNAPSE_SUPPRESSION_ENABLED", true),
+		VEXEnabled:                                  getbool("SYNAPSE_VEX_ENABLED", true),
+		ComplianceEnabled:                           getbool("SYNAPSE_COMPLIANCE_ENABLED", true),
+		DetectionPriority:                           os.Getenv("SYNAPSE_DETECTION_PRIORITY"),
+		DBMaxAgeDays:                                getint("SYNAPSE_DB_MAX_AGE_DAYS", 30),
+		ScanCacheEnabled:                            getbool("SYNAPSE_SCAN_CACHE_ENABLED", true),
+		ScanCacheDir:                                os.Getenv("SYNAPSE_SCAN_CACHE_DIR"),
+		ImageRootFSEnabled:                          getbool("SYNAPSE_IMAGE_ROOTFS_ENABLED", true),
+		OwnedAdvisoryEnabled:                        getbool("SYNAPSE_OWNED_ADVISORY", true),
+		SymbolOverlayDir:                            getenv("SYNAPSE_SYMBOL_OVERLAY_DIR", ""),
+		ReachabilityEnabled:                         getbool("SYNAPSE_REACHABILITY_ENABLED", true),
+		PyReachabilityEnabled:                       getbool("SYNAPSE_PYREACH_ENABLED", true),
+		PySemanticReachabilityEnabled:               getbool("SYNAPSE_PYREACH_TIER2_ENABLED", false),
+		ASTBin:                                      os.Getenv("SYNAPSE_AST_BIN"),
+		PythonTaintEnabled:                          getbool("SYNAPSE_PYTAINT_ENABLED", true),
+		TaintRulesFile:                              strings.TrimSpace(getenv("SYNAPSE_TAINT_RULES_FILE", "")),
+		JsTaintEnabled:                              getbool("SYNAPSE_JSTAINT_ENABLED", false),
+		JavaTaintEnabled:                            getbool("SYNAPSE_JAVATAINT_ENABLED", false),
+		TriScoreReassessEnabled:                     getbool("SYNAPSE_TRISCORE_REASSESS_ENABLED", false),
+		FleetCorrelationEnabled:                     getbool("SYNAPSE_FLEET_CORRELATION_ENABLED", false),
+		FleetCorrelationWindow:                      getduration("SYNAPSE_FLEET_CORRELATION_WINDOW", 30*time.Minute),
+		FleetCorrelationMaxPerIncident:              getint("SYNAPSE_FLEET_CORRELATION_MAX_PER_INCIDENT", 100),
+		FleetCorrelationPageSize:                    getint("SYNAPSE_FLEET_CORRELATION_PAGE_SIZE", 100),
+		FleetCorrelationMaxActiveSessions:           getint("SYNAPSE_FLEET_CORRELATION_MAX_ACTIVE_SESSIONS", 500),
 		FleetCorrelationMaxTimelineRefsPerDetection: getint("SYNAPSE_FLEET_CORRELATION_MAX_TIMELINE_REFS_PER_DETECTION", 32),
 		FleetCorrelationMaxTimelineRefsPerPage:      getint("SYNAPSE_FLEET_CORRELATION_MAX_TIMELINE_REFS_PER_PAGE", 500),
 		JSReachabilityEnabled:                       getbool("SYNAPSE_JSREACH_ENABLED", true),
@@ -1036,6 +1050,8 @@ func Load() Config {
 		IntegrationSchedulerDispatch:                getint("SYNAPSE_INTEGRATION_SCHEDULER_DISPATCH_LIMIT", 10),
 		IntegrationSchedulerQueueDepth:              getint("SYNAPSE_INTEGRATION_SCHEDULER_MAX_QUEUE_DEPTH", 100),
 		IntegrationAllowPrivateNetwork:              getbool("SYNAPSE_INTEGRATION_ALLOW_PRIVATE_NETWORK", false),
+		IntegrationHostAllowlist:                    splitList(os.Getenv("SYNAPSE_INTEGRATION_HOST_ALLOWLIST")),
+		IntegrationPrivateCIDRs:                     splitList(os.Getenv("SYNAPSE_INTEGRATION_PRIVATE_CIDRS")),
 		VulnerabilityProviderSyncEnabled:            getbool("SYNAPSE_VULNERABILITY_PROVIDER_SYNC_ENABLED", false),
 		VulnerabilityInlineWorkerEnabled:            getbool("SYNAPSE_VULNERABILITY_INLINE_WORKER_ENABLED", false),
 		VulnerabilitySyncSchedulerInterval:          getduration("SYNAPSE_VULNERABILITY_SYNC_SCHEDULER_INTERVAL", 0),
@@ -1697,6 +1713,25 @@ func (c Config) EffectivePublicBaseURL() string {
 		return c.PublicBaseURL
 	}
 	return c.OIDCFrontendURL
+}
+
+// IntegrationSelfHostedRules parses the operator's self-hosted integration endpoint rules. An
+// invalid value is an error that names its variable, so the process refuses to start rather than
+// running with an allowlist that admits nothing, or everything, by mistake.
+func (c Config) IntegrationSelfHostedRules() (selfhosted.Rules, error) {
+	hosts, err := selfhosted.ParseHostAllowlist(c.IntegrationHostAllowlist)
+	if err != nil {
+		return selfhosted.Rules{}, fmt.Errorf("SYNAPSE_INTEGRATION_HOST_ALLOWLIST: %w", err)
+	}
+	cidrs, err := selfhosted.ParsePrivateCIDRs(c.IntegrationPrivateCIDRs)
+	if err != nil {
+		return selfhosted.Rules{}, fmt.Errorf("SYNAPSE_INTEGRATION_PRIVATE_CIDRS: %w", err)
+	}
+	rules, err := selfhosted.NewRules(c.IntegrationAllowPrivateNetwork, hosts, cidrs)
+	if err != nil {
+		return selfhosted.Rules{}, fmt.Errorf("SYNAPSE_INTEGRATION_PRIVATE_CIDRS requires SYNAPSE_INTEGRATION_ALLOW_PRIVATE_NETWORK=true: %w", err)
+	}
+	return rules, nil
 }
 
 // ValidatePublicBaseURL rejects unsafe origins without echoing credential-bearing input.

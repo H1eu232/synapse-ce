@@ -76,7 +76,12 @@ func WithTenant(ctx context.Context, pool *pgxpool.Pool, tenantID string, fn fun
 		defer cancel()
 		_ = tx.Rollback(rbCtx)
 	}()
-	if _, err = tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", tenantID); err != nil {
+	capture := "on"
+	if pool.Config().ConnConfig.RuntimeParams["app.siem_capture_enabled"] == "off" {
+		capture = "off"
+	}
+	if _, err = tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true),
+		set_config('app.siem_capture_enabled', $2, true)`, tenantID, capture); err != nil {
 		return fmt.Errorf("rls: set tenant: %w", err)
 	}
 	if err = fn(tx); err != nil {

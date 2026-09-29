@@ -131,6 +131,15 @@ func (m *WorkerNotificationMetrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 }
 
+// Registry is the worker scrape registry. Other worker series, including SIEM,
+// register here so the process exposes one /metrics listener.
+func (m *WorkerNotificationMetrics) Registry() *prometheus.Registry {
+	if m == nil {
+		return nil
+	}
+	return m.registry
+}
+
 type workerNotificationPendingCollector struct {
 	reader ports.NotificationPendingMetricsReader
 	now    func() time.Time

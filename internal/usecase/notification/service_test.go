@@ -112,7 +112,7 @@ func TestAdministrationWithoutDeliverySender(t *testing.T) {
 
 func TestHandleJobPersistsRetryWithoutSleeping(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
-	cfg, _ := json.Marshal(ports.NotificationChannelConfig{URL: "https://example.com", Secret: "0123456789abcdef"})
+	cfg, _ := json.Marshal(ports.WebhookChannelConfig{URL: "https://example.com", Secret: "0123456789abcdef"})
 	repo := &fakeRepo{relevant: true, work: ports.NotificationWork{Delivery: domain.Delivery{ID: "delivery", State: domain.DeliveryPending}, Event: domain.Event{TenantID: "tenant", ID: "event", Type: domain.EventTest, Data: json.RawMessage(`{}`)}, Channel: domain.Channel{ID: "channel", Type: domain.ChannelWebhook, Enabled: true, SecretVersion: 1}}}
 	svc, err := NewService(repo, fakeProtector{raw: cfg}, fakeSender{result: ports.NotificationSendResult{StatusCode: 503, ErrorCode: "http_503", Retryable: true}}, fakeAudit{}, fakeClock{now}, &fakeIDs{})
 	if err != nil {
