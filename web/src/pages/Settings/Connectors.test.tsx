@@ -27,6 +27,13 @@ const CONNECTORS = [
 describe('Connectors', () => {
   beforeEach(() => vi.resetAllMocks())
 
+  it('stops the loading spinner when the list cannot be loaded', async () => {
+    vi.mocked(api.listConnectors).mockRejectedValue(new Error('insufficient permissions: this action requires the administer capability'))
+    render(<Connectors />)
+    expect(await screen.findByText(/insufficient permissions/)).toBeInTheDocument()
+    expect(screen.queryByText('Loading connectors…')).not.toBeInTheDocument()
+  })
+
   it('lists connectors with provider and host, never a token', async () => {
     vi.mocked(api.listConnectors).mockResolvedValue(CONNECTORS as never)
     render(<Connectors />)

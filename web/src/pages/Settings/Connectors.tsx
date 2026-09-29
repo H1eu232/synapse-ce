@@ -91,7 +91,7 @@ export function Connectors() {
         <>
           <AddConnector onCreated={load} />
           {loadError && <ErrorState message={loadError} />}
-          {connectors === undefined && <Spinner label="Loading connectors…" />}
+          {connectors === undefined && !loadError && <Spinner label="Loading connectors…" />}
           {connectors && connectors.length === 0 && !loadError && (
             <EmptyState
               icon={GitBranch01}
