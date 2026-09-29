@@ -10,7 +10,6 @@ package capabilities
 import (
 	"fmt"
 
-	notificationdomain "github.com/KKloudTarus/synapse-ce/internal/domain/notification"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 )
 
@@ -37,6 +36,13 @@ type Flags struct {
 	OIDC                 bool // SYNAPSE_OIDC_ENABLED
 	Ownership            bool // effective SYNAPSE_OWNERSHIP_MODE != off with PostgreSQL
 	Notifications        bool // SYNAPSE_NOTIFICATIONS_ENABLED
+	// NotificationChannelTypes is every channel type the notification driver registry holds, in
+	// registry order. The composition root reads it from the registry, so a new driver is
+	// advertised without editing this package.
+	NotificationChannelTypes []string
+	// NotificationProvidersDisabled is SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED: types the operator
+	// switched off. They are left out of notifications.channel_types.
+	NotificationProvidersDisabled []string
 	// LegacyAlertWebhook reports only whether SYNAPSE_ALERT_WEBHOOK_URL is set, never its value (the
 	// URL may embed a credential). The console uses it to warn that incident.created rules and the
 	// deprecated deployment-wide webhook both deliver (#1347).
@@ -126,14 +132,22 @@ func cloneStrings(in []string) []string {
 	return out
 }
 
-// notificationChannelTypes is the fixed list the notification sender delivers to today. The driver
-// registry (#1351) will become its source.
-func notificationChannelTypes() []string {
-	return []string{
-		string(notificationdomain.ChannelWebhook),
-		string(notificationdomain.ChannelSlack),
-		string(notificationdomain.ChannelEmail),
+// notificationChannelTypes is the channel types a tenant may use: the driver registry's types
+// (#1351) minus those the operator switched off (#1362), in registry order. When every type is
+// switched off the list is empty and `values` is omitted on the wire; a client reads an enabled
+// notifications.channel_types without values as "no type may be created".
+func notificationChannelTypes(f Flags) []string {
+	disabled := make(map[string]bool, len(f.NotificationProvidersDisabled))
+	for _, name := range f.NotificationProvidersDisabled {
+		disabled[name] = true
 	}
+	out := make([]string, 0, len(f.NotificationChannelTypes))
+	for _, channelType := range f.NotificationChannelTypes {
+		if !disabled[channelType] {
+			out = append(out, channelType)
+		}
+	}
+	return out
 }
 
 // build resolves each subsystem's effective enablement. A subsystem is enabled only when its own
@@ -188,7 +202,7 @@ func build(f Flags) []Capability {
 		{
 			Key: "notifications.channel_types", Name: "Notification channel types",
 			Enabled: f.Notifications, Switch: "SYNAPSE_NOTIFICATIONS_ENABLED",
-			Requires: []string{"notifications"}, Values: notificationChannelTypes(),
+			Requires: []string{"notifications"}, Values: notificationChannelTypes(f),
 		},
 		// Ticketing (WS5) and documentation publishing (WS6) are not in this build yet. They are listed
 		// so a client can render them as planned instead of guessing from a 404.

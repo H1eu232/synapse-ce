@@ -35,7 +35,8 @@ const paused: NotificationChannel = {
 function renderList(channels: NotificationChannel[], canAdmin = true) {
   const refresh = vi.fn()
   const notify = vi.fn()
-  render(<ChannelList channels={channels} canAdmin={canAdmin} refresh={refresh} notify={notify} onEdit={vi.fn()} />)
+  // types=null: the deployment does not report channel types, so no type is disabled by the operator.
+  render(<ChannelList channels={channels} types={null} canAdmin={canAdmin} refresh={refresh} notify={notify} onEdit={vi.fn()} />)
   return { refresh, notify }
 }
 

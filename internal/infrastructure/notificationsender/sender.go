@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/notification"
@@ -42,6 +43,8 @@ type Sender struct {
 	now     func() time.Time
 	timeout time.Duration
 	drivers map[notification.ChannelType]Driver
+	// order is the registration order, so the types a deployment offers are listed stably.
+	order []notification.ChannelType
 }
 
 var _ ports.NotificationSender = (*Sender)(nil)
@@ -60,6 +63,7 @@ func New(smtpConfig SMTPConfig, timeout time.Duration) *Sender {
 	s.drivers = map[notification.ChannelType]Driver{}
 	for _, driver := range builtinDrivers(s) {
 		s.drivers[driver.ChannelType()] = driver
+		s.order = append(s.order, driver.ChannelType())
 	}
 	return s
 }
@@ -78,7 +82,35 @@ func (s *Sender) Register(driver Driver) error {
 		return fmt.Errorf("notification driver for %q is already registered", channelType)
 	}
 	s.drivers[channelType] = driver
+	s.order = append(s.order, channelType)
 	return nil
+}
+
+// ChannelTypes lists every registered channel type in registration order. It is the source of the
+// channel types a deployment advertises, before the operator kill switch removes any.
+func (s *Sender) ChannelTypes() []notification.ChannelType {
+	out := make([]notification.ChannelType, len(s.order))
+	copy(out, s.order)
+	return out
+}
+
+// ResolveDisabled checks the operator kill switch (SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED) against
+// the registry. Every name must be a registered type, so a typo stops startup instead of leaving
+// the type the operator meant to disable switched on.
+func (s *Sender) ResolveDisabled(names []string) ([]notification.ChannelType, error) {
+	out := make([]notification.ChannelType, 0, len(names))
+	for _, name := range names {
+		channelType := notification.ChannelType(name)
+		if _, ok := s.drivers[channelType]; !ok {
+			known := make([]string, len(s.order))
+			for i, registered := range s.order {
+				known[i] = string(registered)
+			}
+			return nil, fmt.Errorf("SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED names unknown type %q (known: %s)", name, strings.Join(known, ", "))
+		}
+		out = append(out, channelType)
+	}
+	return out, nil
 }
 
 // Send delivers one attempt through the driver registered for the channel's type.

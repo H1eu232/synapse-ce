@@ -83,8 +83,11 @@ export function Alerting() {
       return
     }
     setDisabled(null)
-    const types = capabilities?.get('notifications.channel_types')?.values
-    setChannelTypes(types && types.length > 0 ? types : null)
+    // An enabled notifications.channel_types is authoritative: the server leaves out the types the
+    // operator switched off, and an empty list means every type is off. A server that does not
+    // report it gets every known type.
+    const types = capabilities?.get('notifications.channel_types')
+    setChannelTypes(types?.enabled ? (types.values ?? []) : null)
     try {
       setChannels(await api.listNotificationChannels())
       void loadCatalog()
@@ -136,6 +139,7 @@ export function Alerting() {
           {channels && (
             <ChannelList
               channels={channels}
+              types={channelTypes}
               canAdmin={canAdmin}
               refresh={load}
               notify={notify}
@@ -289,6 +293,21 @@ const CHANNEL_TYPES: { value: NotificationChannelType; label: string }[] = [
   { value: 'email', label: 'Email (SMTP)' },
 ]
 
+const PROVIDERS_DISABLED_SWITCH = 'SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED'
+
+/**
+ * Whether the operator switched this channel type off deployment-wide. The server leaves such types
+ * out of `notifications.channel_types`; `types` is null when it does not report the list, and then
+ * nothing is known to be off.
+ */
+function operatorDisabled(type: string, types: string[] | null): boolean {
+  return !!types && !types.includes(type)
+}
+
+function operatorDisabledHint(type: string): string {
+  return `The operator disabled ${type} channels for this deployment (${PROVIDERS_DISABLED_SWITCH}), so this channel delivers nothing until it is turned back on.`
+}
+
 function ChannelCreate({
   initial,
   canAdmin,
@@ -350,10 +369,25 @@ function ChannelCreate({
       setBusy(false)
     }
   }
+  if (!initial && typeOptions.length === 0)
+    return (
+      <Card title="Add notification channel">
+        <p className="text-sm text-tertiary">
+          The operator has disabled every notification channel type with{' '}
+          <code>{PROVIDERS_DISABLED_SWITCH}</code>, so no channel can be added.
+        </p>
+      </Card>
+    )
   return (
     <Card
       title={initial ? 'Edit notification channel' : 'Add notification channel'}
     >
+      {initial && operatorDisabled(initial.type, types) && (
+        <p className="mb-4 text-sm text-warning-primary">
+          {operatorDisabledHint(initial.type)} You can rename it or switch it
+          off, but not switch it on or change its destination.
+        </p>
+      )}
       {initial && (
         <p className="mb-4 text-sm text-tertiary">
           Leave URL and secret blank to keep them. To replace a webhook
@@ -526,12 +560,15 @@ function ChannelHealthHistory({ channelId }: { channelId: string }) {
 export function ChannelList({
   onEdit,
   channels,
+  types,
   canAdmin,
   refresh,
   notify,
 }: {
   onEdit: (channel: NotificationChannel) => void
   channels: NotificationChannel[]
+  /** Channel types the server advertises; null means it does not say. */
+  types: string[] | null
   canAdmin: boolean
   refresh: () => void
   notify: (message: string, tone?: 'success' | 'error' | 'info') => void
@@ -567,6 +604,9 @@ export function ChannelList({
       <ul className="divide-y divide-secondary">
         {channels.map((c) => {
           const paused = c.health?.state === 'paused'
+          // A channel of a type the operator switched off keeps its settings but delivers nothing,
+          // and the server refuses to test it or switch it on, so say why instead of failing.
+          const offByOperator = operatorDisabled(c.type, types)
           return (
           <li
             key={c.id}
@@ -591,8 +631,18 @@ export function ChannelList({
                   </Pill>
                 )}
                 <Pill>{c.type}</Pill>
+                {offByOperator && (
+                  <Pill className="text-warning-primary">
+                    Disabled by operator
+                  </Pill>
+                )}
               </div>
               <p className="truncate text-sm text-tertiary">{c.destination}</p>
+              {offByOperator && (
+                <p className="text-sm text-warning-primary">
+                  {operatorDisabledHint(c.type)}
+                </p>
+              )}
               <ChannelHealthLine channel={c} />
               {historyFor === c.id && (
                 <div className="mt-2">
@@ -622,8 +672,14 @@ export function ChannelList({
             </Button>
             <Button
               variant="secondary"
-              disabled={!canAdmin || paused}
-              title={paused ? 'Resume the channel before sending a test.' : undefined}
+              disabled={!canAdmin || paused || offByOperator}
+              title={
+                paused
+                  ? 'Resume the channel before sending a test.'
+                  : offByOperator
+                    ? 'The operator disabled this channel type for the deployment.'
+                    : undefined
+              }
               onClick={async () => {
                 await action(async () => {
                   const r = await api.testNotificationChannel(c.id)
@@ -637,7 +693,7 @@ export function ChannelList({
             </Button>
             <Button
               variant="secondary"
-              disabled={!canAdmin}
+              disabled={!canAdmin || (offByOperator && !c.enabled)}
               onClick={() => void action(() => toggle(c))}
             >
               {c.enabled ? 'Disable' : 'Enable'}

@@ -18,16 +18,17 @@ type MultiplexDecorator struct {
 	credentials ports.GitCredentialResolver
 	mu          sync.Mutex
 	byProvider  map[string]ports.PRDecorator
+	options     []Option
 }
 
 var _ ports.PRDecorator = (*MultiplexDecorator)(nil)
 
 // NewMultiplexDecorator builds a provider-multiplexing decorator over one credential resolver.
-func NewMultiplexDecorator(credentials ports.GitCredentialResolver) (*MultiplexDecorator, error) {
+func NewMultiplexDecorator(credentials ports.GitCredentialResolver, opts ...Option) (*MultiplexDecorator, error) {
 	if credentials == nil {
 		return nil, fmt.Errorf("%w: multiplex decoration needs a credential resolver", shared.ErrValidation)
 	}
-	return &MultiplexDecorator{credentials: credentials, byProvider: make(map[string]ports.PRDecorator)}, nil
+	return &MultiplexDecorator{credentials: credentials, byProvider: make(map[string]ports.PRDecorator), options: opts}, nil
 }
 
 // Decorate routes to the adapter for decoration.Provider. An empty or unsupported provider is a
@@ -48,7 +49,7 @@ func (m *MultiplexDecorator) decoratorFor(provider string) (ports.PRDecorator, e
 	if decorator, ok := m.byProvider[key]; ok {
 		return decorator, nil
 	}
-	decorator, err := ForProvider(provider, m.credentials)
+	decorator, err := ForProvider(provider, m.credentials, m.options...)
 	if err != nil {
 		return nil, err
 	}

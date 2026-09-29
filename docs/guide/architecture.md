@@ -30,7 +30,10 @@ lives in `internal/composition/*`, above the platform and infrastructure package
 PR/MR decoration follows the same boundary. `ports.PRDecorator` carries only a normalized forge
 target plus the quality-gate result, deterministic Markdown summary, and stored line annotations;
 credentials stay outside the render payload. Project-analysis completion and the CLI gate finalize
-path call the port fail-soft, and incomplete PR identity is skipped rather than guessed.
+path call the port fail-soft, and incomplete PR identity is skipped rather than guessed. The
+server also passes the forge host from the project's git source (never from the CI payload); the
+adapters resolve the credential for that host and, for GitHub Enterprise Server and self-managed
+GitLab, send it only to the connector's operator-allowlisted API base on the same host.
 Provider-specific network adapters and opt-in wiring are separate follow-up work, so this foundation
 does not contact a forge by itself.
 

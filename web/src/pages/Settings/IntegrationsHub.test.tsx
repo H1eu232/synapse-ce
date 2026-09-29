@@ -149,7 +149,7 @@ describe('IntegrationsHub', () => {
 
   it('renders source-control connectors with health, success and error unavailable', async () => {
     vi.mocked(api.listConnectors).mockResolvedValue([
-      { id: 'c1', name: 'Prod GitHub', provider: 'github', host: 'github.com', username: 'x-access-token', authKind: 'token', createdAt: '', updatedAt: '' },
+      { id: 'c1', name: 'Prod GitHub', provider: 'github', host: 'github.com', username: 'x-access-token', authKind: 'token', apiBase: '', createdAt: '', updatedAt: '' },
     ])
     renderHub()
     const card = within(await screen.findByRole('listitem', { name: 'Prod GitHub' }))

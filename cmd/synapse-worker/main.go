@@ -159,6 +159,21 @@ func main() {
 		log.Error("vulnerability maintenance configuration invalid", "err", err)
 		os.Exit(1)
 	}
+	if err := cfg.ValidateNotificationProvidersDisabled(); err != nil {
+		log.Error("notification kill switch invalid", "err", err)
+		os.Exit(1)
+	}
+	// The worker reads the same kill switch as the API and checks it against the same driver
+	// registry, so both refuse a typo and agree on which channel types are off.
+	notificationSender := notificationsender.New(notificationsender.SMTPConfig{
+		Host: cfg.NotificationSMTPHost, Port: cfg.NotificationSMTPPort, From: cfg.NotificationSMTPFrom,
+		Username: cfg.NotificationSMTPUsername, Password: cfg.NotificationSMTPPassword, RequireTLS: cfg.NotificationSMTPRequireTLS,
+	}, 10*time.Second)
+	disabledNotificationTypes, err := notificationSender.ResolveDisabled(cfg.NotificationProvidersDisabled)
+	if err != nil {
+		log.Error("notification kill switch invalid", "err", err)
+		os.Exit(1)
+	}
 	if err := cfg.ValidateWorkerConcurrency(); err != nil {
 		log.Error("worker concurrency invalid", "err", err)
 		os.Exit(1)
@@ -677,14 +692,15 @@ func main() {
 			log.Error("SYNAPSE_NOTIFICATIONS_ENABLED requires SYNAPSE_VAULT_MASTER_KEY shared by API and worker")
 			os.Exit(1)
 		}
-		sender := notificationsender.New(notificationsender.SMTPConfig{
-			Host: cfg.NotificationSMTPHost, Port: cfg.NotificationSMTPPort, From: cfg.NotificationSMTPFrom,
-			Username: cfg.NotificationSMTPUsername, Password: cfg.NotificationSMTPPassword, RequireTLS: cfg.NotificationSMTPRequireTLS,
-		}, 10*time.Second)
+		sender := notificationSender
 		notificationService, notificationErr := notificationuc.NewService(postgres.NewNotificationRepository(pool), vaultCipher, sender, auditLog, clock, ids)
 		if notificationErr != nil {
 			log.Error("notification service init failed", "err", notificationErr)
 			os.Exit(1)
+		}
+		notificationService.SetDisabledChannelTypes(disabledNotificationTypes)
+		if len(disabledNotificationTypes) > 0 {
+			log.Warn("notification channel types disabled by the operator; their deliveries are cancelled with provider_disabled", "types", cfg.NotificationProvidersDisabled)
 		}
 		// Channel health (#1464): the attempt result, the failure count, an automatic pause and its
 		// admin notice commit in one tenant transaction.
