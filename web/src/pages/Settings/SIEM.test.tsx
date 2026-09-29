@@ -9,6 +9,7 @@ vi.mock('../../lib/api', () => ({
     listSIEMSinks: vi.fn(),
     pauseSIEMSink: vi.fn(),
     resumeSIEMSink: vi.fn(),
+    createSIEMSink: vi.fn(),
   },
   ApiError: class ApiError extends Error {
     status: number
@@ -44,10 +45,12 @@ const blockedSink: SIEMSink = {
 
 describe('SIEM settings', () => {
   beforeEach(() => {
+	Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
     vi.mocked(api.me).mockReset()
     vi.mocked(api.listSIEMSinks).mockReset()
     vi.mocked(api.pauseSIEMSink).mockReset()
     vi.mocked(api.resumeSIEMSink).mockReset()
+    vi.mocked(api.createSIEMSink).mockReset()
   })
 
   it('shows a permission state for a reader', async () => {
@@ -64,6 +67,18 @@ describe('SIEM settings', () => {
     expect(screen.getByLabelText('Name')).toBeInTheDocument()
     expect(screen.getByText(/not currently available/i)).toBeInTheDocument()
     expect(screen.queryByLabelText('Data class')).not.toBeInTheDocument()
+  })
+
+  it('shows the RFC 5424 TLS fields when syslog is selected', async () => {
+    vi.mocked(api.me).mockResolvedValue({ role: 'admin' } as never)
+    vi.mocked(api.listSIEMSinks).mockResolvedValue([])
+    render(<SIEM />)
+    const provider = await screen.findByLabelText('Provider')
+    fireEvent.click(provider)
+    fireEvent.click(await screen.findByRole('option', { name: 'Syslog TLS (RFC 5424)' }))
+    expect(screen.getByLabelText('Syslog TLS endpoint')).toHaveAttribute('placeholder', 'tls://syslog.example:6514')
+    expect(screen.getByLabelText('Application name')).toHaveAttribute('placeholder', 'synapse')
+    expect(screen.getByLabelText('TLS credential JSON')).toBeInTheDocument()
   })
 
   it('resumes a blocked sink that is not paused', async () => {

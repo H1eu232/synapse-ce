@@ -6369,11 +6369,11 @@ components:
         id: {type: string}
         tenant_id: {type: string}
         name: {type: string}
-        provider: {type: string, enum: [splunk_hec, elasticsearch]}
+        provider: {type: string, enum: [splunk_hec, elasticsearch, syslog_tls]}
         origin: {type: string}
         target: {type: string}
         data_class: {type: string, enum: [signal, summary, detail]}
-        ack_mode: {type: string, enum: [hec_acceptance, indexer_ack, bulk_item]}
+        ack_mode: {type: string, enum: [hec_acceptance, indexer_ack, bulk_item, transport_write]}
         indexer_ack_supported: {type: boolean}
         paused: {type: boolean}
         enabled: {type: boolean}
@@ -6389,7 +6389,7 @@ components:
       required: [name, provider, origin, secret]
       properties:
         name: {type: string}
-        provider: {type: string, enum: [splunk_hec, elasticsearch]}
+        provider: {type: string, enum: [splunk_hec, elasticsearch, syslog_tls]}
         origin: {type: string}
         target: {type: string}
         data_class: {type: string, enum: [signal, summary, detail]}
