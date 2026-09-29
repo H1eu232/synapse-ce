@@ -272,6 +272,22 @@ type Page struct {
 	Next  string     `json:"next,omitempty"`
 }
 
+// SourceFailure is a captured event that could not be projected. It contains
+// source identity and a fixed reason code, never the captured payload.
+type SourceFailure struct {
+	SourceKind   string    `json:"source_kind"`
+	SourceID     string    `json:"source_id"`
+	EventType    EventType `json:"event_type"`
+	OccurredAt   time.Time `json:"occurred_at"`
+	ProcessedAt  time.Time `json:"processed_at"`
+	FailedReason string    `json:"failed_reason"`
+}
+
+type SourceFailurePage struct {
+	Items      []SourceFailure `json:"items"`
+	NextOffset *int            `json:"next_offset,omitempty"`
+}
+
 func uniqueStrings(in []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(in))

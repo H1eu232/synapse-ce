@@ -583,6 +583,55 @@ func (r *NotificationRepository) ListDeliveries(ctx context.Context, f ports.Not
 	return out, err
 }
 
+func (r *NotificationRepository) ListSourceFailures(ctx context.Context, f ports.NotificationSourceFailureFilter) (notification.SourceFailurePage, error) {
+	if f.Limit <= 0 {
+		f.Limit = 50
+	}
+	if f.Limit > 200 {
+		f.Limit = 200
+	}
+	var out notification.SourceFailurePage
+	err := WithTenant(ctx, r.pool, f.TenantID.String(), func(tx pgx.Tx) error {
+		args := []any{f.TenantID}
+		where := ` WHERE tenant_id=$1 AND failed_reason<>''`
+		if f.EventType != "" {
+			args = append(args, f.EventType)
+			where += fmt.Sprintf(" AND event_type=$%d", len(args))
+		}
+		if !f.From.IsZero() {
+			args = append(args, f.From)
+			where += fmt.Sprintf(" AND processed_at >= $%d", len(args))
+		}
+		if !f.Until.IsZero() {
+			args = append(args, f.Until)
+			where += fmt.Sprintf(" AND processed_at <= $%d", len(args))
+		}
+		args = append(args, f.Limit+1, f.Offset)
+		rows, err := tx.Query(ctx, `SELECT source_kind,source_id,event_type,occurred_at,processed_at,failed_reason FROM notification_source_records`+where+fmt.Sprintf(` ORDER BY processed_at DESC,source_kind,source_id LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var item notification.SourceFailure
+			if err := rows.Scan(&item.SourceKind, &item.SourceID, &item.EventType, &item.OccurredAt, &item.ProcessedAt, &item.FailedReason); err != nil {
+				return err
+			}
+			out.Items = append(out.Items, item)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(out.Items) > f.Limit {
+			out.Items = out.Items[:f.Limit]
+			next := f.Offset + f.Limit
+			out.NextOffset = &next
+		}
+		return nil
+	})
+	return out, err
+}
+
 const deliverySelect = `SELECT tenant_id,id,event_id,channel_id,channel_type,recipient,matched_rules,state,attempts,last_error,next_attempt_at,delivered_at,created_at,updated_at FROM notification_deliveries`
 
 func scanDelivery(row scanner, d *notification.Delivery) error {

@@ -359,6 +359,14 @@ func (s *Service) ListDeliveries(ctx context.Context, f ports.NotificationDelive
 	f.TenantID = tenant
 	return s.repo.ListDeliveries(ctx, f)
 }
+func (s *Service) ListSourceFailures(ctx context.Context, f ports.NotificationSourceFailureFilter) (domain.SourceFailurePage, error) {
+	tenant, err := tenantFrom(ctx)
+	if err != nil {
+		return domain.SourceFailurePage{}, err
+	}
+	f.TenantID = tenant
+	return s.repo.ListSourceFailures(ctx, f)
+}
 func (s *Service) ListAttempts(ctx context.Context, did shared.ID) ([]domain.Attempt, error) {
 	tenant, err := tenantFrom(ctx)
 	if err != nil {

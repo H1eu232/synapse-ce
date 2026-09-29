@@ -516,6 +516,7 @@ func (rt *Router) routes() *http.ServeMux {
 		mux.HandleFunc("PATCH /api/v1/notifications/rules/{nid}", rt.authz(userdom.PermAdminister, rt.updateNotificationRule))
 		mux.HandleFunc("DELETE /api/v1/notifications/rules/{nid}", rt.authz(userdom.PermAdminister, rt.deleteNotificationRule))
 		mux.HandleFunc("GET /api/v1/notifications/deliveries", rt.authz(userdom.PermAdminister, rt.listNotificationDeliveries))
+		mux.HandleFunc("GET /api/v1/notifications/quarantined-sources", rt.authz(userdom.PermAdminister, rt.listNotificationSourceFailures))
 		mux.HandleFunc("GET /api/v1/notifications/deliveries/{nid}", rt.authz(userdom.PermAdminister, rt.getNotificationDelivery))
 		mux.HandleFunc("GET /api/v1/notifications/deliveries/{nid}/attempts", rt.authz(userdom.PermAdminister, rt.listNotificationAttempts))
 	}

@@ -27,6 +27,15 @@ type NotificationDeliveryFilter struct {
 	Limit     int
 }
 
+type NotificationSourceFailureFilter struct {
+	TenantID  shared.ID
+	EventType notification.EventType
+	From      time.Time
+	Until     time.Time
+	Limit     int
+	Offset    int
+}
+
 type NotificationWork struct {
 	Delivery notification.Delivery
 	Event    notification.Event
@@ -84,6 +93,7 @@ type NotificationRepository interface {
 	PublishToChannel(context.Context, notification.Event, shared.ID) (shared.ID, error)
 	GetDelivery(context.Context, shared.ID, shared.ID) (notification.Delivery, error)
 	ListDeliveries(context.Context, NotificationDeliveryFilter) (notification.Page, error)
+	ListSourceFailures(context.Context, NotificationSourceFailureFilter) (notification.SourceFailurePage, error)
 	ListAttempts(context.Context, shared.ID, shared.ID) ([]notification.Attempt, error)
 	LoadWork(context.Context, shared.ID, shared.ID) (NotificationWork, error)
 	DeliveryStillRelevant(context.Context, NotificationWork) (bool, error)

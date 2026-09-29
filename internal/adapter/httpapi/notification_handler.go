@@ -303,6 +303,53 @@ func (rt *Router) listNotificationDeliveries(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, page)
 }
+func (rt *Router) listNotificationSourceFailures(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := ports.NotificationSourceFailureFilter{EventType: domain.EventType(q.Get("event_type"))}
+	if f.EventType != "" && !f.EventType.Valid() {
+		writeError(w, rt.log, fmt.Errorf("%w: invalid event type", shared.ErrValidation))
+		return
+	}
+	for key, target := range map[string]*time.Time{"from": &f.From, "to": &f.Until} {
+		if raw := q.Get(key); raw != "" {
+			at, err := time.Parse(time.RFC3339Nano, raw)
+			if err != nil {
+				writeError(w, rt.log, fmt.Errorf("%w: invalid %s timestamp", shared.ErrValidation, key))
+				return
+			}
+			*target = at
+		}
+	}
+	if !f.From.IsZero() && !f.Until.IsZero() && f.From.After(f.Until) {
+		writeError(w, rt.log, fmt.Errorf("%w: from must precede to", shared.ErrValidation))
+		return
+	}
+	if raw := q.Get("limit"); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 200 {
+			writeError(w, rt.log, fmt.Errorf("%w: source limit must be between 1 and 200", shared.ErrValidation))
+			return
+		}
+		f.Limit = limit
+	}
+	if raw := q.Get("offset"); raw != "" {
+		offset, err := strconv.Atoi(raw)
+		if err != nil || offset < 0 {
+			writeError(w, rt.log, fmt.Errorf("%w: source offset must be nonnegative", shared.ErrValidation))
+			return
+		}
+		f.Offset = offset
+	}
+	page, err := rt.notifications.ListSourceFailures(r.Context(), f)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	if page.Items == nil {
+		page.Items = []domain.SourceFailure{}
+	}
+	writeJSON(w, http.StatusOK, page)
+}
 func (rt *Router) getNotificationDelivery(w http.ResponseWriter, r *http.Request) {
 	id, err := notificationID(r)
 	if err != nil {

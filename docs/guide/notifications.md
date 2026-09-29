@@ -206,6 +206,12 @@ handoff uses the same atomic boundary. Multiple matching rules collapse to one
 delivery per channel (per recipient for email), with matched rule revisions retained.
 No-match events are recorded and are not replayed when a rule is added later.
 
+If a captured source fails event validation, the worker quarantines that source
+and continues with the next one in the same poll. Delivery history shows its
+event type, source identity and a fixed reason code; captured payloads are never
+returned. An oversized event reports `event_data_too_large`; other validation
+failures report `invalid_event`. Quarantined sources are not retried automatically.
+
 SLA and fleet relevance is checked again immediately before sending. Resolving an
 SLA, changing its assessment/deadline, entering an exception, passing the deadline,
 or receiving a new heartbeat cancels the old pending reminder.
