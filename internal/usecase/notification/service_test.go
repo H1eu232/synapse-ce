@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,11 @@ type fakeRepo struct {
 	publishedChannel shared.ID
 	cancelReason     string
 	outcomes         []ports.NotificationChannelOutcome
+	delivery         domain.Delivery
+	redriveChannel   domain.Channel
+	redriveErr       error
+	redriveFence     int64
+	redriveCalls     int
 }
 
 func (f *fakeRepo) LoadWork(context.Context, shared.ID, shared.ID) (ports.NotificationWork, error) {
@@ -44,7 +50,18 @@ func (f *fakeRepo) CancelDelivery(_ context.Context, _, _ shared.ID, _ string, _
 	f.cancelReason = reason
 	return nil
 }
-func (f *fakeRepo) DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) (bool, error) {
+func (f *fakeRepo) GetDelivery(context.Context, shared.ID, shared.ID) (domain.Delivery, error) {
+	return f.delivery, nil
+}
+func (f *fakeRepo) RedriveDelivery(_ context.Context, _, _ shared.ID, fence int64) (domain.Delivery, domain.Channel, error) {
+	f.redriveFence = fence
+	f.redriveCalls++
+	if f.redriveErr != nil {
+		return domain.Delivery{}, domain.Channel{}, f.redriveErr
+	}
+	return f.delivery, f.redriveChannel, nil
+}
+func (f *fakeRepo) DeadLetterDelivery(context.Context, shared.ID, shared.ID, int64, string) (bool, error) {
 	return false, nil
 }
 
@@ -79,6 +96,105 @@ func (f *fakeIDs) NewID() shared.ID { f.n++; return shared.ID("id" + string(rune
 type fakeAudit struct{}
 
 func (fakeAudit) Record(context.Context, ports.AuditEntry) error { return nil }
+
+type capturingAudit struct{ entries []ports.AuditEntry }
+
+func (a *capturingAudit) Record(_ context.Context, entry ports.AuditEntry) error {
+	a.entries = append(a.entries, entry)
+	return nil
+}
+
+func TestRedriveDeliveryAuditsSafeReasonAndDestination(t *testing.T) {
+	ctx := shared.WithTenant(context.Background(), "tenant")
+	repo := &fakeRepo{
+		delivery:       domain.Delivery{ID: "delivery", ChannelType: domain.ChannelWebhook, State: domain.DeliveryDead, LastError: "http_503"},
+		redriveChannel: domain.Channel{ID: "channel", Type: domain.ChannelWebhook, Destination: "https://hooks.example.test/services/T1/B2/secret?token=private"},
+	}
+	repo.delivery.RedriveFence = 7
+	audit := &capturingAudit{}
+	svc, err := NewService(repo, fakeProtector{}, nil, audit, fakeClock{time.Unix(1700000000, 0).UTC()}, &fakeIDs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.RedriveDelivery(ctx, " administrator ", "delivery", RedriveInput{Reason: "Fixed password=hunter2; retry", ExpectedFence: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "delivery" || repo.redriveCalls != 1 || repo.redriveFence != 7 {
+		t.Fatalf("result=%+v calls=%d fence=%d", got, repo.redriveCalls, repo.redriveFence)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("audit entries=%d", len(audit.entries))
+	}
+	entry := audit.entries[0]
+	if entry.Action != "notification.delivery_redriven" || entry.Actor != "administrator" || entry.Target != "delivery" {
+		t.Fatalf("audit identity=%+v", entry)
+	}
+	if entry.Metadata["destination_scheme"] != "https" || entry.Metadata["destination_host"] != "hooks.example.test" {
+		t.Fatalf("unsafe destination metadata: %+v", entry.Metadata)
+	}
+	if entry.Metadata["previous_error_code"] != "http_503" {
+		t.Fatalf("previous error code missing from audit metadata: %+v", entry.Metadata)
+	}
+	if strings.Contains(entry.Metadata["reason"], "hunter2") || strings.Contains(entry.Metadata["destination_host"], "secret") {
+		t.Fatalf("audit metadata retained sensitive text: %+v", entry.Metadata)
+	}
+}
+
+func TestRedriveEmailAuditKeepsOnlyRecipientDomains(t *testing.T) {
+	ctx := shared.WithTenant(context.Background(), "tenant")
+	repo := &fakeRepo{
+		delivery: domain.Delivery{ID: "delivery", ChannelType: domain.ChannelEmail, State: domain.DeliveryDead, RedriveFence: 2},
+		redriveChannel: domain.Channel{
+			ID: "channel", Type: domain.ChannelEmail, Destination: "alice@example.test",
+			Recipients: []string{"alice@example.test", "bob@corp.test"},
+		},
+	}
+	audit := &capturingAudit{}
+	svc, err := NewService(repo, fakeProtector{}, nil, audit, fakeClock{time.Unix(1700000000, 0).UTC()}, &fakeIDs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RedriveDelivery(ctx, "admin", "delivery", RedriveInput{Reason: "retry", ExpectedFence: 2}); err != nil {
+		t.Fatal(err)
+	}
+	host := audit.entries[0].Metadata["destination_host"]
+	if host != "corp.test,example.test" || strings.Contains(host, "alice") || strings.Contains(host, "bob") {
+		t.Fatalf("email audit destination=%q", host)
+	}
+}
+
+func TestRedriveDeliveryRejectsInvalidAndDisabledRequestsBeforeRepository(t *testing.T) {
+	ctx := shared.WithTenant(context.Background(), "tenant")
+	repo := &fakeRepo{delivery: domain.Delivery{ID: "delivery", ChannelType: domain.ChannelWebhook, State: domain.DeliveryDead}}
+	svc, err := NewService(repo, fakeProtector{}, nil, fakeAudit{}, fakeClock{time.Unix(1700000000, 0).UTC()}, &fakeIDs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		actor string
+		input RedriveInput
+	}{
+		{name: "blank actor", actor: " ", input: RedriveInput{Reason: "retry", ExpectedFence: 1}},
+		{name: "blank reason", actor: "admin", input: RedriveInput{Reason: "  ", ExpectedFence: 1}},
+		{name: "missing fence", actor: "admin", input: RedriveInput{Reason: "retry"}},
+		{name: "long reason", actor: "admin", input: RedriveInput{Reason: strings.Repeat("x", 501), ExpectedFence: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := svc.RedriveDelivery(ctx, tc.actor, "delivery", tc.input); !errors.Is(err, shared.ErrValidation) {
+				t.Fatalf("error=%v, want validation", err)
+			}
+		})
+	}
+	svc.SetDisabledChannelTypes([]domain.ChannelType{domain.ChannelWebhook})
+	if _, err := svc.RedriveDelivery(ctx, "admin", "delivery", RedriveInput{Reason: "retry", ExpectedFence: 1}); !errors.Is(err, shared.ErrValidation) {
+		t.Fatalf("disabled provider error=%v", err)
+	}
+	if repo.redriveCalls != 0 {
+		t.Fatalf("invalid request reached repository %d times", repo.redriveCalls)
+	}
+}
 
 func (f *fakeRepo) ListChannels(_ context.Context, tenant shared.ID) ([]domain.Channel, error) {
 	return []domain.Channel{{TenantID: tenant, ID: "channel", Name: "Channel"}}, nil

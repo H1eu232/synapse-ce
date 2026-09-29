@@ -110,7 +110,7 @@ func TestNotificationPostgresRecoveryAndAuditOutage(t *testing.T) {
 	}
 	// An old hook cannot cancel pending work that the queue has not dead-lettered.
 	pendingID := publish("pending")
-	if changed, e := repo.DeadLetterDelivery(ctx, tenant, pendingID, "worker_dead_letter"); e != nil || changed {
+	if changed, e := repo.DeadLetterDelivery(ctx, tenant, pendingID, 1, "worker_dead_letter"); e != nil || changed {
 		t.Fatalf("unfailed queue job was dead-lettered: changed=%t err=%v", changed, e)
 	}
 	delivery, err = repo.GetDelivery(ctx, tenant, pendingID)

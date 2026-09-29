@@ -63,7 +63,7 @@ func (r *metricsDeliveryRepo) GetDelivery(context.Context, shared.ID, shared.ID)
 	defer r.mu.Unlock()
 	return r.work.Delivery, nil
 }
-func (r *metricsDeliveryRepo) DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) (bool, error) {
+func (r *metricsDeliveryRepo) DeadLetterDelivery(context.Context, shared.ID, shared.ID, int64, string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.noopDead || r.work.Delivery.State == domain.DeliveryDead {

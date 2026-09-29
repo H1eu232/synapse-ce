@@ -45,7 +45,7 @@ const channel: NotificationChannel = {
 }
 
 const delivery = (over: Partial<NotificationDelivery>): NotificationDelivery => ({
-  id: 'delivery', event_id: 'event', channel_id: channel.id, channel_type: 'slack', matched_rule_ids: [],
+  id: 'delivery', event_id: 'event', channel_id: channel.id, channel_type: 'slack', redrive_fence: 0, matched_rule_ids: [],
   state: 'delivered', attempts: 1, created_at: '2026-09-02T00:00:00Z', updated_at: '2026-09-02T00:00:00Z', ...over,
 })
 

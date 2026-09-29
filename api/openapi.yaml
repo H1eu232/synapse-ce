@@ -3184,6 +3184,37 @@ paths:
       responses:
         '200': {description: Attempts, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NotificationAttempt'}}}}}}}
 
+  /api/v1/notifications/deliveries/{nid}/redrive:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [notifications]
+      operationId: redriveNotificationDelivery
+      summary: Redrive one dead-lettered notification delivery
+      description: >
+        Requires administer permission. Requeues the existing delivery and preserves
+        its attempt history. The destination configuration and queue fence must still
+        match the values returned for the delivery. Delivery is asynchronous and can
+        duplicate a message if a previous receiver accepted it before its acknowledgement
+        was lost.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason, expected_fence]
+              properties:
+                reason: {type: string, minLength: 1, maxLength: 500, description: Required operator reason after trimming.}
+                expected_fence: {type: integer, format: int64, minimum: 1, description: Current redrive_fence from the delivery being confirmed.}
+      responses:
+        '202': {description: Accepted for asynchronous delivery, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationDelivery'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Delivery state, queue fence or channel configuration changed}
+
   /api/v1/connectors:
     get:
       tags: [settings]
@@ -12613,12 +12644,13 @@ components:
 
     NotificationDelivery:
       type: object
-      required: [id, event_id, channel_id, channel_type, matched_rule_ids, state, attempts, created_at, updated_at]
+      required: [id, event_id, channel_id, channel_type, redrive_fence, matched_rule_ids, state, attempts, created_at, updated_at]
       properties:
         id: {type: string}
         event_id: {type: string}
         channel_id: {type: string}
         channel_type: {type: string, enum: [webhook, slack, email]}
+        redrive_fence: {type: integer, format: int64, minimum: 0, description: Current durable queue claim fence; submit it as expected_fence to prevent a stale redrive.}
         recipient: {type: string}
         matched_rule_ids: {type: array, items: {type: string}}
         state: {$ref: '#/components/schemas/NotificationDeliveryState'}

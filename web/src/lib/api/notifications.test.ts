@@ -105,4 +105,15 @@ describe('notification API', () => {
       expect.anything(),
     )
   })
+  it('redrives one delivery with its reason and observed queue fence', async () => {
+    respond({ id: 'd/1', state: 'pending', redrive_fence: 9 })
+    await notificationsApi.redriveNotificationDelivery('d/1', 'Corrected endpoint', 7)
+    const [url, options] = vi.mocked(fetch).mock.calls[0]
+    expect(String(url)).toContain('/api/v1/notifications/deliveries/d%2F1/redrive')
+    expect(options).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(String(options?.body))).toEqual({
+      reason: 'Corrected endpoint',
+      expected_fence: 7,
+    })
+  })
 })

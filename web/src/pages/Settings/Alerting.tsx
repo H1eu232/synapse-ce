@@ -23,6 +23,8 @@ import {
   Spinner,
 } from '../../components/ui'
 import { useToast } from '../../components/synapse/Toast'
+import { ConfirmDialog } from '../../components/synapse/ConfirmDialog'
+import { TextAreaBase } from '@/components/base/textarea/textarea'
 import { capabilityHint, disabledCapability, loadCapabilities, useCapabilities } from '../../lib/capabilities'
 import type { Capability } from '../../lib/types'
 import { useFetch } from '../../hooks'
@@ -41,6 +43,19 @@ const stateTone: Record<string, string> = {
   retrying: 'text-warning-primary',
   dead_letter: 'text-error-primary',
   cancelled: 'text-tertiary',
+}
+
+function redriveDestination(channel?: NotificationChannel): string | undefined {
+  if (!channel) return undefined
+  if (channel.type !== 'email') return channel.destination
+  const domains = Array.from(
+    new Set(
+      (channel.recipients ?? [])
+        .map((recipient) => recipient.trim().toLowerCase().split('@').pop())
+        .filter((domain): domain is string => Boolean(domain)),
+    ),
+  ).sort()
+  return domains.length > 0 ? domains.join(', ') : 'Email recipients'
 }
 
 export function Alerting() {
@@ -1186,6 +1201,7 @@ function DeliveryHistory({
   channels: NotificationChannel[]
   eventTypes: NotificationEventSpec[]
 }) {
+  const { notify } = useToast()
   const historyRequest = useRef(0)
   const attemptRequest = useRef(0)
   const [items, setItems] = useState<NotificationDelivery[]>([])
@@ -1199,6 +1215,10 @@ function DeliveryHistory({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<NotificationDelivery>()
+  const [redriveTarget, setRedriveTarget] = useState<NotificationDelivery>()
+  const [redriveReason, setRedriveReason] = useState('')
+  const [redriveBusy, setRedriveBusy] = useState(false)
+  const [redriveError, setRedriveError] = useState<string | null>(null)
   const [attempts, setAttempts] = useState<
     import('../../lib/api').NotificationAttempt[]
   >([])
@@ -1254,6 +1274,39 @@ function DeliveryHistory({
       if (request === attemptRequest.current) setAttemptsBusy(false)
     }
   }
+  async function confirmRedrive() {
+    if (!redriveTarget) return
+    const reason = redriveReason.trim()
+    if (!reason || reason.length > 500) {
+      setRedriveError('Enter a reason of 1 to 500 characters.')
+      return
+    }
+    setRedriveBusy(true)
+    setRedriveError(null)
+    try {
+      const updated = await api.redriveNotificationDelivery(
+        redriveTarget.id,
+        reason,
+        redriveTarget.redrive_fence,
+      )
+      setRedriveTarget(undefined)
+      setRedriveReason('')
+      await load()
+      if (selected?.id === updated.id) await inspect(updated)
+      notify('Redrive queued. Delivery will run asynchronously.', 'success')
+    } catch (e) {
+      setRedriveError(
+        e instanceof Error ? e.message : 'Could not queue this delivery for redrive',
+      )
+      if (e instanceof ApiError && e.status === 409) void load()
+    } finally {
+      setRedriveBusy(false)
+    }
+  }
+  const redriveChannel = redriveTarget
+    ? channels.find((channel) => channel.id === redriveTarget.channel_id)
+    : undefined
+  const safeRedriveDestination = redriveDestination(redriveChannel)
   return (
     <Card
       title="Delivery history"
@@ -1360,6 +1413,18 @@ function DeliveryHistory({
                     )}
                   </td>
                   <td className="p-3">
+                    {d.state === 'dead_letter' && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          setRedriveTarget(d)
+                          setRedriveReason('')
+                          setRedriveError(null)
+                        }}
+                      >
+                        Redrive
+                      </Button>
+                    )}
                     <Button variant="secondary" onClick={() => void inspect(d)}>
                       View {d.attempts} attempts
                     </Button>
@@ -1408,6 +1473,55 @@ function DeliveryHistory({
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={redriveTarget !== undefined}
+        title="Redrive notification delivery?"
+        confirmLabel="Queue redrive"
+        tone="brand"
+        busy={redriveBusy}
+        error={redriveError}
+        onCancel={() => {
+          if (redriveBusy) return
+          setRedriveTarget(undefined)
+          setRedriveError(null)
+        }}
+        onConfirm={() => void confirmRedrive()}
+        description={
+          <div className="space-y-3">
+            <p>
+              {redriveChannel?.name ??
+                redriveTarget?.channel_type}{' '}
+              · {redriveTarget?.channel_type}
+              {safeRedriveDestination && (
+                <span>
+                  {' '}· destination: {safeRedriveDestination}
+                </span>
+              )}
+            </p>
+            <p>
+              This retries the same delivery to its original channel configuration
+              and keeps the existing attempt history. If the receiver accepted an
+              earlier request before its acknowledgement was lost, this may send
+              a duplicate.
+            </p>
+            <label className="block space-y-1.5 text-sm text-secondary">
+              <span>Reason for redrive</span>
+              <TextAreaBase
+                aria-label="Reason for redrive"
+                aria-required="true"
+                maxLength={500}
+                rows={3}
+                value={redriveReason}
+                onChange={(event) => setRedriveReason(event.currentTarget.value)}
+                placeholder="Describe what changed before retrying"
+              />
+              <span className="block text-xs text-tertiary">
+                {redriveReason.trim().length}/500 characters
+              </span>
+            </label>
+          </div>
+        }
+      />
     </Card>
   )
 }

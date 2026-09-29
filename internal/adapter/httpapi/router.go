@@ -519,6 +519,7 @@ func (rt *Router) routes() *http.ServeMux {
 		mux.HandleFunc("GET /api/v1/notifications/quarantined-sources", rt.authz(userdom.PermAdminister, rt.listNotificationSourceFailures))
 		mux.HandleFunc("GET /api/v1/notifications/deliveries/{nid}", rt.authz(userdom.PermAdminister, rt.getNotificationDelivery))
 		mux.HandleFunc("GET /api/v1/notifications/deliveries/{nid}/attempts", rt.authz(userdom.PermAdminister, rt.listNotificationAttempts))
+		mux.HandleFunc("POST /api/v1/notifications/deliveries/{nid}/redrive", rt.authz(userdom.PermAdminister, rt.redriveNotificationDelivery))
 	}
 	if rt.siem != nil {
 		// Tenant SIEM configuration is admin-only until integration_admin exists.

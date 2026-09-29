@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -231,12 +232,225 @@ func TestNotificationPostgresDurability(t *testing.T) {
 			testEvents = append(testEvents, e)
 		}
 		return rows.Err()
-	}); err != nil { t.Fatal(err) }
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if len(testEvents) != 10 {
 		t.Fatalf("operator test events = %d; want 10", len(testEvents))
 	}
 	for _, e := range testEvents {
 		assertPublishedEventSchema(t, e)
+	}
+}
+
+func TestNotificationPostgresRedriveIsFencedAndPreservesHistory(t *testing.T) {
+	pool := notificationTestPool(t)
+	ctx := shared.WithTenant(context.Background(), "notify-redrive")
+	tenant := shared.ID("notify-redrive")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := pool.Exec(ctx, "INSERT INTO tenants(id,name) VALUES($1,'Redrive')", tenant); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewNotificationRepository(pool)
+	clock := &notificationTestClock{at: now}
+	ids := &notificationTestIDs{}
+	sender := &notificationTestSender{result: ports.NotificationSendResult{StatusCode: 204}}
+	cipher, _ := vault.NewCipher([]byte(strings.Repeat("r", 32)))
+	svc, err := notificationuc.NewService(repo, cipher, sender, NewAuditLog(pool), clock, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetTransactionRunner(NewTenantTransactionRunner(pool))
+	channel, err := svc.CreateChannel(ctx, "admin", notificationuc.ChannelInput{
+		Name: "Stable hook", Type: notification.ChannelWebhook, Enabled: true,
+		URL: "https://hooks.example.test/services/T1/B2", Secret: "0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	did, err := svc.TestChannel(ctx, "admin", channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := NewJobQueue(pool, ids)
+	job, err := queue.Claim(ctx, time.Minute, notificationuc.JobKind)
+	if err != nil || job == nil || job.ID != "notification-"+did.String() {
+		t.Fatalf("first claim=%+v err=%v", job, err)
+	}
+	firstAttempt, err := repo.BeginAttempt(ctx, tenant, did, job.ID, job.Fence, "redrive-attempt-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := now.Add(time.Second)
+	if err := repo.FinishAttempt(ctx, tenant, did, job.ID, job.Fence, firstAttempt.ID, now, "retrying", 503, "http_503", &next); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Deadletter(ctx, job.ID, job.Fence); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.OnDeadLetter(ctx, *job, errors.New("retry budget exhausted")); err != nil {
+		t.Fatal(err)
+	}
+	dead, err := repo.GetDelivery(ctx, tenant, did)
+	if err != nil || dead.State != notification.DeliveryDead || dead.RedriveFence != job.Fence || dead.Attempts != 1 {
+		t.Fatalf("dead delivery=%+v err=%v", dead, err)
+	}
+	channel, err = svc.UpdateChannel(ctx, "admin", channel.ID, notificationuc.ChannelInput{
+		Name: "Renamed hook", Type: channel.Type, Enabled: true, Revision: channel.Revision,
+	})
+	if err != nil {
+		t.Fatalf("metadata-only rename: %v", err)
+	}
+
+	// Two confirmations with the same observation race at the database boundary;
+	// exactly one can advance the existing job and the winner must audit atomically.
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := svc.RedriveDelivery(ctx, "admin", did, notificationuc.RedriveInput{Reason: "Receiver recovered", ExpectedFence: dead.RedriveFence})
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	successes, conflicts := 0, 0
+	for callErr := range results {
+		switch {
+		case callErr == nil:
+			successes++
+		case errors.Is(callErr, shared.ErrConflict):
+			conflicts++
+		default:
+			t.Fatalf("redrive race error=%v", callErr)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("redrive race successes=%d conflicts=%d", successes, conflicts)
+	}
+	pending, err := repo.GetDelivery(ctx, tenant, did)
+	if err != nil || pending.State != notification.DeliveryPending || pending.Attempts != 1 || pending.RedriveFence != dead.RedriveFence+1 || pending.LastError != "" || pending.NextAttemptAt != nil || pending.DeliveredAt != nil {
+		t.Fatalf("redriven delivery=%+v err=%v", pending, err)
+	}
+	if attempts, err := repo.ListAttempts(ctx, tenant, did); err != nil || len(attempts) != 1 || attempts[0].Outcome != "retrying" {
+		t.Fatalf("attempt history=%+v err=%v", attempts, err)
+	}
+	if err := svc.OnDeadLetter(ctx, *job, errors.New("delayed callback")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error { return repo.reconcileTx(ctx, tx, tenant) }); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = repo.GetDelivery(ctx, tenant, did)
+	if err != nil || pending.State != notification.DeliveryPending {
+		t.Fatalf("stale callback/reconcile changed delivery: %+v err=%v", pending, err)
+	}
+	if _, _, err := repo.RedriveDelivery(ctx, tenant, did, dead.RedriveFence); !errors.Is(err, shared.ErrConflict) {
+		t.Fatalf("stale confirmation error=%v", err)
+	}
+
+	clock.at = now.Add(2 * time.Second)
+	job2, err := queue.Claim(ctx, time.Minute, notificationuc.JobKind)
+	if err != nil || job2 == nil || job2.ID != job.ID || job2.Attempts != 1 || job2.Fence != dead.RedriveFence+2 {
+		t.Fatalf("redrive claim=%+v err=%v", job2, err)
+	}
+	secondAttempt, err := repo.BeginAttempt(ctx, tenant, did, job2.ID, job2.Fence, "redrive-attempt-2", clock.at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next = clock.at.Add(time.Second)
+	if err := repo.FinishAttempt(ctx, tenant, did, job2.ID, job2.Fence, secondAttempt.ID, clock.at, "retrying", 503, "http_503", &next); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Deadletter(ctx, job2.ID, job2.Fence); err != nil {
+		t.Fatal(err)
+	}
+	// Repair a second terminal cycle through reconciliation. Its audit intent key
+	// must differ from the first cycle's key even though the delivery ID is stable.
+	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error { return repo.reconcileTx(ctx, tx, tenant) }); err != nil {
+		t.Fatal(err)
+	}
+	dead2, err := repo.GetDelivery(ctx, tenant, did)
+	if err != nil || dead2.State != notification.DeliveryDead || dead2.RedriveFence != job2.Fence || dead2.Attempts != 2 {
+		t.Fatalf("second dead cycle=%+v err=%v", dead2, err)
+	}
+	var deadIntents int
+	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(DISTINCT id) FROM notification_audit_intents WHERE tenant_id=$1 AND delivery_id=$2 AND id LIKE 'dead:%'`, tenant, did).Scan(&deadIntents)
+	}); err != nil || deadIntents != 2 {
+		t.Fatalf("cycle audit intents=%d err=%v", deadIntents, err)
+	}
+	if _, err := svc.RedriveDelivery(ctx, "admin", did, notificationuc.RedriveInput{Reason: "Retry after receiver recovery", ExpectedFence: dead2.RedriveFence}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.OnDeadLetter(ctx, *job2, errors.New("delayed second-cycle callback")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error { return repo.reconcileTx(ctx, tx, tenant) }); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = repo.GetDelivery(ctx, tenant, did)
+	if err != nil || pending.State != notification.DeliveryPending {
+		t.Fatalf("second stale callback/reconcile changed delivery: %+v err=%v", pending, err)
+	}
+	if _, _, err := repo.RedriveDelivery(ctx, tenant, did, dead.RedriveFence); !errors.Is(err, shared.ErrConflict) {
+		t.Fatalf("older-cycle confirmation error=%v", err)
+	}
+	clock.at = now.Add(4 * time.Second)
+	job3, err := queue.Claim(ctx, time.Minute, notificationuc.JobKind)
+	if err != nil || job3 == nil || job3.ID != job.ID || job3.Attempts != 1 || job3.Fence != dead2.RedriveFence+2 {
+		t.Fatalf("second redrive claim=%+v err=%v", job3, err)
+	}
+	if err := svc.HandleJob(ctx, *job3); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Complete(ctx, job3.ID, job3.Fence); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := repo.ListAttempts(ctx, tenant, did)
+	if err != nil || len(attempts) != 3 || attempts[0].Outcome != "retrying" || attempts[1].Outcome != "retrying" || attempts[2].Outcome != "delivered" || attempts[2].Number != 3 {
+		t.Fatalf("completed redrive history=%+v err=%v", attempts, err)
+	}
+
+	// A dead delivery remains bound to the channel version it was created for.
+	changedChannel, err := svc.CreateChannel(ctx, "admin", notificationuc.ChannelInput{
+		Name: "Rotating hook", Type: notification.ChannelWebhook, Enabled: true,
+		URL: "https://old.example.test/hook", Secret: "0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedID, err := svc.TestChannel(ctx, "admin", changedChannel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job4, err := queue.Claim(ctx, time.Minute, notificationuc.JobKind)
+	if err != nil || job4 == nil {
+		t.Fatalf("rotating claim=%+v err=%v", job4, err)
+	}
+	thirdAttempt, err := repo.BeginAttempt(ctx, tenant, changedID, job4.ID, job4.Fence, "redrive-attempt-rotating", clock.at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FinishAttempt(ctx, tenant, changedID, job4.ID, job4.Fence, thirdAttempt.ID, clock.at, "failed", 503, "http_503", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Deadletter(ctx, job4.ID, job4.Fence); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.UpdateChannel(ctx, "admin", changedChannel.ID, notificationuc.ChannelInput{
+		Name: changedChannel.Name, Type: changedChannel.Type, Enabled: true,
+		URL: "https://new.example.test/hook", Secret: "fedcba9876543210", Revision: changedChannel.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.RedriveDelivery(ctx, "admin", changedID, notificationuc.RedriveInput{Reason: "Destination rotated", ExpectedFence: job4.Fence}); !errors.Is(err, shared.ErrConflict) {
+		t.Fatalf("rotated destination redrive error=%v", err)
 	}
 }
 
@@ -293,7 +507,9 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 			captured = append(captured, e)
 		}
 		return rows.Err()
-	}); err != nil { t.Fatal(err) }
+	}); err != nil {
+		t.Fatal(err)
+	}
 	seen := map[notification.EventType]bool{}
 	for _, e := range captured {
 		assertPublishedEventSchema(t, e)

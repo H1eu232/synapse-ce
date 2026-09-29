@@ -111,6 +111,7 @@ export interface NotificationDelivery {
   event_id: string
   channel_id: string
   channel_type: NotificationChannelType
+  redrive_fence: number
   recipient?: string
   matched_rule_ids: string[]
   state: NotificationDeliveryState
@@ -256,6 +257,15 @@ export const notificationsApi = {
   ): Promise<NotificationAttempt[]> =>
     (await req(`/notifications/deliveries/${encodeURIComponent(id)}/attempts`))
       .items ?? [],
+  redriveNotificationDelivery: (
+    id: string,
+    reason: string,
+    expectedFence: number,
+  ): Promise<NotificationDelivery> =>
+    req(`/notifications/deliveries/${encodeURIComponent(id)}/redrive`, {
+      method: 'POST',
+      body: JSON.stringify({ reason, expected_fence: expectedFence }),
+    }),
   notificationDeliveryPage: async (
     query: NotificationDeliveryQuery = {},
   ): Promise<NotificationDeliveryPage> => {
