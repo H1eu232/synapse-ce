@@ -6,7 +6,7 @@ import { req } from './client'
  * internal/adapter/httpapi/scm_connector_handler.go. The token is write-only — it is sent on create
  * and never returned, so a Connector carries only metadata.
  */
-export type ConnectorProvider = 'github' | 'gitlab' | 'bitbucket' | 'generic'
+export type ConnectorProvider = 'github' | 'gitlab' | 'bitbucket' | 'azure-devops' | 'generic'
 
 export interface Connector {
   id: string
