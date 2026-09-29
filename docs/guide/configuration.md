@@ -526,6 +526,16 @@ when they are used only by a CLI, helper, or optional subsystem.
 | `SYNAPSE_SIEM_ENABLED` | `true` | Set `false` on every API and worker replica to stop incident capture and SIEM sends. Pausing one sink does not stop capture. Events written while capture is off are not in the live partition; a historical backfill can still copy identities that were never captured. |
 | `SYNAPSE_SIEM_PUBLIC_BASE_URL` | empty | Optional absolute `https` console origin, with no path, added to exported SIEM records as a deep link. Empty omits links. It does not fall back to `SYNAPSE_PUBLIC_BASE_URL`, because that console builder can include a deployment prefix and uses different routes. |
 
+Microsoft Sentinel credentials are configured per sink, not through a process
+environment variable. Store the Entra client credential as the sink's sealed
+one-line JSON secret with `tenant_id`, `client_id`, and `client_secret`.
+Use an Azure public-cloud Logs Ingestion endpoint under
+`*.ingest.monitor.azure.com` and a target of
+`dcr-<immutable-id>/Custom-<stream>`. The driver uses the public Azure
+Monitor audience and never serializes that credential back through the SIEM
+API. Private Link DCEs are intentionally unsupported because SIEM egress
+rejects private addresses.
+
 ### Database, project storage, and maintenance
 
 | Variable | Default | Description |

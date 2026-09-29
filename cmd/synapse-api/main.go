@@ -75,6 +75,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/scmdecoration"
 	elastic "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/elastic"
 	siemseal "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/seal"
+	sentinel "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/sentinel"
 	splunk "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/splunk"
 	syslogtls "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/syslog"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/signing"
@@ -1562,8 +1563,9 @@ func main() {
 		siemRepository := postgres.NewSIEMRepository(databasePool)
 		var siemErr error
 		siemService, siemErr = siemuc.NewService(siemRepository, siemRepository, siemRepository, siemseal.Vault{Cipher: vaultCipher}, map[siem.Provider]ports.SIEMDriver{
-			siem.ProviderSplunk:        splunk.New(5*time.Second, true),
-			siem.ProviderElasticsearch: elastic.New(5 * time.Second),
+			siem.ProviderSplunk:            splunk.New(5*time.Second, true),
+			siem.ProviderElasticsearch:     elastic.New(5 * time.Second),
+			siem.ProviderMicrosoftSentinel: sentinel.New(5 * time.Second),
 			siem.ProviderSyslogTLS:     syslogtls.New(5 * time.Second),
 		}, auditLog, clock, ids)
 		if siemErr != nil {

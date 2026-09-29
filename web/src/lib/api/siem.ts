@@ -1,8 +1,8 @@
 import { ApiError, req } from './client'
 
-export type SIEMProvider = 'splunk_hec' | 'elasticsearch' | 'syslog_tls'
+export type SIEMProvider = 'splunk_hec' | 'elasticsearch' | 'syslog_tls' | 'microsoft_sentinel'
 export type SIEMDataClass = 'signal' | 'summary' | 'detail'
-export type SIEMAckMode = 'hec_acceptance' | 'indexer_ack' | 'bulk_item' | 'transport_write'
+export type SIEMAckMode = 'hec_acceptance' | 'indexer_ack' | 'bulk_item' | 'transport_write' | 'ingestion_acceptance'
 export type SIEMReplay = 'cursor' | 'head'
 
 export interface SIEMSink {

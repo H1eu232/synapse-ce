@@ -17,6 +17,8 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ### Added
 
+- **Microsoft Sentinel Logs Ingestion API sink (#1461).** SIEM streams can send redacted audit and incident batches to an Azure public-cloud Logs Ingestion endpoint with sealed Entra client credentials, TLS 1.2+ certificate verification, SSRF-safe dialing, retry handling for transient identity/ingestion failures, and stable source-position/hash evidence. Sentinel targets use a DCR immutable ID plus a `Custom-` stream; only HTTP 204 advances the batch.
+
 - **Syslog TLS SIEM sink (#1458).** Tenant administrators can stream existing
   audit and incident records as RFC 5424 messages over RFC 5425 TLS. Syslog
   destinations require `tls://host:port`; connections use the DNS-rebinding
