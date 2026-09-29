@@ -21,6 +21,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	// Messages and digests render in the tenant's IANA time zone (#1359, #1365). Embedding the
+	// database keeps that independent of whether the runtime image ships /usr/share/zoneinfo.
+	_ "time/tzdata"
 
 	"github.com/KKloudTarus/synapse-ce/internal/adapter/observability"
 	"github.com/KKloudTarus/synapse-ce/internal/composition/scacompose"

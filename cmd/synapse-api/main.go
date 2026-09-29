@@ -22,6 +22,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// The tenant settings API validates IANA time zones (#1359). Embedding the database keeps that
+	// independent of whether the runtime image ships /usr/share/zoneinfo.
+	_ "time/tzdata"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 

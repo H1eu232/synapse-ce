@@ -3,15 +3,15 @@
 //
 // The locale is a closed set so a template lookup can never miss. The time zone is an IANA name,
 // stored as a name rather than an offset, so daylight saving is resolved at render time.
+//
+// The package does not embed the IANA database itself. The binaries that validate or render zones
+// (synapse-api and synapse-worker) import time/tzdata, so the CLI and the agents do not carry it.
 package tenancy
 
 import (
 	"fmt"
 	"regexp"
 	"time"
-	// Embeds the IANA database (about 450 KB) so zone validation and rendering behave the same in
-	// every image; the slim Debian runtime images do not guarantee /usr/share/zoneinfo.
-	_ "time/tzdata"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 )

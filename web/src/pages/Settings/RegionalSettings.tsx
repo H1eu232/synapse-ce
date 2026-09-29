@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { Globe01 } from '@untitledui/icons'
 import { Button, Card, ErrorState, Field, Input, Select, Spinner } from '../../components/ui'
 import { useToast } from '../../components/synapse/Toast'
@@ -48,34 +48,65 @@ function previewTime(zone: string): string | null {
 }
 
 export function RegionalSettings() {
-  const { notify } = useToast()
   const { data: me } = useFetch(() => api.me(), { deps: [] })
   const canAdmin = me?.role === 'admin' || me?.role === 'owner'
   const { data, loading, error, refetch } = useFetch(() => api.getTenantSettings(), { deps: [] })
-  const zones = useMemo(timeZoneSuggestions, [])
-  const [locale, setLocale] = useState<TenantLocale>('en')
-  const [timeZone, setTimeZone] = useState('UTC')
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
   const [saved, setSaved] = useState<TenantSettings | null>(null)
+  // Lives here, not in the form: a 409 reloads the settings, which remounts the form.
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   const current = saved ?? data
-  useEffect(() => {
-    if (!current) return
-    setLocale(current.defaultLocale)
-    setTimeZone(current.timeZone)
-  }, [current])
-
   if (loading && !current) return <Spinner label="Loading language and time zone…" />
   if (error && !current) return <ErrorState message={error} />
   if (!current) return null
+
+  return (
+    // Keyed by revision so the form starts from the stored values. Copying them into state after
+    // mount left the language select showing its placeholder for a saved `vi`.
+    <RegionalSettingsForm
+      key={current.revision}
+      current={current}
+      canAdmin={canAdmin}
+      showReadOnlyNote={!canAdmin && !!me}
+      saveError={saveError}
+      setSaveError={setSaveError}
+      onSaved={setSaved}
+      onConflict={() => {
+        setSaved(null)
+        refetch()
+      }}
+    />
+  )
+}
+
+function RegionalSettingsForm({
+  current,
+  canAdmin,
+  showReadOnlyNote,
+  saveError,
+  setSaveError,
+  onSaved,
+  onConflict,
+}: {
+  current: TenantSettings
+  canAdmin: boolean
+  showReadOnlyNote: boolean
+  saveError: string | null
+  setSaveError: (message: string | null) => void
+  onSaved: (next: TenantSettings) => void
+  onConflict: () => void
+}) {
+  const { notify } = useToast()
+  const zones = useMemo(timeZoneSuggestions, [])
+  const [locale, setLocale] = useState<TenantLocale>(current.defaultLocale)
+  const [timeZone, setTimeZone] = useState(current.timeZone)
+  const [saving, setSaving] = useState(false)
 
   const preview = previewTime(timeZone)
   const dirty = locale !== current.defaultLocale || timeZone.trim() !== current.timeZone
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!current) return
     setSaveError(null)
     if (!preview) {
       setSaveError(`"${timeZone}" is not a time zone name. Use an IANA name such as Asia/Ho_Chi_Minh.`)
@@ -88,12 +119,11 @@ export function RegionalSettings() {
         timeZone: timeZone.trim(),
         revision: current.revision,
       })
-      setSaved(next)
+      onSaved(next)
       notify('Language and time zone saved.', 'success')
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
-        setSaved(null)
-        refetch()
+        onConflict()
         setSaveError('Another administrator changed these settings. The latest values are loaded; review them and save again.')
       } else {
         setSaveError(e instanceof Error ? e.message : 'Failed to save the settings.')
@@ -109,7 +139,7 @@ export function RegionalSettings() {
         Notification messages and digests for this tenant use this language, and show dates and times
         in this time zone. Daylight saving follows the zone automatically.
       </p>
-      {!canAdmin && me && (
+      {showReadOnlyNote && (
         <p className="mt-3 text-sm text-tertiary">Only tenant administrators can change these settings.</p>
       )}
       <form className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2" onSubmit={submit}>
