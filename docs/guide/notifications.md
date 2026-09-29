@@ -306,12 +306,17 @@ the pending-age gauge reads durable state at scrape time.
 Administrators can manually redrive one dead-lettered channel delivery from
 **Settings → Alerting → Delivery history**, or call
 `POST /api/v1/notifications/deliveries/{id}/redrive` with a 1–500 character
-reason and the delivery's current `redrive_fence`. The API requires administer
+`reason` and `expected_fence` set to the delivery's current `redrive_fence`. The API requires administer
 permission. Redrive reuses the same event, delivery and queue job, resets the
 queue's eight-attempt budget, and preserves the lifetime attempt count and all
 attempt records. Its reason and safe destination summary are audited. A stale
 fence, non-dead delivery, missing queue job, or changed channel configuration
 returns a conflict.
+
+Audit reasons remove URLs and known channel credentials, including common encoded
+forms. If the API cannot open the delivery's bound channel configuration to scrub
+those credentials, it returns a conflict before queuing work. Email audit and
+confirmation destinations name only the original recipient's domain.
 
 Redrive is allowed only while the original channel remains enabled, present,
 unpaused and enabled for its channel type. Webhook and Slack deliveries keep

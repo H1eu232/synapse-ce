@@ -24,6 +24,10 @@ func (r *redriveHandlerRepo) GetDelivery(context.Context, shared.ID, shared.ID) 
 	return r.delivery, nil
 }
 
+func (r *redriveHandlerRepo) LoadWork(context.Context, shared.ID, shared.ID) (ports.NotificationWork, error) {
+	return ports.NotificationWork{Delivery: r.delivery, Channel: r.channel, Sealed: `{}`}, nil
+}
+
 func (r *redriveHandlerRepo) RedriveDelivery(_ context.Context, _, _ shared.ID, fence int64) (domain.Delivery, domain.Channel, error) {
 	r.fence = fence
 	r.delivery.State = domain.DeliveryPending

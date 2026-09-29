@@ -15,6 +15,7 @@ import (
 	domain "github.com/KKloudTarus/synapse-ce/internal/domain/notification"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/privacy"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	"github.com/KKloudTarus/synapse-ce/internal/platform/redact"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
 
@@ -409,6 +410,13 @@ func (s *Service) RedriveDelivery(ctx context.Context, actor string, id shared.I
 		if err = s.refuseDisabled(current.ChannelType); err != nil {
 			return domain.Delivery{}, err
 		}
+		if current.State != domain.DeliveryDead || current.RedriveFence != in.ExpectedFence {
+			return domain.Delivery{}, fmt.Errorf("notification delivery state changed: %w", shared.ErrConflict)
+		}
+		safeReason, err := s.redriveAuditReason(ctx, tenant, id, reason)
+		if err != nil {
+			return domain.Delivery{}, err
+		}
 		redriven, channel, err := s.repo.RedriveDelivery(ctx, tenant, id, in.ExpectedFence)
 		if err != nil {
 			return domain.Delivery{}, err
@@ -419,7 +427,7 @@ func (s *Service) RedriveDelivery(ctx context.Context, actor string, id shared.I
 		} else if channel.Type == domain.ChannelEmail {
 			// The public channel summary may contain an email local-part when there is one
 			// recipient. Audit only the validated domains, never full addresses.
-			scheme, host = "mailto", emailDomainSummary(channel.Recipients)
+			scheme, host = "mailto", emailDomainSummary([]string{redriven.Recipient})
 		}
 		if err := s.record(ctx, actor, "notification.delivery_redriven", id.String(), map[string]string{
 			"channel_id":          channel.ID.String(),
@@ -429,12 +437,33 @@ func (s *Service) RedriveDelivery(ctx context.Context, actor string, id shared.I
 			"previous_fence":      strconv.FormatInt(in.ExpectedFence, 10),
 			"queue_fence":         strconv.FormatInt(redriven.RedriveFence, 10),
 			"previous_error_code": sanitizeCode(current.LastError),
-			"reason":              privacy.ScrubSecretPatterns(reason),
+			"reason":              safeReason,
 		}); err != nil {
 			return domain.Delivery{}, err
 		}
 		return redriven, nil
 	})
+}
+
+func (s *Service) redriveAuditReason(ctx context.Context, tenant, id shared.ID, reason string) (string, error) {
+	work, err := s.repo.LoadWork(ctx, tenant, id)
+	if err != nil {
+		return "", err
+	}
+	// Open only the delivery's immutable bound version, and keep its credentials
+	// in the usecase. Never return plaintext or a protector error to the handler.
+	raw, err := s.protector.Open(work.Sealed, channelAAD(tenant, work.Channel.ID, work.Channel.SecretVersion))
+	if err != nil {
+		return "", fmt.Errorf("notification channel configuration unavailable for audit: %w", shared.ErrConflict)
+	}
+	var cfg struct {
+		URL    string `json:"url"`
+		Secret string `json:"secret"`
+	}
+	if json.Unmarshal(raw, &cfg) != nil {
+		return "", fmt.Errorf("notification channel configuration unavailable for audit: %w", shared.ErrConflict)
+	}
+	return privacy.ScrubSecretPatterns(redact.AuditText(reason, []string{cfg.URL, cfg.Secret, work.Delivery.Recipient})), nil
 }
 
 func emailDomainSummary(recipients []string) string {

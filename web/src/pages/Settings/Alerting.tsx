@@ -45,17 +45,13 @@ const stateTone: Record<string, string> = {
   cancelled: 'text-tertiary',
 }
 
-function redriveDestination(channel?: NotificationChannel): string | undefined {
+function redriveDestination(channel?: NotificationChannel, recipient?: string): string | undefined {
   if (!channel) return undefined
   if (channel.type !== 'email') return channel.destination
-  const domains = Array.from(
-    new Set(
-      (channel.recipients ?? [])
-        .map((recipient) => recipient.trim().toLowerCase().split('@').pop())
-        .filter((domain): domain is string => Boolean(domain)),
-    ),
-  ).sort()
-  return domains.length > 0 ? domains.join(', ') : 'Email recipients'
+  const at = recipient?.lastIndexOf('@') ?? -1
+  return recipient && at > 0 && at < recipient.length - 1
+    ? recipient.slice(at + 1).toLowerCase()
+    : 'Email recipient'
 }
 
 export function Alerting() {
@@ -1204,6 +1200,14 @@ function DeliveryHistory({
   const { notify } = useToast()
   const historyRequest = useRef(0)
   const attemptRequest = useRef(0)
+  const redriveInFlight = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const [items, setItems] = useState<NotificationDelivery[]>([])
   const [next, setNext] = useState<string>()
   const [channel, setChannel] = useState('all')
@@ -1241,21 +1245,23 @@ function DeliveryHistory({
           to: to ? new Date(to).toISOString() : undefined,
           cursor,
         })
-        if (request !== historyRequest.current) return
+        if (!mounted.current || request !== historyRequest.current) return
         setItems((old) => (cursor ? [...old, ...page.items] : page.items))
         setNext(page.next)
       } catch (e) {
-        if (request !== historyRequest.current) return
+        if (!mounted.current || request !== historyRequest.current) return
         setError(
           e instanceof Error ? e.message : 'Could not load delivery history',
         )
       } finally {
-        if (request === historyRequest.current) setBusy(false)
+        if (mounted.current && request === historyRequest.current) setBusy(false)
       }
     },
     [channel, event, state, from, to],
   )
+  const reloadHistory = useRef(load)
   useEffect(() => {
+    reloadHistory.current = load
     void load()
   }, [load])
   async function inspect(d: NotificationDelivery) {
@@ -1266,21 +1272,23 @@ function DeliveryHistory({
     setAttemptsBusy(true)
     try {
       const records = await api.listNotificationAttempts(d.id)
-      if (request === attemptRequest.current) setAttempts(records)
+      if (mounted.current && request === attemptRequest.current) setAttempts(records)
     } catch (e) {
-      if (request === attemptRequest.current)
+      if (mounted.current && request === attemptRequest.current)
         setError(e instanceof Error ? e.message : 'Could not load attempts')
     } finally {
-      if (request === attemptRequest.current) setAttemptsBusy(false)
+      if (mounted.current && request === attemptRequest.current) setAttemptsBusy(false)
     }
   }
   async function confirmRedrive() {
-    if (!redriveTarget) return
+    if (!redriveTarget || redriveInFlight.current) return
     const reason = redriveReason.trim()
-    if (!reason || reason.length > 500) {
+    if (!reason || Array.from(reason).length > 500) {
       setRedriveError('Enter a reason of 1 to 500 characters.')
       return
     }
+    redriveInFlight.current = true
+    const selectionRequest = attemptRequest.current
     setRedriveBusy(true)
     setRedriveError(null)
     try {
@@ -1289,24 +1297,28 @@ function DeliveryHistory({
         reason,
         redriveTarget.redrive_fence,
       )
+      if (!mounted.current) return
       setRedriveTarget(undefined)
       setRedriveReason('')
-      await load()
-      if (selected?.id === updated.id) await inspect(updated)
-      notify('Redrive queued. Delivery will run asynchronously.', 'success')
+      await reloadHistory.current()
+      if (!mounted.current) return
+      if (selectionRequest === attemptRequest.current && selected?.id === updated.id) await inspect(updated)
+      if (mounted.current) notify('Redrive queued. Delivery will run asynchronously.', 'success')
     } catch (e) {
+      if (!mounted.current) return
       setRedriveError(
         e instanceof Error ? e.message : 'Could not queue this delivery for redrive',
       )
-      if (e instanceof ApiError && e.status === 409) void load()
+      if (e instanceof ApiError && e.status === 409) void reloadHistory.current()
     } finally {
-      setRedriveBusy(false)
+      redriveInFlight.current = false
+      if (mounted.current) setRedriveBusy(false)
     }
   }
   const redriveChannel = redriveTarget
     ? channels.find((channel) => channel.id === redriveTarget.channel_id)
     : undefined
-  const safeRedriveDestination = redriveDestination(redriveChannel)
+  const safeRedriveDestination = redriveDestination(redriveChannel, redriveTarget?.recipient)
   return (
     <Card
       title="Delivery history"
@@ -1509,14 +1521,14 @@ function DeliveryHistory({
               <TextAreaBase
                 aria-label="Reason for redrive"
                 aria-required="true"
-                maxLength={500}
+                maxLength={1000}
                 rows={3}
                 value={redriveReason}
                 onChange={(event) => setRedriveReason(event.currentTarget.value)}
                 placeholder="Describe what changed before retrying"
               />
               <span className="block text-xs text-tertiary">
-                {redriveReason.trim().length}/500 characters
+                {Array.from(redriveReason.trim()).length}/500 characters
               </span>
             </label>
           </div>

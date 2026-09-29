@@ -74,10 +74,13 @@ func (f *fakeRepo) RecordChannelOutcome(_ context.Context, _ shared.ID, o ports.
 	return ports.NotificationChannelTransition{Paused: effect == domain.HealthPausedNow, PauseID: "pause", Health: next}, nil
 }
 
-type fakeProtector struct{ raw []byte }
+type fakeProtector struct {
+	raw []byte
+	err error
+}
 
 func (f fakeProtector) Seal(v, _ []byte) (string, error)        { return string(v), nil }
-func (f fakeProtector) Open(_ string, _ []byte) ([]byte, error) { return f.raw, nil }
+func (f fakeProtector) Open(_ string, _ []byte) ([]byte, error) { return f.raw, f.err }
 
 type fakeSender struct{ result ports.NotificationSendResult }
 
@@ -112,7 +115,7 @@ func TestRedriveDeliveryAuditsSafeReasonAndDestination(t *testing.T) {
 	}
 	repo.delivery.RedriveFence = 7
 	audit := &capturingAudit{}
-	svc, err := NewService(repo, fakeProtector{}, nil, audit, fakeClock{time.Unix(1700000000, 0).UTC()}, &fakeIDs{})
+	svc, err := NewService(repo, fakeProtector{raw: []byte(`{}`)}, nil, audit, fakeClock{time.Unix(1700000000, 0).UTC()}, &fakeIDs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,14 +147,14 @@ func TestRedriveDeliveryAuditsSafeReasonAndDestination(t *testing.T) {
 func TestRedriveEmailAuditKeepsOnlyRecipientDomains(t *testing.T) {
 	ctx := shared.WithTenant(context.Background(), "tenant")
 	repo := &fakeRepo{
-		delivery: domain.Delivery{ID: "delivery", ChannelType: domain.ChannelEmail, State: domain.DeliveryDead, RedriveFence: 2},
+		delivery: domain.Delivery{ID: "delivery", Recipient: "alice@example.test", ChannelType: domain.ChannelEmail, State: domain.DeliveryDead, RedriveFence: 2},
 		redriveChannel: domain.Channel{
 			ID: "channel", Type: domain.ChannelEmail, Destination: "alice@example.test",
 			Recipients: []string{"alice@example.test", "bob@corp.test"},
 		},
 	}
 	audit := &capturingAudit{}
-	svc, err := NewService(repo, fakeProtector{}, nil, audit, fakeClock{time.Unix(1700000000, 0).UTC()}, &fakeIDs{})
+	svc, err := NewService(repo, fakeProtector{raw: []byte(`{}`)}, nil, audit, fakeClock{time.Unix(1700000000, 0).UTC()}, &fakeIDs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +162,7 @@ func TestRedriveEmailAuditKeepsOnlyRecipientDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 	host := audit.entries[0].Metadata["destination_host"]
-	if host != "corp.test,example.test" || strings.Contains(host, "alice") || strings.Contains(host, "bob") {
+	if host != "example.test" || strings.Contains(host, "alice") || strings.Contains(host, "bob") {
 		t.Fatalf("email audit destination=%q", host)
 	}
 }
@@ -193,6 +196,50 @@ func TestRedriveDeliveryRejectsInvalidAndDisabledRequestsBeforeRepository(t *tes
 	}
 	if repo.redriveCalls != 0 {
 		t.Fatalf("invalid request reached repository %d times", repo.redriveCalls)
+	}
+}
+
+func TestRedriveReasonRemovesURLsAndKnownChannelSecrets(t *testing.T) {
+	ctx := shared.WithTenant(context.Background(), "tenant")
+	repo := &fakeRepo{delivery: domain.Delivery{ID: "delivery", ChannelType: domain.ChannelWebhook, State: domain.DeliveryDead, RedriveFence: 1}}
+	audit := &capturingAudit{}
+	protector := fakeProtector{raw: []byte(`{"secret":"test-signing-value","url":"https://hooks.example.test/private-path"}`)}
+	svc, err := NewService(repo, protector, nil, audit, fakeClock{}, &fakeIDs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.RedriveDelivery(ctx, "admin", "delivery", RedriveInput{
+		Reason: "Fixed https://hooks.example.test/private-path and https://other.example.test/opaque-credential; test-signing-value", ExpectedFence: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := audit.entries[0].Metadata["reason"]
+	for _, secret := range []string{"private-path", "opaque-credential", "test-signing-value"} {
+		if strings.Contains(reason, secret) {
+			t.Fatal("audit reason leaked credential material")
+		}
+	}
+	if !strings.Contains(reason, "Fixed") {
+		t.Fatal("audit reason lost non-sensitive context")
+	}
+}
+
+func TestRedriveRefusesUnredactableReasonBeforeMutation(t *testing.T) {
+	for _, protector := range []fakeProtector{
+		{err: errors.New("protector failed with sensitive details")},
+		{raw: []byte("invalid sealed config")},
+	} {
+		repo := &fakeRepo{delivery: domain.Delivery{ID: "delivery", ChannelType: domain.ChannelWebhook, State: domain.DeliveryDead, RedriveFence: 1}}
+		audit := &capturingAudit{}
+		svc, err := NewService(repo, protector, nil, audit, fakeClock{}, &fakeIDs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = svc.RedriveDelivery(shared.WithTenant(context.Background(), "tenant"), "admin", "delivery", RedriveInput{Reason: "retry", ExpectedFence: 1})
+		if !errors.Is(err, shared.ErrConflict) || strings.Contains(err.Error(), "sensitive") || repo.redriveCalls != 0 || len(audit.entries) != 0 {
+			t.Fatalf("unredactable request mutated state or exposed error: %v", err)
+		}
 	}
 }
 

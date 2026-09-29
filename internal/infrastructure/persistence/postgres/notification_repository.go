@@ -885,8 +885,8 @@ func (r *NotificationRepository) DeadLetterDelivery(ctx context.Context, tenant,
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO notification_audit_intents
 			(tenant_id,id,delivery_id,action,error_code,occurred_at)
-			VALUES($1,'dead:'||$2||':'||$4,$2,'notification.delivery_failed',$3,now())
-			ON CONFLICT DO NOTHING`, tenant, did, sanitizeError(reason), fence)
+			VALUES($1,$4,$2,'notification.delivery_failed',$3,now())
+			ON CONFLICT DO NOTHING`, tenant, did, sanitizeError(reason), fmt.Sprintf("dead:%s:%d", did, fence))
 		if err == nil {
 			changed = true
 		}
@@ -904,6 +904,9 @@ func (r *NotificationRepository) DeadLetterDelivery(ctx context.Context, tenant,
 func (r *NotificationRepository) RedriveDelivery(ctx context.Context, tenant, did shared.ID, expectedFence int64) (notification.Delivery, notification.Channel, error) {
 	var delivery notification.Delivery
 	var channel notification.Channel
+	if expectedFence < 1 {
+		return delivery, channel, fmt.Errorf("positive queue fence required: %w", shared.ErrValidation)
+	}
 	err := WithTenant(ctx, r.pool, tenant.String(), func(tx pgx.Tx) error {
 		if err := notificationAdmission(ctx, tx, tenant, "delivery", 10000); err != nil {
 			return err
@@ -917,8 +920,9 @@ func (r *NotificationRepository) RedriveDelivery(ctx context.Context, tenant, di
 		}
 		var jobStatus, jobKind string
 		var jobFence int64
+		var jobPayload []byte
 		var claimedUntil *time.Time
-		if err := tx.QueryRow(ctx, `SELECT status,kind,claim_fence,claimed_until FROM jobs WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenant, "notification-"+did.String()).Scan(&jobStatus, &jobKind, &jobFence, &claimedUntil); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT status,kind,claim_fence,claimed_until,payload FROM jobs WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenant, "notification-"+did.String()).Scan(&jobStatus, &jobKind, &jobFence, &claimedUntil, &jobPayload); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("notification delivery queue state: %w", shared.ErrConflict)
 			}
@@ -926,6 +930,12 @@ func (r *NotificationRepository) RedriveDelivery(ctx context.Context, tenant, di
 		}
 		if jobKind != "notification.deliver" || jobStatus != "failed" || jobFence != expectedFence || claimedUntil != nil {
 			return fmt.Errorf("notification delivery queue state changed: %w", shared.ErrConflict)
+		}
+		var payload struct {
+			DeliveryID shared.ID `json:"delivery_id"`
+		}
+		if json.Unmarshal(jobPayload, &payload) != nil || payload.DeliveryID != did {
+			return fmt.Errorf("notification delivery queue identity changed: %w", shared.ErrConflict)
 		}
 		if err := scanChannel(tx.QueryRow(ctx, channelSelect+` WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenant, channelID), &channel); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

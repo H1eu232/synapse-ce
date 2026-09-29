@@ -370,6 +370,14 @@ func TestNotificationPostgresRedriveIsFencedAndPreservesHistory(t *testing.T) {
 	if err := queue.Deadletter(ctx, job2.ID, job2.Fence); err != nil {
 		t.Fatal(err)
 	}
+	// Even when a newer cycle is also failed, the old callback must not repair it.
+	if err := svc.OnDeadLetter(ctx, *job, errors.New("obsolete first-cycle callback")); err != nil {
+		t.Fatal(err)
+	}
+	stillRetrying, err := repo.GetDelivery(ctx, tenant, did)
+	if err != nil || stillRetrying.State != notification.DeliveryRetrying {
+		t.Fatalf("old callback applied to a later failed cycle: %+v %v", stillRetrying, err)
+	}
 	// Repair a second terminal cycle through reconciliation. Its audit intent key
 	// must differ from the first cycle's key even though the delivery ID is stable.
 	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error { return repo.reconcileTx(ctx, tx, tenant) }); err != nil {
@@ -433,6 +441,7 @@ func TestNotificationPostgresRedriveIsFencedAndPreservesHistory(t *testing.T) {
 	if err != nil || job4 == nil {
 		t.Fatalf("rotating claim=%+v err=%v", job4, err)
 	}
+	clock.at = now.Add(6 * time.Second)
 	thirdAttempt, err := repo.BeginAttempt(ctx, tenant, changedID, job4.ID, job4.Fence, "redrive-attempt-rotating", clock.at)
 	if err != nil {
 		t.Fatal(err)
