@@ -181,8 +181,29 @@ Personal recipients come from structured IDs already on the event: the canonical
 Events created before the framework first
 activates for a tenant are not replayed automatically.
 
-Only tenant administrators (`PermAdminister`) can read or change these settings,
-test channels, or inspect history. Channel type is immutable. Editing a URL or
+### Who can manage notifications
+
+Two roles hold the `manage_integrations` permission: `admin` and `integration_admin`.
+It lets a user read, test, rename, enable, disable, resume and delete channels, create
+and edit routing rules, manage message templates, and read delivery history and
+quarantined sources. Actions that point Synapse at a new destination still require
+`administer`, which only `admin` holds:
+
+| Action | `integration_admin` | `admin` |
+| --- | --- | --- |
+| List, read, test, rename, enable, disable, resume or delete a channel | yes | yes |
+| Create, edit or delete a routing rule; read delivery history | yes | yes |
+| Create a channel | no (`403`) | yes |
+| Change a channel's URL, secret or email recipients | no (`403`) | yes |
+
+A `PATCH` that sends the channel's current recipients back is not a change. Machine
+roles (`agent`, `mcp`) never hold either permission. Every channel audit entry records
+the actor and the destination masked to `scheme://host` (`mailto://` and the recipient
+domains for email); an update also records `destination_changed` and, when it is
+`true`, the previous masked destination. Channels carry no data class yet, so none is
+recorded.
+
+Channel type is immutable. Editing a URL or
 HMAC key creates a new encrypted version; pending deliveries retain their original
 version. Leaving both fields blank retains the secret. Email recipients are
 snapshotted individually when an event is routed. Rule updates require the current
@@ -344,9 +365,10 @@ When a channel pauses:
 
 Resume a channel from **Settings > Alerting** (the **Resume** button next to the
 **Paused** badge) or with `POST /api/v1/notifications/channels/{id}/resume` and the
-body `{"revision": <current revision>}`. Only tenant administrators can resume. A
+body `{"revision": <current revision>}`. Resuming needs `manage_integrations`, so an
+`admin` or an `integration_admin` can resume. A
 resume clears the pause and the count, bumps the channel revision, appends a
-`resumed` row naming the administrator and writes a `notification.channel.resumed`
+`resumed` row naming the user and writes a `notification.channel.resumed`
 audit entry. Deliveries cancelled during the pause are not re-sent. Fix the
 destination first: if it still fails, the channel pauses again after another
 run of permanent failures, and administrators get a new notice.

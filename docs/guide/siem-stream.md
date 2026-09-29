@@ -108,6 +108,13 @@ host; both default to `127.0.0.1:9090`. `SYNAPSE_SIEM_PUBLIC_BASE_URL` is a
 bare `https` origin. It does not use the shared console-link builder, so a
 deployment prefix on `SYNAPSE_PUBLIC_BASE_URL` is not applied to SIEM links.
 
+## Who can manage sinks
+
+Reading sinks and their status, and pausing, resuming or testing a sink, need the
+`manage_integrations` permission, held by `admin` and `integration_admin`. Creating a
+sink, editing it (data class, allowed hosts), rotating its secret and changing its host
+need `administer`, which only `admin` holds. Machine roles hold neither.
+
 ## What this release does not prove
 
 No Splunk or Elasticsearch service was available while this was built, so
@@ -120,7 +127,6 @@ These shared pieces were still open, so this stream does not replace them:
 
 - dial-time host allowlists
 - engagement data-class overrides beyond the fail-closed signal ceiling
-- an integration administrator role
 - offline validation against the official, pinned OCSF schema artifacts
 
 Syslog and Microsoft Sentinel are not part of this stream.

@@ -208,7 +208,7 @@ sandbox is requested but unavailable, startup fails closed rather than running u
 ## Access control
 
 Per-action role-based access control and tenant isolation flow through a single authorization
-chokepoint. Roles cover admin, consultant, reviewer, and read-only, with separation of duties
+chokepoint. Roles cover admin, consultant, reviewer, read-only, and integration admin, with separation of duties
 so a machine identity can never confirm its own claim. Secrets stay server-side in a
 credential vault with placeholder substitution.
 

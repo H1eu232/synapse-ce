@@ -2792,7 +2792,7 @@ paths:
         SYNAPSE_ALERT_WEBHOOK_URL) so an operator can prove the alert path works before relying on it.
         The test alert bypasses the severity floor. Registered only when alerting is configured.
         Deprecated with SYNAPSE_ALERT_WEBHOOK_URL and removed in 0.4.0; incident.created notification
-        rules replace the legacy webhook.
+        rules replace the legacy webhook. Requires the manage_integrations permission.
       responses:
         '200': {description: At least one sink acknowledged, content: {application/json: {schema: {$ref: '#/components/schemas/AlertTestResult'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -2987,6 +2987,9 @@ paths:
       tags: [notifications]
       operationId: listNotificationChannels
       summary: List tenant notification channels without secrets
+      description: >
+        Requires the `manage_integrations` permission (admin and integration_admin). Every channel,
+        rule and delivery route below needs it unless it says otherwise.
       responses:
         '200': {description: Channels, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NotificationChannel'}}}}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -2996,6 +2999,9 @@ paths:
       operationId: createNotificationChannel
       summary: Create a signed webhook, Slack, or email channel
       description: >
+        Requires the `administer` permission: creating a destination is an administrator action, so an
+        integration_admin gets `403`. The audit entry records the actor and the destination masked to
+        `scheme://host`.
         URL and credentials are write-only and encrypted at rest. Email uses the operator-managed SMTP relay.
         A type the operator switched off with `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED` answers `400`
         naming the type; such types are absent from the `notifications.channel_types` capability.
@@ -3020,12 +3026,18 @@ paths:
       operationId: updateNotificationChannel
       summary: Update a channel with optimistic revision checking
       description: >
+        Requires `manage_integrations` to rename, enable or disable a channel. Changing its
+        destination (a new URL or secret, or a different email recipient set) also requires
+        `administer`; an integration_admin gets `403` for it. Sending the current recipients back is
+        not a change. The audit entry records the actor, the masked destination, `destination_changed`
+        and, on a change, the previous masked destination.
         A channel whose type the operator switched off with `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED`
         can be renamed or switched off, but switching it on or giving it a new URL or secret answers `400`.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannelInput'}}}}
       responses:
         '200': {description: Updated channel, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannel'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {description: Missing manage_integrations, or a destination change without administer}
         '409': {description: Stale revision}
     delete:
       tags: [notifications]
@@ -3056,7 +3068,7 @@ paths:
       operationId: resumeNotificationChannel
       summary: Resume a channel the worker paused after consecutive permanent failures
       description: >-
-        Tenant administrators only (PermAdminister). Clears the pause and the failure count, bumps the channel
+        Requires `manage_integrations` (admin and integration_admin). Clears the pause and the failure count, bumps the channel
         revision, appends a `resumed` row to the channel's health history and writes a
         `notification.channel.resumed` audit entry. Deliveries cancelled while the channel was paused are not
         re-sent.
@@ -3153,7 +3165,7 @@ paths:
       tags: [notifications]
       operationId: listNotificationSourceFailures
       summary: List captured notification sources that failed projection
-      description: Requires administer permission. Returns fixed failure codes and source identity, never captured payloads.
+      description: Requires the manage_integrations permission. Returns fixed failure codes and source identity, never captured payloads.
       parameters:
         - {name: from, in: query, schema: {type: string, format: date-time}, description: Inclusive quarantine time in RFC3339}
         - {name: to, in: query, schema: {type: string, format: date-time}, description: Inclusive upper quarantine time in RFC3339}
@@ -3192,6 +3204,7 @@ paths:
       description: >
         Every source-control connector configured for the caller's tenant, as metadata only. The
         personal access token is never returned. Registered only when a connector store is wired.
+        Requires the manage_integrations permission; creating and deleting a connector require administer.
       responses:
         '200': {description: Connectors, content: {application/json: {schema: {type: object, properties: {connectors: {type: array, items: {$ref: '#/components/schemas/SCMConnector'}}}}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -4545,6 +4558,12 @@ paths:
       tags: [integrations]
       operationId: listIntegrations
       summary: List tenant integrations
+      description: >
+        Any human role may read integrations. Enabling, disabling, archiving, starting and cancelling
+        operations and editing bindings require `manage_integrations` (admin and integration_admin).
+        Creating an integration, updating its endpoint or private-network setting, and replacing or
+        deleting its credential require `administer`. Every audit entry records the actor and the
+        endpoint masked to `scheme://host`.
       parameters:
       - name: include_archived
         in: query
@@ -6129,6 +6148,10 @@ paths:
       tags: [siem]
       operationId: listSIEMSinks
       summary: List tenant SIEM sinks without secrets
+      description: >
+        Reading sinks, their status, and pausing, resuming and testing one require `manage_integrations`
+        (admin and integration_admin). Creating a sink, updating it (data class, allowed hosts),
+        rotating its secret and changing its host require `administer`.
       responses:
         "200": {description: Sinks, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: "#/components/schemas/SIEMSink"}}}}}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
@@ -8663,7 +8686,7 @@ components:
       properties:
         id: {type: string}
         name: {type: string}
-        role: {type: string, enum: [admin, consultant, reviewer, readonly, member]}
+        role: {type: string, enum: [admin, consultant, reviewer, readonly, member, integration_admin]}
         disabled:
           type: boolean
           description: A disabled operator keeps its identity and history; its API key stops authenticating.
@@ -8686,7 +8709,7 @@ components:
         name: {type: string}
         role:
           type: string
-          enum: [admin, consultant, reviewer, readonly, member]
+          enum: [admin, consultant, reviewer, readonly, member, integration_admin]
           default: member
         tenant_id:
           type: string
@@ -8702,7 +8725,7 @@ components:
           description: Empty leaves the current name unchanged.
         role:
           type: string
-          enum: [admin, consultant, reviewer, readonly, member]
+          enum: [admin, consultant, reviewer, readonly, member, integration_admin]
           description: Empty leaves the current role unchanged.
 
     Readiness:

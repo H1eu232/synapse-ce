@@ -197,7 +197,7 @@ func TestNotificationPostgresDurability(t *testing.T) {
 	// Rotating the channel after did is delivered must not retarget its pinned configuration: a
 	// historical delivery keeps the channel_version it was sent under. #1352 covers the opposite
 	// case, a delivery still pending or retrying when the channel rotates.
-	channel, err = svc.UpdateChannel(ctx, "admin", channel.ID, notificationuc.ChannelInput{Name: channel.Name, Type: channel.Type, Enabled: true, URL: "https://example.net/replacement", Secret: "replacement-secret", Revision: channel.Revision})
+	channel, err = svc.UpdateChannel(ctx, "admin", channel.ID, notificationuc.ChannelInput{Name: channel.Name, Type: channel.Type, Enabled: true, URL: "https://example.net/replacement", Secret: "replacement-secret", Revision: channel.Revision, AllowDestinationChange: true})
 	if err != nil {
 		t.Fatal(err)
 	}
