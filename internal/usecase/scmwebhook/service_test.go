@@ -54,8 +54,8 @@ func webhookFixture() (*Service, *fakeProjectScans, ports.InboundWebhookIdentity
 func TestGitHubPushUsesOnlyStoredProjectBindingAndPinsCommit(t *testing.T) {
 	svc, scans, identity := webhookFixture()
 	sha := "0123456789abcdef0123456789abcdef01234567"
-	body := []byte(`{"ref":"refs/heads/main","after":"` + sha + `","repository":{"clone_url":"https://evil.invalid/attacker/repo.git"}}`)
-	err := svc.ReceiveInboundWebhook(context.Background(), identity, ports.InboundWebhookEvent{Provider: "github", EventType: "push", EventID: "d1", Body: body})
+	body := []byte(`{"repository":{"clone_url":"https://evil.invalid/attacker/repo.git"}}`)
+	err := svc.ReceiveInboundWebhook(context.Background(), identity, ports.InboundWebhookEvent{Provider: "github", EventType: "push", EventID: "d1", Ref: "main", SHA: sha, Body: body})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestGitHubPushUsesOnlyStoredProjectBindingAndPinsCommit(t *testing.T) {
 		t.Fatalf("scan calls=%d, want 1", len(scans.calls))
 	}
 	got := scans.calls[0]
-	if got.tenant != "tenant-1" || got.project != "project-1" || got.input.Ref != "refs/heads/main" || got.input.Commit != sha {
+	if got.tenant != "tenant-1" || got.project != "project-1" || got.input.Ref != "main" || got.input.Commit != sha {
 		t.Fatalf("scan target=%+v", got)
 	}
 	if got.input.DisableGitCredentials || got.input.NoBuildExecution {
@@ -74,8 +74,8 @@ func TestGitHubPushUsesOnlyStoredProjectBindingAndPinsCommit(t *testing.T) {
 func TestGitHubForkPullRequestDisablesCredentialsAndBuildExecution(t *testing.T) {
 	svc, scans, identity := webhookFixture()
 	sha := "abcdef0123456789abcdef0123456789abcdef01"
-	body := []byte(`{"action":"synchronize","pull_request":{"head":{"ref":"contrib/fix","sha":"` + sha + `","repo":{"fork":true}},"base":{"ref":"main"},"repository":{"clone_url":"https://evil.invalid/fork.git"}}}`)
-	err := svc.ReceiveInboundWebhook(context.Background(), identity, ports.InboundWebhookEvent{Provider: "github", EventType: "pull_request", EventID: "d2", Body: body})
+	body := []byte(`{"repository":{"clone_url":"https://evil.invalid/fork.git"}}`)
+	err := svc.ReceiveInboundWebhook(context.Background(), identity, ports.InboundWebhookEvent{Provider: "github", EventType: "pull_request", EventID: "d2", Ref: "contrib/fix", SHA: sha, Fork: true, Body: body})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +91,7 @@ func TestGitHubForkPullRequestDisablesCredentialsAndBuildExecution(t *testing.T)
 func TestGitHubWebhookRejectsInvalidSHAAndAmbiguousBinding(t *testing.T) {
 	svc, scans, identity := webhookFixture()
 	err := svc.ReceiveInboundWebhook(context.Background(), identity, ports.InboundWebhookEvent{
-		Provider: "github", EventType: "push", EventID: "d3",
-		Body: []byte(`{"ref":"refs/heads/main","after":"ABCDEF"}`),
+		Provider: "github", EventType: "push", EventID: "d3", Ref: "main", SHA: "ABCDEF",
 	})
 	if !errors.Is(err, shared.ErrValidation) || len(scans.calls) != 0 {
 		t.Fatalf("invalid sha err=%v calls=%d", err, len(scans.calls))
@@ -100,8 +99,7 @@ func TestGitHubWebhookRejectsInvalidSHAAndAmbiguousBinding(t *testing.T) {
 	f := svc.integrations.(*fakeIntegrations)
 	f.bindings = append(f.bindings, integration.Binding{ID: "binding-2", TenantID: "tenant-1", IntegrationID: "integration-1", ProjectID: "project-2"})
 	err = svc.ReceiveInboundWebhook(context.Background(), identity, ports.InboundWebhookEvent{
-		Provider: "github", EventType: "push", EventID: "d4",
-		Body: []byte(`{"ref":"refs/heads/main","after":"0123456789abcdef0123456789abcdef01234567"}`),
+		Provider: "github", EventType: "push", EventID: "d4", Ref: "main", SHA: "0123456789abcdef0123456789abcdef01234567",
 	})
 	if !errors.Is(err, shared.ErrValidation) || len(scans.calls) != 0 {
 		t.Fatalf("ambiguous binding err=%v calls=%d", err, len(scans.calls))
