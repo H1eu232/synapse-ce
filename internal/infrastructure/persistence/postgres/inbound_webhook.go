@@ -130,3 +130,18 @@ func (s *InboundWebhookRepository) ClaimInboundWebhookEvent(ctx context.Context,
 	})
 	return claimed, err
 }
+
+func (s *InboundWebhookRepository) ReleaseInboundWebhookEvent(ctx context.Context, identity ports.InboundWebhookIdentity, provider, eventID string) error {
+	if s == nil || s.pool == nil || identity.PublicID == "" || identity.TenantID.IsZero() ||
+		identity.OwnerKind != "integration" || identity.OwnerID == "" || provider == "" || eventID == "" {
+		return nil
+	}
+	return requireTenant(ctx, s.pool, identity.TenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			DELETE FROM inbound_webhook_events
+			WHERE tenant_id=$1 AND public_id=$2 AND provider=$3 AND event_id=$4
+		`, identity.TenantID, identity.PublicID, provider, eventID)
+		return err
+	})
+}
+
