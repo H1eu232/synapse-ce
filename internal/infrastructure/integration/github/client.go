@@ -1,10 +1,11 @@
 package github
 
 import (
+	"fmt"
+
 	"github.com/KKloudTarus/synapse-ce/internal/domain/integration"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/selfhosted"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
-	"fmt"
 )
 
 const Provider integration.Provider = "github"
