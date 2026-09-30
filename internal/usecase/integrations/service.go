@@ -232,12 +232,14 @@ func (service *Service) SetEnabled(ctx context.Context, tenantID, integrationID 
 	if err != nil {
 		return integration.Integration{}, err
 	}
+	requiresCredentialTest := false
 	if enabled {
 		descriptor, err := service.registry.Descriptor(item.Provider)
 		if err != nil {
 			return integration.Integration{}, err
 		}
-		if len(descriptor.SecretFields) > 0 {
+		requiresCredentialTest = len(descriptor.SecretFields) > 0
+		if requiresCredentialTest {
 			configured, err := service.store.IntegrationCredentialConfigured(tenantCtx, integrationID, credentialIdentity)
 			if err != nil {
 				return integration.Integration{}, err
@@ -254,7 +256,7 @@ func (service *Service) SetEnabled(ctx context.Context, tenantID, integrationID 
 	audit := service.auditEntry(actor, action, integrationID, integrationTargetMetadata(item, nil))
 	updated, err := service.store.SetIntegrationEnabled(tenantCtx, integrationID, enabled, version, audit)
 	if err != nil {
-		if enabled && errors.Is(err, shared.ErrConflict) {
+		if enabled && requiresCredentialTest && errors.Is(err, shared.ErrConflict) {
 			return integration.Integration{}, fmt.Errorf("%w: test the exact connection and credential revision successfully before enabling the integration", err)
 		}
 		return integration.Integration{}, err
