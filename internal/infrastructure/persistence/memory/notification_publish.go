@@ -64,6 +64,16 @@ func (r *NotificationRepository) publish(ctx context.Context, e notification.Eve
 	if existing, ok := r.eventIDs[source]; ok {
 		return r.deliveryIDsOf(e.TenantID, existing), nil
 	}
+	if r.projector != nil {
+		projected, err := r.projector.Project(ctx, e)
+		if err != nil {
+			return nil, fmt.Errorf("project notification event: %w", err)
+		}
+		if err := projected.Validate(); err != nil {
+			return nil, err
+		}
+		e = projected
+	}
 	targets, revisions := r.fanoutTargets(e, only)
 	if len(targets) > 0 && r.countOpenDeliveries(e.TenantID) >= maxOpenDeliveries {
 		return nil, capacityReached("delivery")
@@ -214,6 +224,7 @@ func (r *NotificationRepository) recentChannelTests(tenant, channel shared.ID) i
 
 func cloneNotificationEvent(e notification.Event) notification.Event {
 	e.Data = slices.Clone(e.Data)
+	e.Context = slices.Clone(e.Context)
 	return e
 }
 

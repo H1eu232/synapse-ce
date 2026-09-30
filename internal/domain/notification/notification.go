@@ -186,6 +186,12 @@ type Event struct {
 	SchemaVersion int             `json:"schema_version"`
 	OccurredAt    time.Time       `json:"occurred_at"`
 	Data          json.RawMessage `json:"data"`
+	// SubjectKind and SubjectID name the entity the event is about (EPIC D8), and Context is the
+	// template context snapshot its builder took at projection (D5). They are not part of the
+	// webhook body, which is the raw event and a public contract (D4).
+	SubjectKind string          `json:"-"`
+	SubjectID   string          `json:"-"`
+	Context     json.RawMessage `json:"-"`
 }
 
 // schemaVersionKnown accepts any envelope version from 1 up to the one the catalog declares for the
@@ -204,6 +210,12 @@ func (e Event) Validate() error {
 	var data map[string]any
 	if len(e.Data) == 0 || len(e.Data) > 16384 || json.Unmarshal(e.Data, &data) != nil || data == nil {
 		return fmt.Errorf("%w: notification event data must be an object", shared.ErrValidation)
+	}
+	if (e.SubjectKind != "" && !sourceKindShape.MatchString(e.SubjectKind)) || len(e.SubjectID) > maxSubjectIDLength {
+		return fmt.Errorf("%w: invalid notification event subject", shared.ErrValidation)
+	}
+	if len(e.Context) != 0 && !isJSONObject(e.Context, maxContextBytes) {
+		return fmt.Errorf("%w: notification event context must be an object", shared.ErrValidation)
 	}
 	return nil
 }

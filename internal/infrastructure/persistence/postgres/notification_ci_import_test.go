@@ -168,14 +168,14 @@ func TestNotificationCIImportCapture(t *testing.T) {
 	if work.Event.Type != notification.EventScanCompleted || work.Event.SourceID != accepted.ID {
 		t.Fatalf("unexpected accepted event: %+v", work.Event)
 	}
-	if relevant, err := repo.DeliveryStillRelevant(ctx, work); err != nil || !relevant {
+	if relevant, err := deliveryStillRelevant(repo, ctx, work); err != nil || !relevant {
 		t.Fatalf("accepted import relevant = %v, err = %v; want true", relevant, err)
 	}
 
 	// The relevance query cannot be tricked into reading another tenant's job.
 	other := work
 	other.Event.TenantID = "notify-other"
-	if relevant, err := repo.DeliveryStillRelevant(shared.WithTenant(context.Background(), "notify-other"), other); err != nil || relevant {
+	if relevant, err := deliveryStillRelevant(repo, shared.WithTenant(context.Background(), "notify-other"), other); err != nil || relevant {
 		t.Fatalf("cross-tenant scan relevant = %v, err = %v; want false", relevant, err)
 	}
 
@@ -189,7 +189,7 @@ func TestNotificationCIImportCapture(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if relevant, err := repo.DeliveryStillRelevant(ctx, work); err != nil || relevant {
+	if relevant, err := deliveryStillRelevant(repo, ctx, work); err != nil || relevant {
 		t.Fatalf("rejected queued delivery relevant = %v, err = %v; want false", relevant, err)
 	}
 	if err := WithTenant(ctx, pool, tenant.String(), func(tx pgx.Tx) error {

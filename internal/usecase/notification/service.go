@@ -41,6 +41,9 @@ type Service struct {
 	templates ports.NotificationTemplateStore
 	// builtins is the built-in template catalog (#1366); NoBuiltinTemplates until it ships.
 	builtins ports.BuiltinTemplates
+	// events holds the per-type event builders; the worker asks them whether a delivery is still
+	// relevant (#1344).
+	events *EventBuilders
 	// tenantSettings supplies the tenant default_locale to template resolution (#1371).
 	tenantSettings ports.TenantSettingsStore
 }
@@ -68,7 +71,7 @@ func NewService(repo ports.NotificationRepository, protector ports.NotificationS
 	if repo == nil || protector == nil || audit == nil || clock == nil || ids == nil {
 		return nil, fmt.Errorf("%w: notification dependencies are required", shared.ErrValidation)
 	}
-	return &Service{repo: repo, protector: protector, sender: sender, audit: audit, clock: clock, ids: ids, pauseThreshold: domain.DefaultPauseThreshold, builtins: ports.NoBuiltinTemplates{}}, nil
+	return &Service{repo: repo, protector: protector, sender: sender, audit: audit, clock: clock, ids: ids, pauseThreshold: domain.DefaultPauseThreshold, builtins: ports.NoBuiltinTemplates{}, events: NewEventBuilders()}, nil
 }
 
 // SetPauseThreshold sets how many consecutive permanent failures pause a channel; zero keeps
@@ -505,7 +508,7 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 		// No new sends to a paused channel: its queued work is cancelled like a disabled channel's.
 		return s.repo.CancelDelivery(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, "channel_paused")
 	}
-	relevant, err := s.repo.DeliveryStillRelevant(ctx, work)
+	relevant, err := s.events.StillRelevant(ctx, s.repo, work)
 	if err != nil {
 		return err
 	}

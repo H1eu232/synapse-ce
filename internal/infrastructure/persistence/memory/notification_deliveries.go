@@ -123,9 +123,18 @@ func (r *NotificationRepository) LoadWork(_ context.Context, tenant, delivery sh
 	return ports.NotificationWork{Delivery: cloneDelivery(d), Event: cloneNotificationEvent(event.event), Channel: channel, Sealed: sealed}, nil
 }
 
-// DeliveryStillRelevant reports true: the scan, SLA and fleet re-checks read stores this adapter
-// does not have (see the type documentation).
-func (r *NotificationRepository) DeliveryStillRelevant(context.Context, ports.NotificationWork) (bool, error) {
+// ScanJobSucceeded, SLAReminderDue and FleetAgentLastSeen report true: the scan job, SLA and fleet
+// agent rows they read have no memory counterpart (see the type documentation), so every queued
+// delivery stays relevant.
+func (r *NotificationRepository) ScanJobSucceeded(context.Context, shared.ID, string) (bool, error) {
+	return true, nil
+}
+
+func (r *NotificationRepository) SLAReminderDue(context.Context, shared.ID, ports.SLAReminder) (bool, error) {
+	return true, nil
+}
+
+func (r *NotificationRepository) FleetAgentLastSeen(context.Context, shared.ID, string, time.Time) (bool, error) {
 	return true, nil
 }
 

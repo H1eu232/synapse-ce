@@ -51,6 +51,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/sandbox"
 	elastic "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/elastic"
 	siemseal "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/seal"
+	sentinel "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/sentinel"
 	splunk "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/splunk"
 	syslogtls "github.com/KKloudTarus/synapse-ce/internal/infrastructure/siem/syslog"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/signing"
@@ -119,6 +120,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/vulnerabilityscheduler"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/worker"
 	writeupdraftuc "github.com/KKloudTarus/synapse-ce/internal/usecase/writeupdraftuc"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -694,7 +696,7 @@ func main() {
 			os.Exit(1)
 		}
 		sender := notificationSender
-		notificationService, notificationErr := notificationuc.NewService(postgres.NewNotificationRepository(pool), vaultCipher, sender, auditLog, clock, ids)
+		notificationService, notificationErr := notificationuc.NewService(newNotificationRepository(pool), vaultCipher, sender, auditLog, clock, ids)
 		if notificationErr != nil {
 			log.Error("notification service init failed", "err", notificationErr)
 			os.Exit(1)
@@ -760,7 +762,7 @@ func main() {
 		// so both paths run side by side until the legacy one is removed. Each path is idempotent on
 		// its own (the framework keys events by a stable id), and the rule form warns about the overlap.
 		alertinguc.WarnLegacyWebhookDeprecated(log, cfg.AlertWebhookURL != "")
-		notificationSource := postgres.NewNotificationSource(pool, postgres.NewNotificationRepository(pool), cfg.FleetAgentStaleAfter)
+		notificationSource := postgres.NewNotificationSource(pool, newNotificationRepository(pool), cfg.FleetAgentStaleAfter)
 		notificationSource.SetVulnerabilityEnabled(cfg.VulnerabilityNotificationsEnabled && !cfg.VulnerabilityDryRunEnabled)
 		maintenanceTasks = append(maintenanceTasks, func(taskCtx context.Context) {
 			ticker := time.NewTicker(time.Minute)
@@ -1276,8 +1278,9 @@ func main() {
 		go func() {
 			repository := postgres.NewSIEMRepository(pool)
 			service, serviceErr := siemuc.NewService(repository, repository, repository, siemseal.Vault{Cipher: vaultCipher}, map[siem.Provider]ports.SIEMDriver{
-				siem.ProviderSplunk:        splunk.New(5*time.Second, true),
-				siem.ProviderElasticsearch: elastic.New(5 * time.Second),
+				siem.ProviderSplunk:            splunk.New(5*time.Second, true),
+				siem.ProviderElasticsearch:     elastic.New(5 * time.Second),
+				siem.ProviderMicrosoftSentinel: sentinel.New(5 * time.Second),
 				siem.ProviderSyslogTLS:     syslogtls.New(5 * time.Second),
 			}, auditLog, clock, ids)
 			if serviceErr != nil {
@@ -1606,4 +1609,13 @@ func (h agentJobHandler) Handle(ctx context.Context, job ports.QueuedJob) error 
 
 func (h agentJobHandler) OnDeadLetter(ctx context.Context, job ports.QueuedJob, cause error) error {
 	return h.orch.FailStrandedJob(ctx, job.Payload, cause)
+}
+
+// newNotificationRepository returns a notification store that projects every event it publishes
+// through the event builders (#1344): the delivery service publishes pause notices and the source
+// publishes captured events.
+func newNotificationRepository(pool *pgxpool.Pool) *postgres.NotificationRepository {
+	repo := postgres.NewNotificationRepository(pool)
+	repo.SetEventProjector(notificationuc.NewEventBuilders())
+	return repo
 }

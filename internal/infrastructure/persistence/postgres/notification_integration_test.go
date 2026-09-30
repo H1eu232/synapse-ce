@@ -344,7 +344,7 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 		assertPublishedEventSchema(t, w.Event)
 		if w.Event.Type == notification.EventFleetAgentOffline {
 			exec("UPDATE fleet_agents SET last_seen_at=$1 WHERE id='agent'", now.Add(3*time.Minute))
-			if relevant, e := repo.DeliveryStillRelevant(ctx, w); e != nil || relevant {
+			if relevant, e := deliveryStillRelevant(repo, ctx, w); e != nil || relevant {
 				t.Fatalf("recovery not rechecked: %v %v", relevant, e)
 			}
 		}

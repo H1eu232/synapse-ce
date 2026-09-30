@@ -32,7 +32,7 @@ func TestBulkPartialDoesNotTreatConflictAsSuccess(t *testing.T) {
 		t.Fatalf("items %+v", result.Items)
 	}
 	if strings.Count(body, "\n") != 6 && strings.Count(body, "\n") != 4 {
-		// two records would be 4 newlines; three records are 6.
+		t.Fatalf("unexpected bulk framing: %q", body)
 	}
 	if !strings.Contains(body, `"_id":"rec-2"`) || strings.Contains(body, "api-key-secret") {
 		t.Fatalf("body leaked or lost an id: %s", body)
