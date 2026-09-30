@@ -564,7 +564,7 @@ func TestGitHubInboundIntegrationAllowsExactlyOneGitProjectBinding(t *testing.T)
 
 	other, err := service.Create(ctx, CreateInput{
 		TenantID: tenantID, Provider: "github", Name: "GitHub inbound 2",
-		Endpoint: "https://github.com", Config: map[string]any{}, PollInterval: time.Minute, Actor: "admin",
+		Endpoint: "https://github.example.com", Config: map[string]any{}, PollInterval: time.Minute, Actor: "admin",
 	})
 	if err != nil {
 		t.Fatal(err)
