@@ -1,8 +1,9 @@
 # SIEM streams
 
-Synapse can export committed audit events and incident events to Splunk HEC or
-Elasticsearch. The stream is separate from notification delivery. One bad
-destination does not decide another tenant's cursor.
+Synapse can export committed audit events and incident events to Splunk HEC,
+Elasticsearch, or syslog RFC 5424 over TLS. The stream is separate from
+notification delivery. One bad destination does not decide another tenant's
+cursor.
 
 ## What is exported
 
@@ -41,6 +42,13 @@ through the contiguous successful prefix. HTTP 409 is not treated as proof
 that the current document was stored. The target is one normal index, not a
 data stream.
 
+Syslog uses RFC 5424 messages with the RFC 5425 octet-counted TLS framing.
+Each completed frame write advances the contiguous prefix, but syslog has no
+application-level acknowledgement: a disconnect after a collector accepts a
+frame can cause that frame to be replayed. The stable syslog `MSGID` lets a
+collector correlate those duplicates; it is not proof that the collector has
+indexed the record.
+
 ## Privacy
 
 The sink data class defaults to signal. An engagement whose policy is unknown
@@ -68,11 +76,18 @@ drops prepared batches, and requires an explicit choice: continue from the
 cursor, or start at the current head so the old backlog is not sent to the
 new host.
 
-Destinations must be `https` with no userinfo. Private, loopback, and metadata
-addresses are rejected. The dial uses the shared HTTP client, which does not
-follow redirects or use a proxy. A private self-hosted collector stays blocked
-until the shared egress allowlist lands. Do not turn on private-network dialing
-to bypass that.
+Splunk and Elasticsearch destinations must be `https`; syslog destinations
+must be `tls://host:port` and include a port (normally `6514`). All reject
+userinfo, paths, queries, private, loopback, and metadata addresses. Syslog
+uses the shared safe dialer, which resolves and checks the address actually
+dialed; it verifies the certificate and hostname using TLS 1.2 or newer and
+never disables verification.
+
+The write-only syslog credential is a sealed JSON object. Use `{}` with the
+system trust store, optionally add `ca_pem` for a private CA, and provide both
+`client_cert_pem` and `client_key_pem` for mutual TLS. A lone certificate or
+key is rejected. Private self-hosted collectors stay blocked until the shared
+egress allowlist lands. Do not turn on private-network dialing to bypass that.
 
 ## Operations
 
@@ -117,11 +132,11 @@ need `administer`, which only `admin` holds. Machine roles hold neither.
 
 ## What this release does not prove
 
-No Splunk or Elasticsearch service was available while this was built, so
-there are no screenshots of received English or Vietnamese events. The provider
+No Splunk, Elasticsearch, or syslog service was available while this was built,
+so there are no screenshots of received English or Vietnamese events. Provider
 behavior is covered by contract tests against a local TLS server. Browser
-screenshots of the settings page in light and dark themes were not captured
-in a running console. The page uses the existing settings components.
+screenshots of the settings page in light and dark themes were not captured in
+a running console. The page uses the existing settings components.
 
 These shared pieces were still open, so this stream does not replace them:
 
@@ -129,4 +144,4 @@ These shared pieces were still open, so this stream does not replace them:
 - engagement data-class overrides beyond the fail-closed signal ceiling
 - offline validation against the official, pinned OCSF schema artifacts
 
-Syslog and Microsoft Sentinel are not part of this stream.
+Microsoft Sentinel is not part of this stream.

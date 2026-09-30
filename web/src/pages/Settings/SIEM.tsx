@@ -10,6 +10,7 @@ const guarantees: Record<SIEMAckMode, string> = {
   hec_acceptance: 'Splunk accepted the HTTP batch. That is not indexer acknowledgement, and it does not prove the event is searchable.',
   indexer_ack: 'Splunk indexer acknowledgement was requested. A true ack can still be lost, and a later replay can duplicate.',
   bulk_item: 'Elasticsearch item results advance only the contiguous successful prefix. A conflict is not treated as already stored.',
+  transport_write: 'The TLS transport accepted the complete frame. Syslog has no application acknowledgement, so a replay can duplicate it.',
 }
 
 export function SIEM() {
@@ -123,6 +124,7 @@ function CreateSink({ onCreated }: { onCreated: () => void }) {
   const [target, setTarget] = useState('')
   const [secret, setSecret] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const isSyslog = provider === 'syslog_tls'
   async function submit(event: FormEvent) {
     event.preventDefault()
     setError(null)
@@ -152,21 +154,22 @@ function CreateSink({ onCreated }: { onCreated: () => void }) {
             options={[
               { value: 'splunk_hec', label: 'Splunk HEC' },
               { value: 'elasticsearch', label: 'Elasticsearch' },
+              { value: 'syslog_tls', label: 'Syslog TLS (RFC 5424)' },
             ]}
           />
         </Field>
-        <Field label="HTTPS origin" htmlFor="siem-origin">
-          <Input id="siem-origin" value={origin} onChange={(event) => setOrigin(event.target.value)} placeholder="https://splunk.example:8088" required />
+        <Field label={isSyslog ? 'Syslog TLS endpoint' : 'HTTPS origin'} htmlFor="siem-origin">
+          <Input id="siem-origin" value={origin} onChange={(event) => setOrigin(event.target.value)} placeholder={isSyslog ? 'tls://syslog.example:6514' : 'https://splunk.example:8088'} required />
         </Field>
-        <Field label={provider === 'elasticsearch' ? 'Index' : 'Collector path'} htmlFor="siem-target">
-          <Input id="siem-target" value={target} onChange={(event) => setTarget(event.target.value)} placeholder={provider === 'elasticsearch' ? 'synapse-siem' : '/services/collector/event'} />
+        <Field label={isSyslog ? 'Application name' : provider === 'elasticsearch' ? 'Index' : 'Collector path'} htmlFor="siem-target">
+          <Input id="siem-target" value={target} onChange={(event) => setTarget(event.target.value)} placeholder={isSyslog ? 'synapse' : provider === 'elasticsearch' ? 'synapse-siem' : '/services/collector/event'} />
         </Field>
         <div className="text-sm">
           <p className="font-medium">Data class: Signal</p>
           <p>Summary and Detail require a wired engagement policy and are not currently available.</p>
         </div>
-        <Field label="Credential" htmlFor="siem-secret">
-          <Input id="siem-secret" type="password" value={secret} onChange={(event) => setSecret(event.target.value)} autoComplete="new-password" required />
+        <Field label={isSyslog ? 'TLS credential JSON' : 'Credential'} htmlFor="siem-secret">
+          <Input id="siem-secret" type="password" value={secret} onChange={(event) => setSecret(event.target.value)} autoComplete="new-password" placeholder={isSyslog ? '{"ca_pem":"...","client_cert_pem":"...","client_key_pem":"..."}' : undefined} required />
         </Field>
         {error ? <p className="text-sm text-error-primary md:col-span-2">{error}</p> : null}
         <div className="md:col-span-2">

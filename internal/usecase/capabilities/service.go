@@ -35,6 +35,7 @@ type Flags struct {
 	SingleTenant         bool // SYNAPSE_SINGLE_TENANT
 	OIDC                 bool // SYNAPSE_OIDC_ENABLED
 	Ownership            bool // effective SYNAPSE_OWNERSHIP_MODE != off with PostgreSQL
+	InboundWebhooks      bool // SYNAPSE_INBOUND_WEBHOOKS_ENABLED
 	Notifications        bool // SYNAPSE_NOTIFICATIONS_ENABLED
 	// NotificationChannelTypes is every channel type the notification driver registry holds, in
 	// registry order. The composition root reads it from the registry, so a new driver is
@@ -198,6 +199,7 @@ func build(f Flags) []Capability {
 		{Key: "single_tenant", Name: "Single-tenant mode", Enabled: f.SingleTenant, Switch: "SYNAPSE_SINGLE_TENANT"},
 		{Key: "oidc", Name: "OIDC browser login", Enabled: f.OIDC, Switch: "SYNAPSE_OIDC_ENABLED"},
 		{Key: "ownership", Name: "Finding ownership", Enabled: f.Ownership, Switch: "SYNAPSE_OWNERSHIP_MODE"},
+		{Key: "inbound_webhooks", Name: "Inbound webhook plane", Enabled: f.InboundWebhooks, Switch: "SYNAPSE_INBOUND_WEBHOOKS_ENABLED"},
 		{Key: "notifications", Name: "Tenant notifications", Enabled: f.Notifications, Switch: "SYNAPSE_NOTIFICATIONS_ENABLED"},
 		{
 			Key: "notifications.channel_types", Name: "Notification channel types",

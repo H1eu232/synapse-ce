@@ -66,7 +66,39 @@ tags:
   - name: ownership
     description: Finding teams, immutable routing policies, assignment and ownership history
 
+  - name: inbound-webhooks
+    description: Separate HMAC-authenticated ingress, never human/OIDC authorization
+
 paths:
+  /api/v1/hooks/{public_id}:
+    post:
+      tags: [inbound-webhooks]
+      operationId: receiveInboundWebhook
+      summary: Receive a separately authenticated provider webhook
+      description: >-
+        The public ID identifies an enabled tenant-owned integration. Tenant identity
+        never comes from a header, query or body. Signature is sha256=HEX(HMAC-SHA256
+        over the raw body) in X-Synapse-Hook-Signature; the current secret and the
+        24-hour rotation overlap are accepted. No human bearer token is used.
+      security:
+        - inboundWebhookHMAC: []
+      parameters:
+        - name: public_id
+          in: path
+          required: true
+          schema: {type: string, minLength: 32, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$'}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary, maxLength: 1048576}
+      responses:
+        '202': {description: Authenticated event accepted by a provider receiver.}
+        '400': {description: Invalid request body.}
+        '401': {description: Uniform response for invalid signatures, unknown IDs and disabled or revoked endpoints.}
+        '413': {description: Body exceeds 1 MiB.}
+        '429': {description: Per-endpoint admission limit; includes Retry-After.}
+        '503': {description: Lookup or provider-specific receiver unavailable.}
   /api/v1/ownership/capabilities:
     get:
       tags: ["ownership"]
@@ -6381,6 +6413,11 @@ paths:
 
 components:
   securitySchemes:
+    inboundWebhookHMAC:
+      type: apiKey
+      in: header
+      name: X-Synapse-Hook-Signature
+      description: HMAC-SHA256 over the exact raw request body
     bearerAuth:
       type: http
       scheme: bearer
@@ -6606,11 +6643,11 @@ components:
         id: {type: string}
         tenant_id: {type: string}
         name: {type: string}
-        provider: {type: string, enum: [splunk_hec, elasticsearch]}
+        provider: {type: string, enum: [splunk_hec, elasticsearch, syslog_tls]}
         origin: {type: string}
         target: {type: string}
         data_class: {type: string, enum: [signal, summary, detail]}
-        ack_mode: {type: string, enum: [hec_acceptance, indexer_ack, bulk_item]}
+        ack_mode: {type: string, enum: [hec_acceptance, indexer_ack, bulk_item, transport_write]}
         indexer_ack_supported: {type: boolean}
         paused: {type: boolean}
         enabled: {type: boolean}
@@ -6626,7 +6663,7 @@ components:
       required: [name, provider, origin, secret]
       properties:
         name: {type: string}
-        provider: {type: string, enum: [splunk_hec, elasticsearch]}
+        provider: {type: string, enum: [splunk_hec, elasticsearch, syslog_tls]}
         origin: {type: string}
         target: {type: string}
         data_class: {type: string, enum: [signal, summary, detail]}

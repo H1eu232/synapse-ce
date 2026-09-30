@@ -2,6 +2,7 @@ package siem
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"strings"
@@ -20,9 +21,12 @@ type Origin struct {
 // String returns the canonical origin.
 func (o Origin) String() string {
 	if o.Port == "" {
+		if strings.Contains(o.Host, ":") {
+			return o.Scheme + "://[" + o.Host + "]"
+		}
 		return o.Scheme + "://" + o.Host
 	}
-	return o.Scheme + "://" + o.Host + ":" + o.Port
+	return o.Scheme + "://" + net.JoinHostPort(o.Host, o.Port)
 }
 
 // Same reports whether two origins are the same scheme, host, and port.
@@ -34,12 +38,24 @@ func (o Origin) Same(other Origin) bool {
 // in private, loopback, link-local, multicast, or metadata space are rejected
 // here. Name resolution is checked again at dial time by the shared HTTP guard.
 func ParseOrigin(raw string) (Origin, error) {
+	return parseOrigin(raw, "https", false)
+}
+
+// ParseOriginFor applies the transport required by provider.
+func ParseOriginFor(provider Provider, raw string) (Origin, error) {
+	if provider == ProviderSyslogTLS {
+		return parseOrigin(raw, "tls", true)
+	}
+	return ParseOrigin(raw)
+}
+
+func parseOrigin(raw, scheme string, requirePort bool) (Origin, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return Origin{}, fmt.Errorf("%w: sink origin is not a URL", shared.ErrValidation)
 	}
-	if parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" && parsed.Path != "/" {
-		return Origin{}, fmt.Errorf("%w: sink origin must be https://host[:port] without userinfo, path, query, or fragment", shared.ErrValidation)
+	if parsed.Scheme != scheme || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" && parsed.Path != "/" {
+		return Origin{}, fmt.Errorf("%w: sink origin must be %s://host[:port] without userinfo, path, query, or fragment", shared.ErrValidation, scheme)
 	}
 	host := parsed.Hostname()
 	if host == "" || strings.Contains(host, "*") || strings.ContainsAny(host, " \t\r\n") {
@@ -49,6 +65,9 @@ func ParseOrigin(raw string) (Origin, error) {
 		return Origin{}, fmt.Errorf("%w: sink origin host is not allowed", shared.ErrValidation)
 	}
 	port := parsed.Port()
+	if requirePort && port == "" {
+		return Origin{}, fmt.Errorf("%w: sink origin port is required", shared.ErrValidation)
+	}
 	if port != "" {
 		n := 0
 		for _, r := range port {
@@ -61,7 +80,7 @@ func ParseOrigin(raw string) (Origin, error) {
 			return Origin{}, fmt.Errorf("%w: sink origin port is invalid", shared.ErrValidation)
 		}
 	}
-	return Origin{Scheme: "https", Host: host, Port: port}, nil
+	return Origin{Scheme: scheme, Host: host, Port: port}, nil
 }
 
 // ForbiddenHost reports whether host is an IP or name that must never be a

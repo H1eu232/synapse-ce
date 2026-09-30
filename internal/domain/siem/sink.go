@@ -44,7 +44,7 @@ func (s Sink) Validate() error {
 	if !s.Provider.Valid() {
 		return fmt.Errorf("%w: unknown siem provider %q", shared.ErrValidation, s.Provider)
 	}
-	origin, err := ParseOrigin(s.Origin)
+	origin, err := ParseOriginFor(s.Provider, s.Origin)
 	if err != nil {
 		return err
 	}
@@ -102,6 +102,15 @@ func validateTarget(provider Provider, target string) error {
 		if !validIndex(target) {
 			return fmt.Errorf("%w: elasticsearch target must be one normal index name", shared.ErrValidation)
 		}
+	case ProviderSyslogTLS:
+		if target == "" || len(target) > 48 {
+			return fmt.Errorf("%w: syslog app name must be 1..48 printable ASCII characters", shared.ErrValidation)
+		}
+		for _, r := range target {
+			if r < 33 || r > 126 {
+				return fmt.Errorf("%w: syslog app name must be 1..48 printable ASCII characters", shared.ErrValidation)
+			}
+		}
 	default:
 		return fmt.Errorf("%w: unknown siem provider", shared.ErrValidation)
 	}
@@ -132,6 +141,15 @@ func validIndex(name string) bool {
 // NormalizeOrigin returns the canonical origin or a validation error.
 func NormalizeOrigin(raw string) (string, error) {
 	origin, err := ParseOrigin(raw)
+	if err != nil {
+		return "", err
+	}
+	return origin.String(), nil
+}
+
+// NormalizeOriginFor returns the provider-specific canonical origin.
+func NormalizeOriginFor(provider Provider, raw string) (string, error) {
+	origin, err := ParseOriginFor(provider, raw)
 	if err != nil {
 		return "", err
 	}

@@ -50,6 +50,7 @@ func TestCatalogReportsSwitchPerSubsystem(t *testing.T) {
 		{"single_tenant", "SYNAPSE_SINGLE_TENANT"},
 		{"oidc", "SYNAPSE_OIDC_ENABLED"},
 		{"ownership", "SYNAPSE_OWNERSHIP_MODE"},
+		{"inbound_webhooks", "SYNAPSE_INBOUND_WEBHOOKS_ENABLED"},
 		{"notifications", "SYNAPSE_NOTIFICATIONS_ENABLED"},
 		{"notifications.channel_types", "SYNAPSE_NOTIFICATIONS_ENABLED"},
 		{"ticketing", ""},
@@ -79,7 +80,7 @@ func TestEnabledFlagsResolve(t *testing.T) {
 		FleetTelemetryIngest: true, FleetDetectionIngest: true, CSPM: true, Agent: true,
 		FPTriage: true, SLA: true, Judgments: true, Sandbox: true, WriteupDrafts: true,
 		Taint: true, JSReachability: true, SingleTenant: true, OIDC: true,
-		Ownership: true, Notifications: true, LegacyAlertWebhook: true,
+		Ownership: true, InboundWebhooks: true, Notifications: true, LegacyAlertWebhook: true,
 	})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
