@@ -38,6 +38,9 @@ type InboundWebhookStore interface {
 	// authentication. false,nil is an exact replay that must be acknowledged
 	// without invoking the provider receiver again.
 	ClaimInboundWebhookEvent(context.Context, InboundWebhookIdentity, string, string, time.Time) (bool, error)
+	// ReleaseInboundWebhookEvent makes a claimed delivery retryable when the
+	// provider receiver fails before durably accepting its work.
+	ReleaseInboundWebhookEvent(context.Context, InboundWebhookIdentity, string, string) error
 }
 
 type InboundWebhookIdentity struct {
