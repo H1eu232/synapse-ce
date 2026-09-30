@@ -5438,26 +5438,26 @@ paths:
     post:
       tags: [integrations]
       operationId: configureGitHubInboundWebhook
-      summary: Provision or rotate the one-time GitHub inbound webhook secret
+      summary: Provision or rotate a GitHub inbound webhook secret
       description: >
         Requires the administer capability and is registered only when inbound webhooks are enabled.
         The integration must be an unarchived GitHub integration with exactly one Project binding.
-        The first call creates an opaque hook path; later calls keep that path and rotate the secret.
-        The plaintext secret is returned only in this response and the response is marked no-store.
-        Configure GitHub to send push and pull_request events to the returned path and use the returned
-        secret for X-Hub-Signature-256.
+        The caller supplies the same secret that will be configured in GitHub. Synapse seals it immediately
+        and never returns plaintext credential material. The first call creates an opaque hook path; later
+        calls keep that path and rotate the sealed secret.
       security:
       - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GitHubInboundWebhookSecretRequest'}
       responses:
         '200':
-          description: Webhook endpoint provisioned or rotated; secret returned once
-          headers:
-            Cache-Control:
-              schema: {type: string}
-              description: Always no-store.
+          description: Webhook endpoint provisioned or rotated; no credential material is returned
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/GitHubInboundWebhookCredentials'}
+              schema: {$ref: '#/components/schemas/GitHubInboundWebhookConfiguration'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -7858,21 +7858,27 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
 
-    GitHubInboundWebhookCredentials:
+    GitHubInboundWebhookSecretRequest:
       type: object
       additionalProperties: false
-      required: [path, secret, version, rotated]
+      required: [secret]
       properties:
-        path:
-          type: string
-          pattern: '^/api/v1/hooks/[A-Za-z0-9_-]{32,64}$'
-          description: Opaque relative webhook path; combine with the deployment's public HTTPS origin.
         secret:
           type: string
           minLength: 32
           maxLength: 128
           writeOnly: true
-          description: One-time plaintext secret used by GitHub to compute X-Hub-Signature-256.
+          description: Caller-supplied GitHub webhook secret. Synapse seals it and never echoes it.
+
+    GitHubInboundWebhookConfiguration:
+      type: object
+      additionalProperties: false
+      required: [path, version, rotated]
+      properties:
+        path:
+          type: string
+          pattern: '^/api/v1/hooks/[A-Za-z0-9_-]{32,64}$'
+          description: Opaque relative webhook path; combine with the deployment's public HTTPS origin.
         version: {type: integer, minimum: 1}
         rotated: {type: boolean}
         previous_secret_expires_at:
