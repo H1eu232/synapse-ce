@@ -50,6 +50,7 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 		{"channels are revised and deleted under optimistic concurrency", channelLifecycle},
 		{"a rule names only channels and engagements that exist", ruleReferencesMustExist},
 		{"a channel publication is listed, paged and loaded", channelPublicationIsListedPagedAndLoaded},
+		{"an event keeps its subject and template context snapshot", eventKeepsSubjectAndContext},
 		{"channel tests are rate limited per channel", channelTestsAreRateLimited},
 		{"disabling or deleting a channel cancels its undelivered deliveries", closingChannelCancelsDeliveries},
 		{"a new destination or secret cancels the deliveries meant for the old one", retargetingChannelCancelsDeliveries},
@@ -428,6 +429,36 @@ func (f *fixture) publishTest(t *testing.T, channel shared.ID, n int) shared.ID 
 		t.Fatalf("publish test %d: %v", n, err)
 	}
 	return id
+}
+
+func eventKeepsSubjectAndContext(t *testing.T, f *fixture) {
+	channel := f.channel(t, f.tenant, "hook")
+	snapshot := json.RawMessage(`{"vars":{"event_type":"notification.test","occurred_at":"2026-09-27T08:00:00Z"}}`)
+	e := notification.Event{TenantID: f.tenant, ID: "test-event-context", Type: notification.EventTest, SourceKind: "notification_test",
+		SourceID: "test-context", SchemaVersion: 1, OccurredAt: f.base, Data: json.RawMessage(`{"title":"Test notification"}`),
+		SubjectKind: "channel", SubjectID: channel.ID.String(), Context: snapshot}
+	id, err := f.Repository.PublishToChannel(f.ctx, e, channel.ID)
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	w := f.work(t, id)
+	if w.Event.SubjectKind != "channel" || w.Event.SubjectID != channel.ID.String() {
+		t.Fatalf("subject = %q/%q", w.Event.SubjectKind, w.Event.SubjectID)
+	}
+	got, err := notification.DecodeTemplateContext(w.Event.Context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Vars) != 2 || got.Vars["event_type"] != "notification.test" || got.Vars["occurred_at"] != "2026-09-27T08:00:00Z" {
+		t.Fatalf("context = %+v", got)
+	}
+
+	// An event published without a snapshot loads with an empty one, as every event projected
+	// before the builders existed does.
+	plain := f.work(t, f.publishTest(t, channel.ID, 1))
+	if empty, err := notification.DecodeTemplateContext(plain.Event.Context); err != nil || len(empty.Vars) != 0 || plain.Event.SubjectID != "" {
+		t.Fatalf("event without a snapshot = %+v/%q, %v", empty, plain.Event.SubjectID, err)
+	}
 }
 
 func channelPublicationIsListedPagedAndLoaded(t *testing.T, f *fixture) {

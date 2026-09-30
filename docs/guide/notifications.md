@@ -217,11 +217,32 @@ at 200 characters; the response never repeats the template source:
  "field": "body", "event_type": "incident.created", "code": "unknown_variable", "line": 2}
 ```
 
-The event catalog does not declare template variables yet, so for now a
-template can contain literal text and functions applied to literals only; any
-`{{.variable}}` is rejected until the event builders declare their variables.
-List variables will also need their item fields declared before a template can
-`range` over them. The `webhook` family's `body` is compiled as text; the
+Every event type declares its template variables in the catalog. Five are
+common to all of them, so a `*` template can use these: `event_type`,
+`event_label` and `occurred_at` (signal class), and `title` and `summary`
+(summary class). The others are per type:
+
+| Event type | Signal | Summary | Detail |
+|---|---|---|---|
+| `vulnerability_action.created` | `severity`, `action_type` | `engagement_name` | |
+| `scan.completed` | `scan_kind` | `engagement_name`, `target` | |
+| `quality_gate.failed` | `failed_conditions` | `project_name` | |
+| `sla.approaching_deadline` | `tier`, `deadline`, `lead_time_hours` | `engagement_name`, `finding_title` | |
+| `fleet.agent.offline` | `last_seen_at` | `agent_name` | |
+| `incident.created` | `severity` | `engagement_name` | `asset_name` |
+| `finding.ownership_changed` | | `engagement_name`, `finding_title`, `old_team`, `new_team`, `old_assignee`, `new_assignee`, `actor`, `reason` | |
+
+When an event is recorded, its builder takes a snapshot of these values and
+stores it with the event. The snapshot keeps only declared variables up to the
+event type's maximum data class, with invisible and direction-changing
+characters removed, line breaks turned into spaces, and each value capped at
+1,000 characters. Times are RFC 3339 in UTC. The snapshot is not part of the
+webhook body, which stays the raw event. `engagement_name`, `target`,
+`project_name`, `finding_title`, `failed_conditions`, `asset_name` and the
+team and assignee names are declared but still empty: they are filled once
+capture reads them from the source records. A template reads an empty variable
+as an empty string. No event declares a list variable yet, so a template
+cannot `range` over one. The `webhook` family's `body` is compiled as text; the
 structured JSON body of a custom webhook is validated separately when that
 feature lands. Channels carry no data class and cannot be bound to a template
 yet, so saving does not yet warn about bound channels whose class is below a

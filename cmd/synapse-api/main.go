@@ -1550,6 +1550,7 @@ func main() {
 		}
 		notificationRepository := postgres.NewNotificationRepository(databasePool)
 		notificationRepository.EnableDestinationNotices()
+		notificationRepository.SetEventProjector(notificationuc.NewEventBuilders())
 		notificationService, notificationErr := notificationuc.NewService(notificationRepository, vaultCipher, nil, auditLog, clock, ids)
 		if notificationErr != nil {
 			log.Error("notification service init failed", "err", notificationErr)
