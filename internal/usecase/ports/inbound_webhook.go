@@ -16,6 +16,7 @@ type InboundWebhookEndpoint struct {
 	TenantID          shared.ID
 	OwnerKind         string
 	OwnerID           string
+	Provider          string
 	CurrentVersion    int
 	CurrentSealed     string
 	PreviousSealed    string
@@ -33,6 +34,10 @@ type InboundWebhookStore interface {
 	// AdmitInboundWebhook returns 1 on admission, 0 on rate-limit and -1 when
 	// revoked or rotated since the earlier lookup. It is atomic across API replicas.
 	AdmitInboundWebhook(context.Context, InboundWebhookIdentity, int, bool) (int, error)
+	// ClaimInboundWebhookEvent atomically records a provider event ID after
+	// authentication. false,nil is an exact replay that must be acknowledged
+	// without invoking the provider receiver again.
+	ClaimInboundWebhookEvent(context.Context, InboundWebhookIdentity, string, string, time.Time) (bool, error)
 }
 
 type InboundWebhookIdentity struct {
@@ -42,8 +47,15 @@ type InboundWebhookIdentity struct {
 	OwnerID   string
 }
 
+type InboundWebhookEvent struct {
+	Provider  string
+	EventType string
+	EventID   string
+	Body      []byte
+}
+
 type InboundWebhookReceiver interface {
-	ReceiveInboundWebhook(context.Context, InboundWebhookIdentity, []byte) error
+	ReceiveInboundWebhook(context.Context, InboundWebhookIdentity, InboundWebhookEvent) error
 }
 
 // InboundWebhookAAD binds each sealed key to its tenant, opaque endpoint,
