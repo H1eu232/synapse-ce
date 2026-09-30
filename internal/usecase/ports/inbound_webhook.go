@@ -51,6 +51,9 @@ type InboundWebhookEvent struct {
 	Provider  string
 	EventType string
 	EventID   string
+	Ref       string
+	SHA       string
+	Fork      bool
 	Body      []byte
 }
 
