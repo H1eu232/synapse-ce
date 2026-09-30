@@ -209,7 +209,7 @@ func (s *Service) ReceiveInboundWebhook(ctx context.Context, identity ports.Inbo
 		return nil
 	}
 	_, err = s.projects.StartWebhookAnalysis(ctx, githubWebhookActor, identity.TenantID, bindings[0].ProjectID, projectuc.WebhookAnalysisInput{
-		Ref: ref, Commit: commit,
+		Ref: ref, Commit: commit, PullRequest: event.EventType == "pull_request",
 		DisableGitCredentials: fork,
 		NoBuildExecution:      fork,
 	})
