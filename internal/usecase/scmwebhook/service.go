@@ -63,9 +63,8 @@ func (s *Service) SetAdmin(store ports.InboundWebhookAdminStore, sealer webhookS
 	return nil
 }
 
-type GitHubWebhookCredentials struct {
+type GitHubWebhookConfiguration struct {
 	Path                    string     `json:"path"`
-	Secret                  string     `json:"secret"`
 	Version                 int        `json:"version"`
 	Rotated                 bool       `json:"rotated"`
 	PreviousSecretExpiresAt *time.Time `json:"previous_secret_expires_at,omitempty"`
@@ -83,35 +82,34 @@ func randomWebhookToken(bytes int) (string, error) {
 }
 
 // ConfigureGitHubWebhook provisions the endpoint on first use and rotates its
-// secret thereafter. The plaintext secret is returned exactly once and is never
-// persisted or added to audit metadata.
-func (s *Service) ConfigureGitHubWebhook(ctx context.Context, tenantID, integrationID shared.ID, actor string) (GitHubWebhookCredentials, error) {
+// secret thereafter. The caller supplies the GitHub secret; Synapse seals it
+// immediately and never returns plaintext credential material in an API response.
+func (s *Service) ConfigureGitHubWebhook(ctx context.Context, tenantID, integrationID shared.ID, actor, secret string) (GitHubWebhookConfiguration, error) {
 	if s == nil || s.admin == nil || s.sealer == nil || s.audit == nil || s.clock == nil || s.transactions == nil {
-		return GitHubWebhookCredentials{}, fmt.Errorf("%w: inbound webhook administration is not configured", shared.ErrValidation)
+		return GitHubWebhookConfiguration{}, fmt.Errorf("%w: inbound webhook administration is not configured", shared.ErrValidation)
 	}
 	if tenantID.IsZero() || integrationID.IsZero() || strings.TrimSpace(actor) == "" {
-		return GitHubWebhookCredentials{}, fmt.Errorf("%w: webhook administration identity is required", shared.ErrValidation)
+		return GitHubWebhookConfiguration{}, fmt.Errorf("%w: webhook administration identity is required", shared.ErrValidation)
+	}
+	if len(secret) < 32 || len(secret) > 128 || strings.TrimSpace(secret) != secret {
+		return GitHubWebhookConfiguration{}, fmt.Errorf("%w: GitHub webhook secret must be 32-128 non-whitespace-trimmed bytes", shared.ErrValidation)
 	}
 	item, err := s.integrations.Get(ctx, tenantID, integrationID)
 	if err != nil {
-		return GitHubWebhookCredentials{}, err
+		return GitHubWebhookConfiguration{}, err
 	}
 	if item.Provider != integration.Provider("github") || item.Archived {
-		return GitHubWebhookCredentials{}, fmt.Errorf("%w: integration is not an eligible GitHub integration", shared.ErrValidation)
+		return GitHubWebhookConfiguration{}, fmt.Errorf("%w: integration is not an eligible GitHub integration", shared.ErrValidation)
 	}
 	bindings, err := s.integrations.ListBindings(ctx, tenantID, integrationID)
 	if err != nil {
-		return GitHubWebhookCredentials{}, err
+		return GitHubWebhookConfiguration{}, err
 	}
 	if len(bindings) != 1 || bindings[0].ProjectID.IsZero() {
-		return GitHubWebhookCredentials{}, fmt.Errorf("%w: bind exactly one Project before configuring the GitHub webhook", shared.ErrConflict)
+		return GitHubWebhookConfiguration{}, fmt.Errorf("%w: bind exactly one Project before configuring the GitHub webhook", shared.ErrConflict)
 	}
 
-	secret, err := randomWebhookToken(32)
-	if err != nil {
-		return GitHubWebhookCredentials{}, err
-	}
-	var result GitHubWebhookCredentials
+	var result GitHubWebhookConfiguration
 	err = s.transactions.Run(ctx, tenantID, func(txCtx context.Context) error {
 		existing, found, err := s.admin.GetInboundWebhookForOwner(txCtx, tenantID, "integration", integrationID.String())
 		if err != nil {
@@ -138,7 +136,7 @@ func (s *Service) ConfigureGitHubWebhook(ctx context.Context, tenantID, integrat
 			if !created {
 				return fmt.Errorf("%w: GitHub webhook endpoint already exists", shared.ErrConflict)
 			}
-			result = GitHubWebhookCredentials{Path: "/api/v1/hooks/" + publicID, Secret: secret, Version: 1}
+			result = GitHubWebhookConfiguration{Path: "/api/v1/hooks/" + publicID, Version: 1}
 		} else {
 			if existing.Provider != "github" || existing.RevokedAt != nil || existing.CurrentVersion < 1 {
 				return fmt.Errorf("%w: GitHub webhook endpoint cannot be rotated", shared.ErrConflict)
@@ -160,8 +158,8 @@ func (s *Service) ConfigureGitHubWebhook(ctx context.Context, tenantID, integrat
 				return fmt.Errorf("%w: GitHub webhook endpoint changed concurrently", shared.ErrConflict)
 			}
 			action = "integration.github_webhook_rotated"
-			result = GitHubWebhookCredentials{
-				Path: "/api/v1/hooks/" + existing.PublicID, Secret: secret,
+			result = GitHubWebhookConfiguration{
+				Path: "/api/v1/hooks/" + existing.PublicID,
 				Version: nextVersion, Rotated: true, PreviousSecretExpiresAt: &expires,
 			}
 		}
@@ -171,7 +169,7 @@ func (s *Service) ConfigureGitHubWebhook(ctx context.Context, tenantID, integrat
 		})
 	})
 	if err != nil {
-		return GitHubWebhookCredentials{}, err
+		return GitHubWebhookConfiguration{}, err
 	}
 	return result, nil
 }
