@@ -4,9 +4,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,6 +24,55 @@ const (
 	githubSignatureHeader = "X-Hub-Signature-256"
 	githubEventHeader     = "X-GitHub-Event"
 	githubDeliveryHeader  = "X-GitHub-Delivery"
+)
+
+var (
+	githubWebhookSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?package httpapi
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/vault"
+	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
+)
+
+const inboundWebhookBodyLimit = 1 << 20 // 1 MiB of raw, signed bytes.
+const inboundWebhookSignature = "X-Synapse-Hook-Signature"
+
+)
+	githubWebhookRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}package httpapi
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/vault"
+	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
+)
+
+const inboundWebhookBodyLimit = 1 << 20 // 1 MiB of raw, signed bytes.
+const inboundWebhookSignature = "X-Synapse-Hook-Signature"
+
+)
 )
 
 // The hook plane is mounted on a method-aware top-level mux outside the human
@@ -144,10 +195,14 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 
 	event := ports.InboundWebhookEvent{Provider: endpoint.Provider, Body: body}
 	if endpoint.Provider == "github" {
-		var eventOK bool
-		event.EventType, event.EventID, eventOK = githubEventMetadata(r.Header)
+		var supported, eventOK bool
+		event, supported, eventOK = githubEventMetadata(r.Header, body)
 		if !eventOK {
 			writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_webhook_event"})
+			return
+		}
+		if !supported {
+			writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 			return
 		}
 	}
@@ -216,25 +271,119 @@ func (p *inboundWebhookPlane) verifyRequest(e ports.InboundWebhookEndpoint, publ
 	return valid && signatureOK, usedPrevious
 }
 
-func githubEventMetadata(header http.Header) (string, string, bool) {
+func githubEventMetadata(header http.Header, body []byte) (ports.InboundWebhookEvent, bool, bool) {
 	eventType, typeOK := singleInboundWebhookHeader(header, githubEventHeader)
 	eventID, idOK := singleInboundWebhookHeader(header, githubDeliveryHeader)
-	eventType = strings.TrimSpace(eventType)
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
 	eventID = strings.TrimSpace(eventID)
-	if !typeOK || !idOK || eventType == "" || len(eventType) > 64 || eventID == "" || len(eventID) > 128 {
-		return "", "", false
+	event := ports.InboundWebhookEvent{Provider: "github", EventType: eventType, EventID: eventID}
+	if !typeOK || !idOK || len(eventType) < 1 || len(eventType) > 64 || !validGitHubDelivery(eventID) {
+		return event, false, false
 	}
 	for _, r := range eventType {
 		if !((r >= 'a' && r <= 'z') || r == '_') {
-			return "", "", false
+			return event, false, false
 		}
 	}
-	for _, r := range eventID {
+
+	switch eventType {
+	case "push":
+		var payload struct {
+			Ref     string `json:"ref"`
+			After   string `json:"after"`
+			Deleted bool   `json:"deleted"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return event, true, false
+		}
+		if payload.Deleted || allZeroGitHubWebhookSHA(payload.After) {
+			return event, false, true
+		}
+		ref, ok := normalizeGitHubWebhookRef(payload.Ref)
+		sha := strings.TrimSpace(payload.After)
+		if !ok || !githubWebhookSHA.MatchString(sha) {
+			return event, true, false
+		}
+		event.Ref, event.SHA, event.Body = ref, sha, nil
+		return event, true, true
+
+	case "pull_request":
+		var payload struct {
+			Action string `json:"action"`
+			PullRequest struct {
+				Head struct {
+					Ref  string `json:"ref"`
+					SHA  string `json:"sha"`
+					Repo *struct {
+						ID int64 `json:"id"`
+					} `json:"repo"`
+				} `json:"head"`
+				Base struct {
+					Repo *struct {
+						ID int64 `json:"id"`
+					} `json:"repo"`
+				} `json:"base"`
+			} `json:"pull_request"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return event, true, false
+		}
+		switch strings.ToLower(strings.TrimSpace(payload.Action)) {
+		case "", "opened", "reopened", "synchronize", "ready_for_review":
+			// GitHub test fixtures and older deliveries may omit action; a valid
+			// PR head still represents a scan-worthy state.
+		default:
+			return event, false, true
+		}
+		ref, ok := normalizeGitHubWebhookRef(payload.PullRequest.Head.Ref)
+		sha := strings.TrimSpace(payload.PullRequest.Head.SHA)
+		if !ok || !githubWebhookSHA.MatchString(sha) {
+			return event, true, false
+		}
+		headRepo, baseRepo := payload.PullRequest.Head.Repo, payload.PullRequest.Base.Repo
+		event.Ref, event.SHA, event.Body = ref, sha, nil
+		// Repository identity is used only to decide whether credentials/build
+		// execution must be suppressed. It is never used as an acquisition URL.
+		event.Fork = headRepo == nil || baseRepo == nil || headRepo.ID == 0 || baseRepo.ID == 0 || headRepo.ID != baseRepo.ID
+		return event, true, true
+
+	default:
+		return event, false, true
+	}
+}
+
+func validGitHubDelivery(value string) bool {
+	if len(value) < 1 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
-			return "", "", false
+			return false
 		}
 	}
-	return eventType, eventID, true
+	return true
+}
+
+func normalizeGitHubWebhookRef(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "refs/heads/")
+	if !githubWebhookRef.MatchString(value) {
+		return "", false
+	}
+	return value, true
+}
+
+func allZeroGitHubWebhookSHA(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if r != '0' {
+			return false
+		}
+	}
+	return true
 }
 
 func singleInboundWebhookHeader(header http.Header, name string) (string, bool) {
