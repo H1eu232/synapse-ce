@@ -79,12 +79,23 @@ func (s *fakeHookStore) ClaimInboundWebhookEvent(_ context.Context, id ports.Inb
 	return true, nil
 }
 
+func (s *fakeHookStore) ReleaseInboundWebhookEvent(_ context.Context, id ports.InboundWebhookIdentity, provider, eventID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := id.TenantID.String() + "|" + id.PublicID + "|" + provider + "|" + eventID
+	delete(s.events, key)
+	return nil
+}
+
 type verifiedHook struct {
 	tenant    shared.ID
 	id        string
 	provider  string
 	eventType string
 	eventID   string
+	ref       string
+	sha       string
+	fork      bool
 	body      string
 }
 type captureHookReceiver struct {
@@ -100,7 +111,7 @@ func (c *captureHookReceiver) ReceiveInboundWebhook(ctx context.Context, id port
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.seen = append(c.seen, verifiedHook{tenant: tenant, id: id.PublicID, provider: event.Provider, eventType: event.EventType, eventID: event.EventID, body: string(event.Body)})
+	c.seen = append(c.seen, verifiedHook{tenant: tenant, id: id.PublicID, provider: event.Provider, eventType: event.EventType, eventID: event.EventID, ref: event.Ref, sha: event.SHA, fork: event.Fork, body: string(event.Body)})
 	return c.err
 }
 func (c *captureHookReceiver) snapshot() []verifiedHook {
@@ -192,11 +203,67 @@ func TestInboundWebhookGitHubSignatureMetadataAndReplay(t *testing.T) {
 	assertHookCode(t, request("delivery-1"), http.StatusAccepted)
 	assertHookCode(t, request("delivery-1"), http.StatusAccepted)
 	seen := receiver.snapshot()
-	if len(seen) != 1 || seen[0].provider != "github" || seen[0].eventType != "push" || seen[0].eventID != "delivery-1" || seen[0].body != string(body) {
+	if len(seen) != 1 || seen[0].provider != "github" || seen[0].eventType != "push" ||
+		seen[0].eventID != "delivery-1" || seen[0].ref != "main" ||
+		seen[0].sha != "0123456789abcdef0123456789abcdef01234567" || seen[0].fork || seen[0].body != "" {
 		t.Fatalf("github receiver = %#v", seen)
 	}
 	// The legacy Synapse signature must not authenticate a GitHub endpoint.
 	assertHookCode(t, requestHook(h, http.MethodPost, path, body, webhookSig(hookSecret('a'), body)), http.StatusUnauthorized)
+}
+
+func TestInboundWebhookGitHubForkPullRequest(t *testing.T) {
+	h, store, receiver, _ := setupHook(t)
+	store.mu.Lock()
+	e := store.records[hookIDA]
+	e.Provider = "github"
+	store.records[hookIDA] = e
+	store.mu.Unlock()
+
+	sha := strings.Repeat("b", 40)
+	body := []byte(`{"repository":{"clone_url":"https://attacker.invalid/ignored.git"},"pull_request":{"head":{"ref":"contrib/fix","sha":"` + sha + `","repo":{"id":22}},"base":{"repo":{"id":11}}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/"+hookIDA, bytes.NewReader(body))
+	req.Header.Set(githubSignatureHeader, webhookSig(hookSecret('a'), body))
+	req.Header.Set(githubEventHeader, "pull_request")
+	req.Header.Set(githubDeliveryHeader, "fork-delivery")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assertHookCode(t, rec, http.StatusAccepted)
+
+	seen := receiver.snapshot()
+	if len(seen) != 1 || !seen[0].fork || seen[0].ref != "contrib/fix" || seen[0].sha != sha || seen[0].body != "" {
+		t.Fatalf("github fork receiver = %#v", seen)
+	}
+}
+
+func TestInboundWebhookGitHubReceiverFailureIsRetryable(t *testing.T) {
+	h, store, receiver, _ := setupHook(t)
+	store.mu.Lock()
+	e := store.records[hookIDA]
+	e.Provider = "github"
+	store.records[hookIDA] = e
+	store.mu.Unlock()
+	receiver.err = errors.New("queue unavailable")
+
+	sha := strings.Repeat("c", 40)
+	body := []byte(`{"ref":"refs/heads/main","after":"` + sha + `"}`)
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/"+hookIDA, bytes.NewReader(body))
+		req.Header.Set(githubSignatureHeader, webhookSig(hookSecret('a'), body))
+		req.Header.Set(githubEventHeader, "push")
+		req.Header.Set(githubDeliveryHeader, "retry-delivery")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	assertHookCode(t, request(), http.StatusServiceUnavailable)
+	receiver.mu.Lock()
+	receiver.err = nil
+	receiver.mu.Unlock()
+	assertHookCode(t, request(), http.StatusAccepted)
+	if len(receiver.snapshot()) != 2 {
+		t.Fatal("failed receiver delivery remained permanently claimed")
+	}
 }
 
 func TestInboundWebhookHostileCrossTenantAndNoHumanFallback(t *testing.T) {
