@@ -266,6 +266,9 @@ func (s *Service) rotateSecret(ctx context.Context, actor string, id shared.ID, 
 	if version != current.Version {
 		return siem.Sink{}, conflict("sink version")
 	}
+	if err := s.validateProviderSecret(current.Provider, secret); err != nil {
+		return siem.Sink{}, err
+	}
 	current.SecretVersion++
 	current.Version++
 	current.UpdatedAt = s.clock.Now().UTC()
@@ -307,6 +310,9 @@ func (s *Service) changeOrigin(ctx context.Context, actor string, id shared.ID, 
 	}
 	if in.Version != current.Version {
 		return siem.Sink{}, conflict("sink version")
+	}
+	if err := s.validateProviderSecret(current.Provider, in.Secret); err != nil {
+		return siem.Sink{}, err
 	}
 	origin, err := siem.NormalizeOriginFor(current.Provider, in.Origin)
 	if err != nil {
@@ -460,6 +466,9 @@ func (s *Service) Test(ctx context.Context, actor string, id shared.ID) (string,
 func (s *Service) newSink(ctx context.Context, tenant shared.ID, in SinkInput) (siem.Sink, string, error) {
 	provider := in.Provider
 	if err := validateSecretFor(provider, in.Secret); err != nil {
+		return siem.Sink{}, "", err
+	}
+	if err := s.validateProviderSecret(provider, in.Secret); err != nil {
 		return siem.Sink{}, "", err
 	}
 	origin, err := siem.NormalizeOriginFor(provider, in.Origin)
@@ -663,6 +672,9 @@ func defaultAck(provider siem.Provider, mode siem.AckMode) siem.AckMode {
 	if provider == siem.ProviderSyslogTLS {
 		return siem.AckTransportWrite
 	}
+	if provider == siem.ProviderMicrosoftSentinel {
+		return siem.AckIngestionAcceptance
+	}
 	return siem.AckHECAcceptance
 }
 
@@ -677,6 +689,18 @@ func defaultTarget(provider siem.Provider, target string) string {
 		return "synapse"
 	}
 	return target
+}
+
+func (s *Service) validateProviderSecret(provider siem.Provider, secret string) error {
+	driver := s.drivers[provider]
+	validator, ok := driver.(ports.SIEMSecretValidator)
+	if !ok {
+		return nil
+	}
+	if err := validator.ValidateSecret(secret); err != nil {
+		return invalid("siem provider credential is invalid")
+	}
+	return nil
 }
 
 func validateSecretFor(provider siem.Provider, secret string) error {

@@ -1,9 +1,9 @@
 # SIEM streams
 
 Synapse can export committed audit events and incident events to Splunk HEC,
-Elasticsearch, or syslog RFC 5424 over TLS. The stream is separate from
-notification delivery. One bad destination does not decide another tenant's
-cursor.
+Elasticsearch, syslog RFC 5424 over TLS, or Microsoft Sentinel. The stream is
+separate from notification delivery. One bad destination does not decide
+another tenant's cursor.
 
 ## What is exported
 
@@ -49,6 +49,67 @@ frame can cause that frame to be replayed. The stable syslog `MSGID` lets a
 collector correlate those duplicates; it is not proof that the collector has
 indexed the record.
 
+
+Microsoft Sentinel uses the Azure Monitor Logs Ingestion API for Azure public
+cloud. Set the origin to the DCR direct-ingestion endpoint from a DCR created
+with `kind: Direct`, or to a DCE whose logs-ingestion endpoint is publicly
+reachable. The origin must be under `*.ingest.monitor.azure.com` on HTTPS
+port 443. Private Link DCEs are not supported by this sink because outbound
+SIEM dialing rejects private network addresses.
+
+Set the target to `dcr-<immutable-id>/Custom-<stream>`. Azure Monitor custom
+stream declarations must start with `Custom-`. The sealed credential is a
+one-line JSON object with `tenant_id`, `client_id`, and `client_secret`;
+the application needs the Monitoring Metrics Publisher role on the DCR.
+Synapse requests the Azure public-cloud
+`https://monitor.azure.com/.default` scope and advances only after the
+ingestion endpoint returns HTTP 204.
+
+Each Sentinel input row carries `TimeGenerated` as an RFC 3339 UTC
+datetime derived from the exported event timestamp, `SynapseRecordId`,
+`SynapseSourcePosition`, `SynapseSourceHash` when the source has one, and
+the original redacted event as `SynapsePayload`. Declare those fields in the
+DCR `streamDeclarations` entry and in the destination custom table:
+
+| Column | Type |
+| --- | --- |
+| `TimeGenerated` | `datetime` |
+| `SynapseRecordId` | `string` |
+| `SynapseSourcePosition` | `dynamic` |
+| `SynapseSourceHash` | `string` |
+| `SynapsePayload` | `dynamic` |
+
+With the same five columns on a table such as `SynapseSIEM_CL`, the DCR can
+use the pass-through transformation `source`; no timestamp conversion is
+required. The corresponding data flow uses the same custom stream name as the
+target, for example `Custom-SynapseSIEM`, and an output stream matching the
+custom table, for example `Custom-SynapseSIEM_CL`.
+
+Azure Monitor replaces `TimeGenerated` with the receive time when the supplied
+value is more than two days old or more than one day in the future. This can
+happen during historical backfill. The original event timestamp remains in
+`SynapsePayload.time` as Unix epoch milliseconds, so use that field when the
+source event time must be preserved independently of Azure's time-window rule.
+
+For incident streams, `SynapseSourcePosition.stream_seq` is contiguous and
+can be used to surface a missing numeric sequence in Sentinel. Audit database
+IDs can legitimately contain holes, so do not treat an audit ID jump as a
+gap. Synapse verifies the audit hash chain before export;
+`SynapseSourceHash` records the verified chain position for downstream
+evidence. A simple incident-gap query for a table named `SynapseSIEM_CL` is:
+
+```kusto
+SynapseSIEM_CL
+| extend Source = tostring(SynapseSourcePosition.source)
+| extend StreamSeq = tolong(SynapseSourcePosition.stream_seq)
+| where Source in ("live", "historical") and isnotnull(StreamSeq)
+| sort by Source asc, StreamSeq asc
+| serialize PreviousSource = prev(Source), PreviousStreamSeq = prev(StreamSeq)
+| extend GapDetected = Source == PreviousSource and StreamSeq > PreviousStreamSeq + 1
+| extend DuplicateDetected = Source == PreviousSource and StreamSeq == PreviousStreamSeq
+| project TimeGenerated, SynapseRecordId, Source, StreamSeq, PreviousStreamSeq, GapDetected, DuplicateDetected, SynapseSourceHash
+```
+
 ## Privacy
 
 The sink data class defaults to signal. An engagement whose policy is unknown
@@ -64,6 +125,9 @@ Signal carries the event type, severity, and a console link when
 `SYNAPSE_SIEM_PUBLIC_BASE_URL` is configured. Summary can add a title, actor, and host. Detail can
 add an advisory id, asset id, or comment. Raw audit metadata and raw incident
 payloads are not serialized. Text passes through the shared secret scrubber.
+For Microsoft Sentinel, both the sealed-credential plaintext and its decoded
+`client_secret` value are registered as known secrets before an event is
+serialized, so a source field containing the client secret is redacted too.
 The source-chain hash in the payload is a reference to the local chain. It is
 not a digest of the redacted body. The redacted body has its own digest.
 
@@ -132,8 +196,12 @@ need `administer`, which only `admin` holds. Machine roles hold neither.
 
 ## What this release does not prove
 
-No Splunk, Elasticsearch, or syslog service was available while this was built,
-so there are no screenshots of received English or Vietnamese events. Provider
+No Splunk, Elasticsearch, syslog, or Microsoft Sentinel service was available
+while this was built, so there are no screenshots of received English or
+Vietnamese events. Provider behavior is covered by contract tests against
+local test servers. Browser screenshots of the settings page in light and dark
+themes were not captured in a running console. The page uses the existing
+settings components.
 behavior is covered by contract tests against a local TLS server. Browser
 screenshots of the settings page in light and dark themes were not captured in
 a running console. The page uses the existing settings components.
@@ -144,4 +212,3 @@ These shared pieces were still open, so this stream does not replace them:
 - engagement data-class overrides beyond the fail-closed signal ceiling
 - offline validation against the official, pinned OCSF schema artifacts
 
-Microsoft Sentinel is not part of this stream.

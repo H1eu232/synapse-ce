@@ -63,6 +63,12 @@ type SIEMAckDriver interface {
 	PollAck(ctx context.Context, req siem.Delivery, ackID int64) (bool, time.Duration, error)
 }
 
+// SIEMSecretValidator lets a provider reject malformed write-only credentials
+// before they are sealed and stored. Errors must not include credential values.
+type SIEMSecretValidator interface {
+	ValidateSecret(secret string) error
+}
+
 // SIEMEngagementPolicy is the shared engagement ceiling. Unknown policy is
 // reported as Known=false; callers fail closed to signal.
 type SIEMEngagementPolicy interface {

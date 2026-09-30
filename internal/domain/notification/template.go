@@ -140,7 +140,7 @@ func (t Template) ValidateNew() error {
 	if err := ValidateTemplateName(t.Name); err != nil {
 		return err
 	}
-	if err := t.TemplateKey.Validate(); err != nil {
+	if err := t.Validate(); err != nil {
 		return err
 	}
 	if t.CreatedAt.IsZero() {

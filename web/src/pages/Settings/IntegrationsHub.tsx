@@ -650,7 +650,7 @@ function SIEMGroup({ canAdmin }: { canAdmin: boolean }) {
     <Group
       title="SIEM"
       icon={ShieldTick}
-      info="Export audit and incident events to Splunk HEC or Elasticsearch. Stream status and connection tests are on the SIEM settings page."
+      info="Export audit and incident events to Splunk HEC, Elasticsearch, or Microsoft Sentinel. Stream status and connection tests are on the SIEM settings page."
       status={!canAdmin ? 'restricted' : error || count === undefined ? 'unknown' : count === null ? 'off' : 'available'}
       manage={canAdmin && count !== null && count !== undefined ? { to: '/settings/siem', label: 'Manage SIEM streams' } : undefined}
     >

@@ -51,6 +51,9 @@ func (s Sink) Validate() error {
 	if s.Origin != origin.String() {
 		return fmt.Errorf("%w: sink origin must be stored in canonical form", shared.ErrValidation)
 	}
+	if s.Provider == ProviderMicrosoftSentinel && (!validSentinelOriginHost(origin.Host) || origin.Port != "" && origin.Port != "443") {
+		return fmt.Errorf("%w: microsoft sentinel origin must be a public Azure Monitor ingestion endpoint on HTTPS port 443", shared.ErrValidation)
+	}
 	if err := HostAllowed(origin.Host, s.AllowHosts); err != nil {
 		return err
 	}
@@ -89,6 +92,7 @@ func validateName(name string) error {
 }
 
 func validateTarget(provider Provider, target string) error {
+	raw := target
 	target = strings.TrimSpace(target)
 	switch provider {
 	case ProviderSplunk:
@@ -111,10 +115,42 @@ func validateTarget(provider Provider, target string) error {
 				return fmt.Errorf("%w: syslog app name must be 1..48 printable ASCII characters", shared.ErrValidation)
 			}
 		}
+	case ProviderMicrosoftSentinel:
+		if raw != target || !validSentinelTarget(target) {
+			return fmt.Errorf("%w: microsoft sentinel target must be dcr-<32 lowercase hex>/Custom-<stream>", shared.ErrValidation)
+		}
 	default:
 		return fmt.Errorf("%w: unknown siem provider", shared.ErrValidation)
 	}
 	return nil
+}
+
+func validSentinelOriginHost(host string) bool {
+	name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	const suffix = ".ingest.monitor.azure.com"
+	return len(name) > len(suffix) && strings.HasSuffix(name, suffix)
+}
+
+func validSentinelTarget(target string) bool {
+	dcr, stream, ok := strings.Cut(target, "/")
+	if !ok || strings.Contains(stream, "/") || len(dcr) != 36 || !strings.HasPrefix(dcr, "dcr-") {
+		return false
+	}
+	for _, r := range dcr[4:] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	if !strings.HasPrefix(stream, "Custom-") || len(stream) <= len("Custom-") || len(stream) > 128 {
+		return false
+	}
+	for _, r := range stream {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // validIndex rejects data-stream-style and unsafe index names. The bulk

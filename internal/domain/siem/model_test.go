@@ -72,6 +72,42 @@ func TestIndexerAckIsNotImplied(t *testing.T) {
 	if AckBulkItem.ValidFor(ProviderSplunk, true) {
 		t.Fatal("bulk item ack is not a splunk mode")
 	}
+	if !ProviderMicrosoftSentinel.Valid() || !AckIngestionAcceptance.ValidFor(ProviderMicrosoftSentinel, false) {
+		t.Fatal("microsoft sentinel ingestion acceptance is not valid")
+	}
+	if AckHECAcceptance.ValidFor(ProviderMicrosoftSentinel, false) {
+		t.Fatal("splunk acceptance is not a sentinel mode")
+	}
+	if !validSentinelOriginHost("example.eastus-1.ingest.monitor.azure.com") {
+		t.Fatal("valid microsoft sentinel ingestion host was rejected")
+	}
+	for _, host := range []string{"ingest.monitor.azure.com", "monitor.azure.com", "ingest.monitor.azure.com.evil.example", "evil.example"} {
+		if validSentinelOriginHost(host) {
+			t.Fatalf("invalid microsoft sentinel ingestion host accepted: %s", host)
+		}
+	}
+	sink := Sink{
+		ID: "sink-sentinel", TenantID: "tenant-a", Name: "Sentinel", Provider: ProviderMicrosoftSentinel,
+		Origin: "https://example.eastus-1.ingest.monitor.azure.com:8443",
+		Target: "dcr-0123456789abcdef0123456789abcdef/Custom-SynapseSIEM",
+		DataClass: ClassSignal, AckMode: AckIngestionAcceptance, Enabled: true,
+		Generation: 1, SecretVersion: 1, Version: 1, Channel: "channel-1",
+	}
+	if err := sink.Validate(); err == nil {
+		t.Fatal("microsoft sentinel custom HTTPS port was accepted")
+	}
+	sink.Origin = "https://example.eastus-1.ingest.monitor.azure.com:443"
+	if err := sink.Validate(); err != nil {
+		t.Fatalf("microsoft sentinel explicit HTTPS port 443 was rejected: %v", err)
+	}
+	if !validSentinelTarget("dcr-0123456789abcdef0123456789abcdef/Custom-SynapseSIEM") {
+		t.Fatal("valid microsoft sentinel target was rejected")
+	}
+	for _, target := range []string{"", "dcr-short/Custom-SynapseSIEM", "dcr-0123456789abcdef0123456789abcdef/Custom-", "dcr-0123456789ABCDEF0123456789abcdef/Custom-SynapseSIEM", "dcr-0123456789abcdef0123456789abcdef/SynapseSIEM", " dcr-0123456789abcdef0123456789abcdef/Custom-SynapseSIEM ", "dcr-0123456789abcdef0123456789abcdef/a/b"} {
+		if validSentinelTarget(target) {
+			t.Fatalf("invalid microsoft sentinel target accepted: %s", target)
+		}
+	}
 	if validIndex(".hidden") || validIndex("_all") || validIndex("Logs") || validIndex("a/b") {
 		t.Fatal("unsafe index name accepted")
 	}
