@@ -4,11 +4,9 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -24,55 +22,6 @@ const (
 	githubSignatureHeader = "X-Hub-Signature-256"
 	githubEventHeader     = "X-GitHub-Event"
 	githubDeliveryHeader  = "X-GitHub-Delivery"
-)
-
-var (
-	githubSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?package httpapi
-
-import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"io"
-	"net/http"
-	"regexp"
-	"strings"
-	"time"
-
-	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
-	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/vault"
-	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
-)
-
-const inboundWebhookBodyLimit = 1 << 20 // 1 MiB of raw, signed bytes.
-const inboundWebhookSignature = "X-Synapse-Hook-Signature"
-
-)
-	githubRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*package httpapi
-
-import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"io"
-	"net/http"
-	"regexp"
-	"strings"
-	"time"
-
-	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
-	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/vault"
-	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
-)
-
-const inboundWebhookBodyLimit = 1 << 20 // 1 MiB of raw, signed bytes.
-const inboundWebhookSignature = "X-Synapse-Hook-Signature"
-
-)
 )
 
 // The hook plane is mounted on a method-aware top-level mux outside the human
@@ -195,14 +144,10 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 
 	event := ports.InboundWebhookEvent{Provider: endpoint.Provider, Body: body}
 	if endpoint.Provider == "github" {
-		var supported, eventOK bool
-		event, supported, eventOK = githubEventMetadata(r.Header, body)
+		var eventOK bool
+		event.EventType, event.EventID, eventOK = githubEventMetadata(r.Header)
 		if !eventOK {
 			writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_webhook_event"})
-			return
-		}
-		if !supported {
-			writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 			return
 		}
 	}
@@ -221,9 +166,6 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := p.receiver.ReceiveInboundWebhook(ctx, identity, event); err != nil {
-		if event.EventID != "" {
-			_ = p.store.ReleaseInboundWebhookEvent(ctx, identity, event.Provider, event.EventID)
-		}
 		if errors.Is(err, shared.ErrValidation) {
 			writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_webhook_event"})
 			return
@@ -271,101 +213,25 @@ func (p *inboundWebhookPlane) verifyRequest(e ports.InboundWebhookEndpoint, publ
 	return valid && signatureOK, usedPrevious
 }
 
-func validGitHubDelivery(value string) bool {
-	if len(value) < 1 || len(value) > 128 {
-		return false
-	}
-	for _, r := range value {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
-			return false
-		}
-	}
-	return true
-}
-
-func normalizeGitHubRef(value string) (string, bool) {
-	value = strings.TrimSpace(value)
-	value = strings.TrimPrefix(value, "refs/heads/")
-	if len(value) < 1 || len(value) > 255 || !githubRef.MatchString(value) {
-		return "", false
-	}
-	return value, true
-}
-
-func validGitHubSHA(value string) bool {
-	if !githubSHA.MatchString(value) {
-		return false
-	}
-	for _, r := range value {
-		if r != '0' {
-			return true
-		}
-	}
-	return false
-}
-
-func githubEventMetadata(header http.Header, body []byte) (ports.InboundWebhookEvent, bool, bool) {
+func githubEventMetadata(header http.Header) (string, string, bool) {
 	eventType, typeOK := singleInboundWebhookHeader(header, githubEventHeader)
 	eventID, idOK := singleInboundWebhookHeader(header, githubDeliveryHeader)
-	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	eventType = strings.TrimSpace(eventType)
 	eventID = strings.TrimSpace(eventID)
-	event := ports.InboundWebhookEvent{Provider: "github", EventType: eventType, EventID: eventID}
-	if !typeOK || !idOK || eventType == "" || len(eventType) > 64 || !validGitHubDelivery(eventID) {
-		return event, false, false
+	if !typeOK || !idOK || eventType == "" || len(eventType) > 64 || eventID == "" || len(eventID) > 128 {
+		return "", "", false
 	}
-
-	switch eventType {
-	case "push":
-		var payload struct {
-			Ref   string `json:"ref"`
-			After string `json:"after"`
+	for _, r := range eventType {
+		if !((r >= 'a' && r <= 'z') || r == '_') {
+			return "", "", false
 		}
-		if json.Unmarshal(body, &payload) != nil {
-			return event, true, false
-		}
-		ref, ok := normalizeGitHubRef(payload.Ref)
-		sha := strings.TrimSpace(payload.After)
-		if !ok || !validGitHubSHA(sha) {
-			return event, true, false
-		}
-		event.Ref, event.SHA = ref, sha
-		return event, true, true
-
-	case "pull_request":
-		var payload struct {
-			PullRequest struct {
-				Head struct {
-					Ref  string `json:"ref"`
-					SHA  string `json:"sha"`
-					Repo *struct {
-						ID int64 `json:"id"`
-					} `json:"repo"`
-				} `json:"head"`
-				Base struct {
-					Repo *struct {
-						ID int64 `json:"id"`
-					} `json:"repo"`
-				} `json:"base"`
-			} `json:"pull_request"`
-		}
-		if json.Unmarshal(body, &payload) != nil {
-			return event, true, false
-		}
-		ref, ok := normalizeGitHubRef(payload.PullRequest.Head.Ref)
-		sha := strings.TrimSpace(payload.PullRequest.Head.SHA)
-		if !ok || !validGitHubSHA(sha) {
-			return event, true, false
-		}
-		headRepo, baseRepo := payload.PullRequest.Head.Repo, payload.PullRequest.Base.Repo
-		event.Ref, event.SHA = ref, sha
-		// Repository identity is consumed only to derive the untrusted-fork bit.
-		// Routing and clone URL always come from the persisted Synapse Project.
-		event.Fork = headRepo == nil || baseRepo == nil || headRepo.ID == 0 || baseRepo.ID == 0 || headRepo.ID != baseRepo.ID
-		return event, true, true
-
-	default:
-		return event, false, true
 	}
+	for _, r := range eventID {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return "", "", false
+		}
+	}
+	return eventType, eventID, true
 }
 
 func singleInboundWebhookHeader(header http.Header, name string) (string, bool) {
