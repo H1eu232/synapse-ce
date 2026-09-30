@@ -659,6 +659,31 @@ channels.
 
     ![settings_alerting at phone width](assets/ui/phone_settings_alerting.webp)
 
+### Templates
+
+`/settings/templates`
+
+The wording of notification messages. Only tenant administrators and integration administrators
+see this tab's content; everyone else sees **Administrator access required**.
+
+1. **Built-in defaults** lists the read-only default templates with `Clone to customize`, which
+   opens a new draft pre-filled with the default's key and text. Until the default template set
+   ships, the section says the defaults are not available in this build yet.
+2. **Custom templates** lists the tenant's templates grouped by event type, then channel family,
+   with status (`Draft`, `Active`, `Archived`), language, the latest version and the version that
+   renders. Filter by event, channel family and status.
+3. `New template` (`/settings/templates/new`) asks for a name, the event (or **Any event (*)**),
+   the channel family and the language; these three are fixed after creation. Each family has its
+   own fields (chat: title and body; email: subject and body; pager: summary; ticket: summary and
+   description; webhook: body).
+4. The **Variables** panel lists the variables the chosen event exposes, with their data class and
+   list cap in a tooltip; pressing one inserts `{{.name}}` at the cursor. An event without
+   variables says so.
+5. `Save new version` appends a version; a field the template engine rejects shows its message and
+   line under that field. `Activate` makes the latest saved version render, **Versions** offers
+   `Roll back to vN` for an earlier one, and `Archive` retires the template. If someone else changed
+   the template meanwhile, the page reloads it, keeps your unsaved text and says so.
+
 ### Telemetry privacy
 
 `/settings/privacy`

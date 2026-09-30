@@ -14,7 +14,8 @@ export { type AttackPathResult, type AttackPath, type AttackPathNode, type Attac
 export { type SLAPoliciesView, type SLAPolicy, type SLAConfig, type SLAWeights, type SLAThresholds, type SLADueRange, type SLADueRanges, type SLADueTier, type SLAActivateResult, nsToDays, daysToNs } from './sla'
 export { type OffensivePolicy, type OffensiveTechnique, type OffensiveLegalReview } from './offensivepolicy'
 export { type AlertTestResult, type AlertTestOutcome, AlertNotEnabledError } from './alerting'
-export { type NotificationChannel, type NotificationChannelHealth, type NotificationChannelHealthEvent, type NotificationChannelInput, type NotificationChannelType, type NotificationRule, type NotificationRuleInput, type NotificationEventType, type NotificationEventSpec, type NotificationRuleFilter, type NotificationDelivery, type NotificationDeliveryState, type NotificationSourceFailure, type NotificationAttempt, type NotificationLocale, type NotificationTemplateFamily, type NotificationTemplateOption, type NotificationTemplateResolution } from './notifications'
+export { type NotificationChannel, type NotificationChannelHealth, type NotificationChannelHealthEvent, type NotificationChannelInput, type NotificationChannelType, type NotificationRule, type NotificationRuleInput, type NotificationEventType, type NotificationEventSpec, type NotificationRuleFilter, type NotificationDelivery, type NotificationDeliveryState, type NotificationSourceFailure, type NotificationAttempt, type NotificationLocale, type NotificationTemplateOption, type NotificationTemplateResolution } from './notifications'
+export { type NotificationTemplate, type NotificationTemplateDetail, type NotificationTemplateFamily, type NotificationTemplateInput, type NotificationTemplateLocale, type NotificationTemplateQuery, type NotificationTemplateStatus, type NotificationTemplateUpdateInput, type NotificationTemplateValidationError, type NotificationTemplateVersion, type BuiltinNotificationTemplate, TEMPLATE_FAMILIES, TEMPLATE_FAMILY_FIELDS, TEMPLATE_FIELD_MAX_BYTES, TEMPLATE_LOCALES, TEMPLATE_STATUSES, templateValidationError } from './notification-templates'
 export { type SIEMSink, type SIEMSinkInput, type SIEMProvider, type SIEMDataClass, type SIEMAckMode, type SIEMReplay, type SIEMStatus, type SIEMPartition } from './siem'
 export { type TenantLocale, type TenantSettings, type TenantSettingsInput } from './tenant-settings'
 export { type UserContact } from './user-contacts'
@@ -54,6 +55,7 @@ import { slaApi } from './sla'
 import { offensivePolicyApi } from './offensivepolicy'
 import { alertingApi } from './alerting'
 import { notificationsApi } from './notifications'
+import { notificationTemplatesApi } from './notification-templates'
 import { siemApi } from './siem'
 import { tenantSettingsApi } from './tenant-settings'
 import { ownershipApi } from './ownership'
@@ -111,6 +113,7 @@ export const api = {
   ...offensivePolicyApi,
   ...alertingApi,
   ...notificationsApi,
+  ...notificationTemplatesApi,
   ...siemApi,
   ...tenantSettingsApi,
   ...privacyApi,

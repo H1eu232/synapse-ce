@@ -1,4 +1,6 @@
 import { req } from './client'
+// One definition, shared with the template API client (#1373).
+import type { NotificationTemplateFamily } from './notification-templates'
 
 export type NotificationChannelType = 'webhook' | 'slack' | 'email'
 // The server's event catalog is the source of truth for event types, so the console accepts any
@@ -12,7 +14,6 @@ export type NotificationRuleFilter =
   | 'lead_time_seconds'
 export type NotificationDataClass = 'signal' | 'summary' | 'detail'
 export type NotificationLocale = 'en' | 'vi'
-export type NotificationTemplateFamily = 'chat' | 'email' | 'pager' | 'ticket' | 'webhook'
 /** A template a channel can bind: the head fields of the template API (#1370). */
 export interface NotificationTemplateOption {
   id: string

@@ -102,6 +102,7 @@ describe('IntegrationsHub', () => {
     expect(screen.getByRole('link', { name: 'Manage CI/CD' })).toHaveAttribute('href', '/settings/integrations/ci')
     expect(screen.getByRole('link', { name: 'Manage connectors' })).toHaveAttribute('href', '/settings/connectors')
     expect(screen.getByRole('link', { name: 'Manage channels' })).toHaveAttribute('href', '/settings/alerting')
+    expect(screen.getByRole('link', { name: 'Message templates' })).toHaveAttribute('href', '/settings/templates')
     expect(screen.getByRole('link', { name: 'Manage SIEM streams' })).toHaveAttribute('href', '/settings/siem')
   })
 
