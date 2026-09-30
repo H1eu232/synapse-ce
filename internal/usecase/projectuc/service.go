@@ -368,6 +368,7 @@ func (s *Service) StartAnalysis(ctx context.Context, actor string, tenantID shar
 type WebhookAnalysisInput struct {
 	Ref                   string
 	Commit                string
+	PullRequest           bool
 	DisableGitCredentials bool
 	NoBuildExecution      bool
 }
@@ -403,7 +404,7 @@ func (s *Service) StartWebhookAnalysis(ctx context.Context, actor string, tenant
 		Ref: ref, Commit: strings.TrimSpace(in.Commit),
 		DisableGitCredentials: in.DisableGitCredentials,
 	}
-	if strings.HasPrefix(ref, "refs/pull/") {
+	if in.PullRequest {
 		request.BaseRef = p.SourceBinding.DefaultBranch
 		if request.BaseRef == "" {
 			request.BaseRef = p.SourceBinding.Ref
