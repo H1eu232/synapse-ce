@@ -43,6 +43,16 @@ type InboundWebhookStore interface {
 	ReleaseInboundWebhookEvent(context.Context, InboundWebhookIdentity, string, string) error
 }
 
+// InboundWebhookAdminStore is the tenant-scoped management surface for a
+// provider-owned endpoint. The runtime role still has no direct DML on the
+// routing table; PostgreSQL implements mutations through narrow SECURITY DEFINER
+// functions that re-bind the tenant to synapse_current_tenant().
+type InboundWebhookAdminStore interface {
+	GetInboundWebhookForOwner(context.Context, shared.ID, string, string) (InboundWebhookEndpoint, bool, error)
+	ProvisionInboundWebhook(context.Context, InboundWebhookEndpoint) (bool, error)
+	RotateInboundWebhook(context.Context, InboundWebhookIdentity, int, string, time.Time) (bool, error)
+}
+
 type InboundWebhookIdentity struct {
 	PublicID  string
 	TenantID  shared.ID
