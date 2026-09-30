@@ -125,6 +125,34 @@ func TestTickPublishesBacklogForAllSources(t *testing.T) {
 	}
 }
 
+func TestCreateSyslogTLSDefaultsTransportContract(t *testing.T) {
+	svc, _, _, _, _ := testService(t)
+	sink, err := svc.Create(shared.WithTenant(context.Background(), "tenant-a"), "ada", SinkInput{
+		Name: "Syslog", Provider: siem.ProviderSyslogTLS, Origin: "tls://syslog.example:6514", Secret: `{}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sink.Target != "synapse" || sink.AckMode != siem.AckTransportWrite {
+		t.Fatalf("syslog defaults = target %q, ack %q", sink.Target, sink.AckMode)
+	}
+}
+
+func TestSyslogTLSAllowsSystemTrustCredential(t *testing.T) {
+	svc, _, _, _, _ := testService(t)
+	_, err := svc.Create(shared.WithTenant(context.Background(), "tenant-a"), "ada", SinkInput{
+		Name: "Syslog", Provider: siem.ProviderSyslogTLS, Origin: "tls://syslog.example:6514", Secret: `{}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(shared.WithTenant(context.Background(), "tenant-a"), "ada", SinkInput{
+		Name: "Splunk", Provider: siem.ProviderSplunk, Origin: "https://splunk.example:8088", Secret: `{}`,
+	}); err == nil {
+		t.Fatal("HTTPS provider accepted an undersized credential")
+	}
+}
+
 func TestTickRotatesSinksUnderPartitionBudget(t *testing.T) {
 	svc, store, driver, _, clock := testService(t)
 	ctx := shared.WithTenant(context.Background(), "tenant-a")

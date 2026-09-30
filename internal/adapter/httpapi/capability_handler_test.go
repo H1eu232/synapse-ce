@@ -55,6 +55,7 @@ func TestCapabilitiesReportsDisabledSubsystemWithItsSwitchName(t *testing.T) {
 		{"agent", "SYNAPSE_AGENT_ENABLED"},
 		{"ai_triage", "SYNAPSE_FP_TRIAGE_ENABLED"},
 		{"sla", "SYNAPSE_SLA_ENABLED"},
+		{"inbound_webhooks", "SYNAPSE_INBOUND_WEBHOOKS_ENABLED"},
 	}
 	for _, c := range cases {
 		got, ok := byKey[c.key]
@@ -96,9 +97,9 @@ func TestCapabilitiesReportsNotificationChannelsAndPlannedSubsystems(t *testing.
 }
 
 func TestCapabilitiesReportsEnabledSubsystem(t *testing.T) {
-	rt := newCapabilityRouter(t, capabilities.Flags{Fleet: true, FleetAssets: true, SLA: true})
+	rt := newCapabilityRouter(t, capabilities.Flags{Fleet: true, FleetAssets: true, SLA: true, InboundWebhooks: true})
 	_, byKey := getCapabilities(t, rt, "readonly")
-	for _, key := range []string{"fleet", "fleet_assets", "sla"} {
+	for _, key := range []string{"fleet", "fleet_assets", "sla", "inbound_webhooks"} {
 		if !byKey[key].Enabled {
 			t.Errorf("%s reported disabled although its switch is on", key)
 		}
