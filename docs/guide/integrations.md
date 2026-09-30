@@ -71,7 +71,8 @@ When metrics are enabled on the worker, `synapse_integration_operations_total` e
 
 ## Security boundaries
 
-- Integration reads require view permission; configuration, credentials, operations, lifecycle changes, and bindings require administer permission.
+- Integration reads require view permission. Enabling, disabling and archiving an integration, starting and cancelling operations, and editing bindings require `manage_integrations`, held by `admin` and `integration_admin`. Creating an integration, changing its endpoint or private-network setting, and replacing or deleting its credential require `administer`, which only `admin` holds. Machine roles hold neither.
+- Every integration audit entry records the actor and the endpoint masked to `scheme://host`; an update also records `destination_changed` and, on a host change, the previous masked endpoint. The endpoint path is never written to the audit log.
 - Every integration table carries `tenant_id`, uses forced PostgreSQL row-level security, and is accessed through tenant-bound contexts or transactions.
 - Credential bundles use AES-256-GCM with additional authenticated data bound to tenant, integration, and credential identity.
 - Secrets never enter durable job payloads, provider errors, audit metadata, logs, metrics, API responses, or stored browser state after save.

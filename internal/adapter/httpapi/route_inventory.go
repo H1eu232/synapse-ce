@@ -21,6 +21,10 @@ type RouteRegistration struct {
 	// Guard names the outermost wrapper applied to the handler, for example "rt.authz". Empty
 	// when the handler is passed through unwrapped.
 	Guard string
+	// Permission names the permission constant the rt.authz guard requires, for example
+	// "PermManageIntegrations". Empty when the guard is not rt.authz or its first argument is not a
+	// selector such as userdom.PermView.
+	Permission string
 	// Line is the line in router.go the registration sits on.
 	Line int
 }
@@ -72,7 +76,7 @@ func ParseRouteRegistrations(filename string) ([]RouteRegistration, error) {
 			problems = append(problems, fmt.Sprintf("%s:%d: route pattern %s is not a valid string literal", filename, line, lit.Value))
 			return true
 		}
-		routes = append(routes, RouteRegistration{Pattern: pattern, Guard: outermostCallee(call.Args[1]), Line: line})
+		routes = append(routes, RouteRegistration{Pattern: pattern, Guard: outermostCallee(call.Args[1]), Permission: authzPermission(call.Args[1]), Line: line})
 		return true
 	})
 
@@ -82,6 +86,18 @@ func ParseRouteRegistrations(filename string) ([]RouteRegistration, error) {
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Line < routes[j].Line })
 	return routes, nil
+}
+
+// authzPermission returns the permission constant passed to an outermost rt.authz guard.
+func authzPermission(expr ast.Expr) string {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || outermostCallee(expr) != "rt.authz" || len(call.Args) == 0 {
+		return ""
+	}
+	if sel, ok := call.Args[0].(*ast.SelectorExpr); ok {
+		return sel.Sel.Name
+	}
+	return ""
 }
 
 // outermostCallee names the function applied to a handler expression, so a route registered as

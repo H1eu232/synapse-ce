@@ -2824,7 +2824,7 @@ paths:
         SYNAPSE_ALERT_WEBHOOK_URL) so an operator can prove the alert path works before relying on it.
         The test alert bypasses the severity floor. Registered only when alerting is configured.
         Deprecated with SYNAPSE_ALERT_WEBHOOK_URL and removed in 0.4.0; incident.created notification
-        rules replace the legacy webhook.
+        rules replace the legacy webhook. Requires the manage_integrations permission.
       responses:
         '200': {description: At least one sink acknowledged, content: {application/json: {schema: {$ref: '#/components/schemas/AlertTestResult'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -3019,6 +3019,9 @@ paths:
       tags: [notifications]
       operationId: listNotificationChannels
       summary: List tenant notification channels without secrets
+      description: >
+        Requires the `manage_integrations` permission (admin and integration_admin). Every channel,
+        rule and delivery route below needs it unless it says otherwise.
       responses:
         '200': {description: Channels, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NotificationChannel'}}}}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -3028,6 +3031,9 @@ paths:
       operationId: createNotificationChannel
       summary: Create a signed webhook, Slack, or email channel
       description: >
+        Requires the `administer` permission: creating a destination is an administrator action, so an
+        integration_admin gets `403`. The audit entry records the actor and the destination masked to
+        `scheme://host`.
         URL and credentials are write-only and encrypted at rest. Email uses the operator-managed SMTP relay.
         A type the operator switched off with `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED` answers `400`
         naming the type; such types are absent from the `notifications.channel_types` capability.
@@ -3052,12 +3058,18 @@ paths:
       operationId: updateNotificationChannel
       summary: Update a channel with optimistic revision checking
       description: >
+        Requires `manage_integrations` to rename, enable or disable a channel. Changing its
+        destination (a new URL or secret, or a different email recipient set) also requires
+        `administer`; an integration_admin gets `403` for it. Sending the current recipients back is
+        not a change. The audit entry records the actor, the masked destination, `destination_changed`
+        and, on a change, the previous masked destination.
         A channel whose type the operator switched off with `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED`
         can be renamed or switched off, but switching it on or giving it a new URL or secret answers `400`.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannelInput'}}}}
       responses:
         '200': {description: Updated channel, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannel'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {description: Missing manage_integrations, or a destination change without administer}
         '409': {description: Stale revision}
     delete:
       tags: [notifications]
@@ -3088,7 +3100,7 @@ paths:
       operationId: resumeNotificationChannel
       summary: Resume a channel the worker paused after consecutive permanent failures
       description: >-
-        Tenant administrators only (PermAdminister). Clears the pause and the failure count, bumps the channel
+        Requires `manage_integrations` (admin and integration_admin). Clears the pause and the failure count, bumps the channel
         revision, appends a `resumed` row to the channel's health history and writes a
         `notification.channel.resumed` audit entry. Deliveries cancelled while the channel was paused are not
         re-sent.
@@ -3185,7 +3197,7 @@ paths:
       tags: [notifications]
       operationId: listNotificationSourceFailures
       summary: List captured notification sources that failed projection
-      description: Requires administer permission. Returns fixed failure codes and source identity, never captured payloads.
+      description: Requires the manage_integrations permission. Returns fixed failure codes and source identity, never captured payloads.
       parameters:
         - {name: from, in: query, schema: {type: string, format: date-time}, description: Inclusive quarantine time in RFC3339}
         - {name: to, in: query, schema: {type: string, format: date-time}, description: Inclusive upper quarantine time in RFC3339}
@@ -3216,6 +3228,150 @@ paths:
       responses:
         '200': {description: Attempts, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NotificationAttempt'}}}}}}}
 
+  /api/v1/notifications/templates:
+    get:
+      tags: [notifications]
+      operationId: listNotificationTemplates
+      summary: List the tenant's custom message templates
+      description: >
+        Requires `manage_integrations` (admin and integration_admin), like every template route.
+        Registered only when notifications are enabled. The tenant comes from the session. Results
+        are ordered by ID; pass the last ID as `after` for the next page.
+      parameters:
+        - {name: event_type, in: query, schema: {type: string}, description: A catalog event type or `*`}
+        - {name: family, in: query, schema: {$ref: '#/components/schemas/NotificationTemplateFamily'}}
+        - {name: locale, in: query, schema: {type: string, enum: [en, vi, '*']}}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/NotificationTemplateStatus'}}
+        - {name: after, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 0, maximum: 500, default: 100}}
+      responses:
+        '200': {description: Templates, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NotificationTemplate'}}}}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [notifications]
+      operationId: createNotificationTemplate
+      summary: Create a draft template with version 1
+      description: >
+        Every non-empty field is compiled by the template engine against the variables of the
+        event type; a `*` template is compiled against every catalog event type, so it may only use
+        variables all of them declare. Unknown variables, disallowed functions and cost bounds are
+        rejected with `400` and a body naming the field, the event type, the engine code and the line;
+        the body never repeats the template source. The key (event type, family, locale) never
+        changes. The draft does not render until it is activated. Audited as
+        `notification.template.created` with a diff summary.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateInput'}}}}
+      responses:
+        '201': {description: Created draft, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateDetail'}}}}
+        '400': {description: Invalid key or fields, or a field the engine rejected, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateValidationError'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /api/v1/notifications/templates/{nid}:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    get:
+      tags: [notifications]
+      operationId: getNotificationTemplate
+      summary: Get a template with its newest version and the version that renders
+      responses:
+        '200': {description: Template, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateDetail'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      tags: [notifications]
+      operationId: updateNotificationTemplate
+      summary: Save a new version of a template
+      description: >
+        Appends a version with the given fields, validated like a create, and optionally renames the
+        template. What renders does not change until a version is activated. `revision` is the head
+        revision the caller read; a stale one answers `409`. Audited as
+        `notification.template.updated` with a diff summary against the previous newest version.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateUpdateInput'}}}}
+      responses:
+        '200': {description: Template with the new version, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateDetail'}}}}
+        '400': {description: Invalid fields, or a field the engine rejected, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateValidationError'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Stale revision}
+
+  /api/v1/notifications/templates/{nid}/versions:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    get:
+      tags: [notifications]
+      operationId: listNotificationTemplateVersions
+      summary: List a template's versions, newest first
+      parameters:
+        - {name: before, in: query, schema: {type: integer, minimum: 0}, description: Only versions below this one}
+        - {name: limit, in: query, schema: {type: integer, minimum: 0, maximum: 200, default: 50}}
+      responses:
+        '200': {description: Versions, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NotificationTemplateVersion'}}}}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/notifications/templates/{nid}/activate:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [notifications]
+      operationId: activateNotificationTemplate
+      summary: Make a version render
+      description: >
+        Activates `version`, or the newest version when it is omitted or `0`. The version is compiled
+        again first, since the catalog may have changed since it was saved. Any other active template
+        with the same key is archived in the same transaction and returned as
+        `archived_template_id`. Audited as `notification.template.activated` with the archived
+        template and a diff summary against the version that rendered before.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateChangeInput'}}}}
+      responses:
+        '200': {description: Activated template, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateDetail'}}}}
+        '400': {description: Missing revision, or the version no longer compiles, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateValidationError'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {description: No such template or version}
+        '409': {description: Stale revision, or a concurrent activation of the same key}
+
+  /api/v1/notifications/templates/{nid}/rollback:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [notifications]
+      operationId: rollbackNotificationTemplate
+      summary: Activate an earlier version
+      description: >
+        Activates the given `version`, which is required. Versions are append-only, so a rollback
+        never rewrites one. Rolling back to the version that already renders answers `409`. Audited
+        as `notification.template.rolled_back` with the from and to versions and a diff summary.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateChangeInput'}}}}
+      responses:
+        '200': {description: Template rendering the chosen version, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateDetail'}}}}
+        '400': {description: Missing version or revision, or the version no longer compiles, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateValidationError'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {description: No such template or version}
+        '409': {description: Stale revision, or the version already renders}
+
+  /api/v1/notifications/templates/{nid}/archive:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [notifications]
+      operationId: archiveNotificationTemplate
+      summary: Retire a template
+      description: >
+        An archived template no longer renders; its key falls back to the next tier (the `*`
+        template, then the built-in default). It keeps its versions and can be activated again.
+        Audited as `notification.template.archived`.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateChangeInput'}}}}
+      responses:
+        '200': {description: Archived template, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateDetail'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Stale revision, or the template is already archived}
+
   /api/v1/connectors:
     get:
       tags: [settings]
@@ -3224,6 +3380,7 @@ paths:
       description: >
         Every source-control connector configured for the caller's tenant, as metadata only. The
         personal access token is never returned. Registered only when a connector store is wired.
+        Requires the manage_integrations permission; creating and deleting a connector require administer.
       responses:
         '200': {description: Connectors, content: {application/json: {schema: {type: object, properties: {connectors: {type: array, items: {$ref: '#/components/schemas/SCMConnector'}}}}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -4577,6 +4734,12 @@ paths:
       tags: [integrations]
       operationId: listIntegrations
       summary: List tenant integrations
+      description: >
+        Any human role may read integrations. Enabling, disabling, archiving, starting and cancelling
+        operations and editing bindings require `manage_integrations` (admin and integration_admin).
+        Creating an integration, updating its endpoint or private-network setting, and replacing or
+        deleting its credential require `administer`. Every audit entry records the actor and the
+        endpoint masked to `scheme://host`.
       parameters:
       - name: include_archived
         in: query
@@ -6161,6 +6324,10 @@ paths:
       tags: [siem]
       operationId: listSIEMSinks
       summary: List tenant SIEM sinks without secrets
+      description: >
+        Reading sinks, their status, and pausing, resuming and testing one require `manage_integrations`
+        (admin and integration_admin). Creating a sink, updating it (data class, allowed hosts),
+        rotating its secret and changing its host require `administer`.
       responses:
         "200": {description: Sinks, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: "#/components/schemas/SIEMSink"}}}}}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
@@ -8700,7 +8867,7 @@ components:
       properties:
         id: {type: string}
         name: {type: string}
-        role: {type: string, enum: [admin, consultant, reviewer, readonly, member]}
+        role: {type: string, enum: [admin, consultant, reviewer, readonly, member, integration_admin]}
         disabled:
           type: boolean
           description: A disabled operator keeps its identity and history; its API key stops authenticating.
@@ -8723,7 +8890,7 @@ components:
         name: {type: string}
         role:
           type: string
-          enum: [admin, consultant, reviewer, readonly, member]
+          enum: [admin, consultant, reviewer, readonly, member, integration_admin]
           default: member
         tenant_id:
           type: string
@@ -8739,7 +8906,7 @@ components:
           description: Empty leaves the current name unchanged.
         role:
           type: string
-          enum: [admin, consultant, reviewer, readonly, member]
+          enum: [admin, consultant, reviewer, readonly, member, integration_admin]
           description: Empty leaves the current role unchanged.
 
     Readiness:
@@ -12609,6 +12776,100 @@ components:
         attempt_id: {type: string, description: The attempt that paused the channel (pause only)}
         actor: {type: string, description: '`system` for an automatic pause; the administrator for a resume'}
         occurred_at: {type: string, format: date-time}
+
+    NotificationTemplateFamily:
+      type: string
+      enum: [chat, email, pager, ticket, webhook]
+      description: >
+        Channel family a template renders for. Fields per family: chat `title`, `body`; email
+        `subject`, `body`; pager `summary`; ticket `summary`, `description`; webhook `body`.
+
+    NotificationTemplateStatus:
+      type: string
+      enum: [draft, active, archived]
+
+    NotificationTemplate:
+      type: object
+      required: [tenant_id, id, name, event_type, family, locale, status, latest_version, active_version, revision, created_at, created_by, updated_at, updated_by]
+      properties:
+        tenant_id: {type: string}
+        id: {type: string}
+        name: {type: string, maxLength: 200}
+        event_type: {type: string, description: A catalog event type or `*`}
+        family: {$ref: '#/components/schemas/NotificationTemplateFamily'}
+        locale: {type: string, enum: [en, vi, '*']}
+        status: {$ref: '#/components/schemas/NotificationTemplateStatus'}
+        latest_version: {type: integer, minimum: 1}
+        active_version: {type: integer, minimum: 0, description: The version that renders while active; 0 when never activated}
+        revision: {type: integer, minimum: 1, description: Head revision; every mutation must send the one it read}
+        created_at: {type: string, format: date-time}
+        created_by: {type: string}
+        updated_at: {type: string, format: date-time}
+        updated_by: {type: string}
+
+    NotificationTemplateVersion:
+      type: object
+      required: [tenant_id, template_id, version, fields, checksum, created_at, created_by]
+      properties:
+        tenant_id: {type: string}
+        template_id: {type: string}
+        version: {type: integer, minimum: 1}
+        fields: {type: object, additionalProperties: {type: string, maxLength: 16384}}
+        checksum: {type: string, description: Hex SHA-256 of the fields encoded as JSON with sorted keys}
+        created_at: {type: string, format: date-time}
+        created_by: {type: string}
+
+    NotificationTemplateDetail:
+      allOf:
+        - $ref: '#/components/schemas/NotificationTemplate'
+        - type: object
+          properties:
+            latest: {$ref: '#/components/schemas/NotificationTemplateVersion'}
+            active: {$ref: '#/components/schemas/NotificationTemplateVersion'}
+            archived_template_id: {type: string, description: The template an activation or rollback archived because it held the same key}
+
+    NotificationTemplateInput:
+      type: object
+      additionalProperties: false
+      required: [name, event_type, family, locale, fields]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        event_type: {type: string, description: A catalog event type or `*`}
+        family: {$ref: '#/components/schemas/NotificationTemplateFamily'}
+        locale: {type: string, enum: [en, vi, '*']}
+        fields:
+          type: object
+          description: Source of each content field of the family, at most 16 KiB each; at least one must be non-blank.
+          additionalProperties: {type: string, maxLength: 16384}
+
+    NotificationTemplateUpdateInput:
+      type: object
+      additionalProperties: false
+      required: [fields, revision]
+      properties:
+        name: {type: string, maxLength: 200, description: Empty keeps the current name}
+        fields: {type: object, additionalProperties: {type: string, maxLength: 16384}}
+        revision: {type: integer, minimum: 1}
+
+    NotificationTemplateChangeInput:
+      type: object
+      additionalProperties: false
+      required: [revision]
+      properties:
+        version: {type: integer, minimum: 0, description: Version to activate; 0 or absent means the newest. Required for a rollback; ignored by archive.}
+        revision: {type: integer, minimum: 1}
+
+    NotificationTemplateValidationError:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+        field: {type: string, description: The content field the engine rejected}
+        event_type: {type: string, description: The event type the field was compiled against}
+        code:
+          type: string
+          description: Stable engine code, for example `unknown_variable`, `forbidden_function`, `parse_error`, `iteration_bound_exceeded`.
+        line: {type: integer, minimum: 1}
 
     NotificationRuleInput:
       type: object

@@ -193,6 +193,29 @@ describe('notification settings', () => {
     expect(api.listNotificationChannels).not.toHaveBeenCalled()
     expect(api.notificationDeliveryPage).not.toHaveBeenCalled()
   })
+  // #1358: manage_integrations runs channels and rules; adding a channel and changing where one
+  // delivers stay with administrators, so the form never offers or sends a new destination.
+  it('lets an integration_admin rename a channel but not add one or change its destination', async () => {
+    vi.mocked(api.me).mockResolvedValue({ role: 'integration_admin' } as never)
+    vi.mocked(api.updateNotificationChannel).mockResolvedValue(channel)
+    render(<Alerting />)
+    expect(
+      await screen.findByText(/Only tenant administrators can add a channel/),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add channel' })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Event' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit channel' }))
+    expect(screen.getByLabelText('Webhook URL')).toBeDisabled()
+    expect(screen.getByLabelText(/HMAC secret/)).toBeDisabled()
+    fireEvent.change(screen.getAllByLabelText('Name')[0], { target: { value: 'Renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save channel' }))
+    await waitFor(() => expect(api.updateNotificationChannel).toHaveBeenCalled())
+    const [, input] = vi.mocked(api.updateNotificationChannel).mock.calls[0]
+    expect(input).toMatchObject({ name: 'Renamed', revision: 3 })
+    expect(input.url).toBeUndefined()
+    expect(input.secret).toBeUndefined()
+  })
   it('requires explicit scope before subscribing to ownership changes', async () => {
     render(<Alerting />)
     fireEvent.click(await screen.findByRole('combobox', { name: 'Event' }))

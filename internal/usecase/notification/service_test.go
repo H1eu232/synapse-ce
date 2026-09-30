@@ -84,6 +84,10 @@ func (f *fakeRepo) ListChannels(_ context.Context, tenant shared.ID) ([]domain.C
 	return []domain.Channel{{TenantID: tenant, ID: "channel", Name: "Channel"}}, nil
 }
 
+func (f *fakeRepo) GetChannel(_ context.Context, tenant, id shared.ID) (domain.Channel, error) {
+	return domain.Channel{TenantID: tenant, ID: id, Name: "Channel", Type: domain.ChannelWebhook, Destination: "https://hooks.example.com/…"}, nil
+}
+
 func (f *fakeRepo) PublishToChannel(_ context.Context, event domain.Event, channel shared.ID) (shared.ID, error) {
 	f.publishedEvent = event
 	f.publishedChannel = channel

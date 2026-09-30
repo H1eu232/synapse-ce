@@ -36,6 +36,8 @@ type Service struct {
 	disabled map[domain.ChannelType]bool
 	// pauseThreshold is the number of consecutive permanent failures that pauses a channel (#1464).
 	pauseThreshold int
+	// templates stores tenant message templates (#1370); nil disables the template API.
+	templates ports.NotificationTemplateStore
 }
 
 // SetDisabledChannelTypes installs the operator kill switch (SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED),
@@ -99,6 +101,11 @@ type ChannelInput struct {
 	Secret     string             `json:"secret,omitempty"`
 	Recipients []string           `json:"recipients,omitempty"`
 	Revision   int                `json:"revision,omitempty"`
+	// AllowDestinationChange is set by the caller, never decoded from a request: true only when the
+	// principal holds PermAdminister. Without it an update that changes the URL, the secret or the
+	// email recipients is refused with shared.ErrForbidden (#1358), so an integration_admin can
+	// rename, enable or disable a channel but cannot point it somewhere else.
+	AllowDestinationChange bool `json:"-"`
 }
 
 func (s *Service) createChannel(ctx context.Context, actor string, in ChannelInput) (domain.Channel, error) {
@@ -130,7 +137,7 @@ func (s *Service) createChannel(ctx context.Context, actor string, in ChannelInp
 	if err != nil {
 		return domain.Channel{}, fmt.Errorf("create notification channel: %w", err)
 	}
-	if err := s.record(ctx, actor, "notification.channel.created", id.String(), map[string]string{"type": string(c.Type)}); err != nil {
+	if err := s.record(ctx, actor, "notification.channel.created", id.String(), channelAuditMetadata(created, nil)); err != nil {
 		return domain.Channel{}, err
 	}
 	return created, nil
@@ -155,6 +162,9 @@ func (s *Service) updateChannel(ctx context.Context, actor string, id shared.ID,
 		return domain.Channel{}, fmt.Errorf("%w: channel type is immutable", shared.ErrValidation)
 	}
 	replace := strings.TrimSpace(in.URL) != "" || strings.TrimSpace(in.Secret) != "" || in.Type != current.Type
+	if replace && !in.AllowDestinationChange {
+		return domain.Channel{}, errDestinationChange
+	}
 	// A channel of a disabled type can still be renamed, switched off or deleted, but not switched
 	// on or pointed at a new destination.
 	if replace || (in.Enabled && !current.Enabled) {
@@ -182,6 +192,11 @@ func (s *Service) updateChannel(ctx context.Context, actor string, id shared.ID,
 			if e != nil {
 				return domain.Channel{}, e
 			}
+			// Recipients are an email channel's destination. Sending the same list back (the
+			// console does on every save) is not a change.
+			if !in.AllowDestinationChange && !sameRecipients(recips, current.Recipients) {
+				return domain.Channel{}, errDestinationChange
+			}
 			recipients = recips
 		}
 		if in.Type == domain.ChannelEmail {
@@ -197,7 +212,12 @@ func (s *Service) updateChannel(ctx context.Context, actor string, id shared.ID,
 	if err != nil {
 		return domain.Channel{}, err
 	}
-	if err := s.record(ctx, actor, "notification.channel.updated", id.String(), map[string]string{"type": string(updated.Type)}); err != nil {
+	extra := map[string]string{"destination_changed": "false"}
+	if previous := auditDestination(current); replace || !sameRecipients(current.Recipients, updated.Recipients) {
+		extra["destination_changed"] = "true"
+		extra["previous_destination"] = previous
+	}
+	if err := s.record(ctx, actor, "notification.channel.updated", id.String(), channelAuditMetadata(updated, extra)); err != nil {
 		return domain.Channel{}, err
 	}
 	return updated, nil
@@ -208,10 +228,14 @@ func (s *Service) deleteChannel(ctx context.Context, actor string, id shared.ID,
 	if err != nil {
 		return err
 	}
+	current, err := s.repo.GetChannel(ctx, tenant, id)
+	if err != nil {
+		return err
+	}
 	if err = s.repo.DeleteChannel(ctx, tenant, id, revision, s.clock.Now().UTC()); err != nil {
 		return err
 	}
-	return s.record(ctx, actor, "notification.channel.deleted", id.String(), nil)
+	return s.record(ctx, actor, "notification.channel.deleted", id.String(), channelAuditMetadata(current, nil))
 }
 func (s *Service) GetChannel(ctx context.Context, id shared.ID) (domain.Channel, error) {
 	tenant, err := tenantFrom(ctx)
@@ -323,14 +347,12 @@ func (s *Service) testChannel(ctx context.Context, actor string, cid shared.ID) 
 	if err != nil {
 		return "", err
 	}
-	if len(s.disabled) > 0 {
-		channel, getErr := s.repo.GetChannel(ctx, tenant, cid)
-		if getErr != nil {
-			return "", getErr
-		}
-		if err = s.refuseDisabled(channel.Type); err != nil {
-			return "", err
-		}
+	channel, err := s.repo.GetChannel(ctx, tenant, cid)
+	if err != nil {
+		return "", err
+	}
+	if err = s.refuseDisabled(channel.Type); err != nil {
+		return "", err
 	}
 	now := s.clock.Now().UTC()
 	data, _ := json.Marshal(map[string]any{"title": "Synapse notification test"})
@@ -339,7 +361,7 @@ func (s *Service) testChannel(ctx context.Context, actor string, cid shared.ID) 
 	if err != nil {
 		return "", err
 	}
-	if err = s.record(ctx, actor, "notification.channel.test_queued", cid.String(), map[string]string{"delivery_id": id.String()}); err != nil {
+	if err = s.record(ctx, actor, "notification.channel.test_queued", cid.String(), channelAuditMetadata(channel, map[string]string{"delivery_id": id.String()})); err != nil {
 		return "", err
 	}
 	return id, nil

@@ -12,6 +12,7 @@ import (
 
 	domain "github.com/KKloudTarus/synapse-ce/internal/domain/notification"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	userdom "github.com/KKloudTarus/synapse-ce/internal/domain/user"
 	notificationuc "github.com/KKloudTarus/synapse-ce/internal/usecase/notification"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
@@ -29,6 +30,15 @@ func decodeNotificationBody(w http.ResponseWriter, r *http.Request, out any) err
 	}
 	return nil
 }
+
+// callerCan reports whether the authenticated principal holds perm. Routes are gated by rt.authz;
+// this is for the few handlers whose route admits a narrower permission and that refuse one part of
+// the request to callers without a broader one.
+func callerCan(r *http.Request, perm userdom.Permission) bool {
+	p, ok := principalObj(r.Context())
+	return ok && userdom.Role(p.Role).Can(perm)
+}
+
 func notificationID(r *http.Request) (shared.ID, error) {
 	id := shared.ID(strings.TrimSpace(r.PathValue("nid")))
 	if id.IsZero() {
@@ -91,6 +101,8 @@ func (rt *Router) updateNotificationChannel(w http.ResponseWriter, r *http.Reque
 		writeError(w, rt.log, err)
 		return
 	}
+	// The route admits manage_integrations; re-pointing the channel still needs administer (#1358).
+	in.AllowDestinationChange = callerCan(r, userdom.PermAdminister)
 	item, err := rt.notifications.UpdateChannel(r.Context(), PrincipalFrom(r.Context()), id, in)
 	if err != nil {
 		writeError(w, rt.log, err)

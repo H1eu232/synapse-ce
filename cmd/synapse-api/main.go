@@ -1556,6 +1556,7 @@ func main() {
 		}
 		notificationService.SetTransactionRunner(postgres.NewTenantTransactionRunner(databasePool))
 		notificationService.SetDisabledChannelTypes(disabledNotificationTypes)
+		notificationService.SetTemplateStore(postgres.NewNotificationTemplateStore(databasePool))
 		router.SetNotifications(notificationService)
 		// The API still needs SMTP for contact verification and personal inbox mail.
 		userContactService, notificationErr = usercontacts.NewService(postgres.NewUserContactStore(databasePool), userRepo, vaultCipher, notificationSender, ids, clock, usercontacts.DeriveVerifierKey(cfg.VaultMasterKey), cfg.NotificationSMTPHost != "" && cfg.NotificationSMTPFrom != "")
