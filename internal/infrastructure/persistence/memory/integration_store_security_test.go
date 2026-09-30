@@ -218,3 +218,43 @@ func TestIntegrationBindingCountIsCappedAtAdmission(t *testing.T) {
 		}
 	}
 }
+
+
+func TestGitHubInboundIntegrationEnablesWithoutPollingCredentialOrTest(t *testing.T) {
+	clock := idgen.SystemClock{}
+	ids := idgen.RandomID{}
+	queue := NewJobQueue(ids, clock.Now)
+	cipher, err := vault.NewCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewIntegrationStore(queue, cipher, clock, &integrationFailingAudit{})
+	tenantID := shared.ID("tenant-github")
+	ctx := shared.WithTenant(context.Background(), tenantID)
+	now := time.Now().UTC()
+
+	github := integration.Integration{
+		ID: "integration-github", TenantID: tenantID, Provider: "github", Name: "GitHub",
+		Endpoint: "https://github.com", Config: []byte(`{}`), PollInterval: time.Minute,
+		Version: 1, ConnectionRevision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateIntegration(ctx, github, ports.AuditEntry{Actor: "admin", Action: "integration.created", Target: github.ID.String(), At: now}); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := store.SetIntegrationEnabled(ctx, github.ID, true, github.Version, ports.AuditEntry{Actor: "admin", Action: "integration.enabled", Target: github.ID.String(), At: now})
+	if err != nil || !enabled.Enabled {
+		t.Fatalf("credentialless GitHub enable=%+v err=%v", enabled, err)
+	}
+
+	jenkins := integration.Integration{
+		ID: "integration-jenkins", TenantID: tenantID, Provider: "jenkins", Name: "Jenkins",
+		Endpoint: "https://jenkins.example.com", Config: []byte(`{}`), PollInterval: time.Minute,
+		Version: 1, ConnectionRevision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateIntegration(ctx, jenkins, ports.AuditEntry{Actor: "admin", Action: "integration.created", Target: jenkins.ID.String(), At: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetIntegrationEnabled(ctx, jenkins.ID, true, jenkins.Version, ports.AuditEntry{Actor: "admin", Action: "integration.enabled", Target: jenkins.ID.String(), At: now}); !errors.Is(err, shared.ErrConflict) {
+		t.Fatalf("credentialless Jenkins enable error=%v, want conflict", err)
+	}
+}
