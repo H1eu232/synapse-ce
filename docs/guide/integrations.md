@@ -22,6 +22,16 @@ Choose **Azure Pipelines** in Settings → Integrations. The HTTPS endpoint must
 
 The adapter uses authenticated GET requests to Azure DevOps Build REST API v7.1, bounded pagination, the shared SSRF-safe client and the operation request/response budget. It synthesizes console links from the trusted endpoint and numeric IDs, not from returned URL fields. Build IDs remain stable across queued, running and completed transitions; `partiallySucceeded` maps to unstable and `canceled` to aborted. Each poll materializes at most the newest 200 runs for a bound definition; deeper history is deliberately left unread instead of turning a long-lived pipeline into a permanent polling failure. Recent rows are re-read so queued and running builds can advance to completed. This adapter never starts, cancels or modifies builds.
 
+## GitHub inbound webhook workflow
+
+GitHub is an inbound-only provider in this workstream. Create a `github` integration, then bind it to exactly one existing Git-backed Project. The single-binding rule is deliberate: webhook payload repository URLs are never trusted for routing, so the authenticated integration must resolve to one server-owned Project unambiguously.
+
+With `SYNAPSE_INBOUND_WEBHOOKS_ENABLED=true`, an administrator calls `POST /api/v1/integrations/{id}/inbound-webhook`. The response returns an opaque relative hook path and generated secret exactly once with `Cache-Control: no-store`; calling the route again rotates the secret while keeping the path. Configure GitHub to send `push` and `pull_request` events to the public Synapse origin plus that path and use the returned secret.
+
+Synapse verifies `X-Hub-Signature-256` over the exact raw body and durably deduplicates `X-GitHub-Delivery`. Pushes scan the delivered commit. Pull requests scan on `opened`, `reopened`, `synchronize`, and `ready_for_review`; other actions are acknowledged without scheduling work. The repository URL always comes from the bound Project's persisted source binding, never from the GitHub payload, and acquisition pins the exact webhook commit SHA.
+
+Fork pull requests are treated as untrusted source. Synapse does not resolve or present a source-control connector credential for their clone/fetch path and disables Maven, Gradle, npm, manifest-resolver, and Go dependency-graph command execution. Static source analysis and SBOM inspection continue without executing repository-controlled build/dependency commands.
+
 ## Architecture
 
 ```text
