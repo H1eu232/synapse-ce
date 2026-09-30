@@ -278,6 +278,21 @@ func (rt *Router) deleteIntegrationBinding(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (rt *Router) configureIntegrationInboundWebhook(w http.ResponseWriter, r *http.Request) {
+	credentials, err := rt.inboundWebhookAdmin.ConfigureGitHubWebhook(
+		r.Context(),
+		shared.ID(TenantFrom(r.Context())),
+		shared.ID(r.PathValue("id")),
+		PrincipalFrom(r.Context()),
+	)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, credentials)
+}
+
 func (rt *Router) listIntegrationExternalRuns(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	runs, err := rt.integrations.ListExternalRuns(r.Context(), shared.ID(TenantFrom(r.Context())), shared.ID(r.PathValue("id")), limit)
