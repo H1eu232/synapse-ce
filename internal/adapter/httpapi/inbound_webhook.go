@@ -27,36 +27,7 @@ const (
 )
 
 var (
-	githubWebhookSHA = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?package httpapi
-
-import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"io"
-	"net/http"
-	"regexp"
-	"strings"
-	"time"
-
-	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
-	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/vault"
-	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
-)
-
-const inboundWebhookBodyLimit = 1 << 20 // 1 MiB of raw, signed bytes.
-const inboundWebhookSignature = "X-Synapse-Hook-Signature"
-
-const (
-	githubSignatureHeader = "X-Hub-Signature-256"
-	githubEventHeader     = "X-GitHub-Event"
-	githubDeliveryHeader  = "X-GitHub-Delivery"
-)
-
-var (
-	githubWebhookSHA = regexp.MustCompile()
+	githubWebhookSHA = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 	githubWebhookRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$`)
 )
 
