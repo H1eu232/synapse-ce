@@ -41,6 +41,11 @@ type NotificationWork struct {
 	Event    notification.Event
 	Channel  notification.Channel
 	Sealed   string
+	// CustomWebhookBody is a rendered custom JSON body for a webhook channel that opted into one
+	// (#1376). The send-time renderer (#1365) sets it with notification.RenderCustomWebhookBody;
+	// nothing sets it yet. When it is not empty the webhook driver sends exactly these bytes instead
+	// of the event envelope, signs them and sets X-Synapse-Body: custom.
+	CustomWebhookBody []byte
 }
 
 type NotificationSendResult struct {

@@ -2,6 +2,8 @@ import { Eye, EyeOff, GitBranch01, Key01, Lock01, Plus, Trash01 } from '@untitle
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError, type Connector, type ConnectorProvider } from '../../lib/api'
 import { Button, Card, EmptyState, ErrorState, Field, Input, Pill, Select, Spinner, cn } from '../../components/ui'
+import { useFetch } from '../../hooks'
+import { isAdminRole } from '../../lib/roles'
 
 const PROVIDERS: { value: ConnectorProvider; label: string; hint: string; scope: string }[] = [
   { value: 'github', label: 'GitHub', hint: 'github.com or GitHub Enterprise; username defaults to x-access-token.', scope: 'Needs the classic repo scope, or a fine-grained token with Contents: Read.' },
@@ -52,6 +54,10 @@ export function Connectors() {
   const [connectors, setConnectors] = useState<Connector[] | null | undefined>(undefined)
   const [unsupported, setUnsupported] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // An integration_admin may list connectors; adding (a new host and token) and removing one stay
+  // with administrators (#1358). The server enforces both.
+  const { data: me } = useFetch(() => api.me(), { deps: [] })
+  const canAdmin = isAdminRole(me?.role)
 
   const load = useCallback(() => {
     setLoadError(null)
@@ -89,7 +95,11 @@ export function Connectors() {
         />
       ) : (
         <>
-          <AddConnector onCreated={load} />
+          {canAdmin ? (
+            <AddConnector onCreated={load} />
+          ) : (
+            me && <p className="text-sm text-tertiary">Only tenant administrators can add or remove a connector.</p>
+          )}
           {loadError && <ErrorState message={loadError} />}
           {connectors === undefined && !loadError && <Spinner label="Loading connectors…" />}
           {connectors && connectors.length === 0 && !loadError && (
@@ -99,7 +109,7 @@ export function Connectors() {
               hint="Add one above to scan a private repository on that host."
             />
           )}
-          {connectors && connectors.length > 0 && <ConnectorList connectors={connectors} onDeleted={load} />}
+          {connectors && connectors.length > 0 && <ConnectorList connectors={connectors} canRemove={canAdmin} onDeleted={load} />}
         </>
       )}
     </div>
@@ -230,19 +240,19 @@ function AddConnector({ onCreated }: { onCreated: () => void }) {
   )
 }
 
-function ConnectorList({ connectors, onDeleted }: { connectors: Connector[]; onDeleted: () => void }) {
+function ConnectorList({ connectors, canRemove, onDeleted }: { connectors: Connector[]; canRemove: boolean; onDeleted: () => void }) {
   return (
     <Card title="Connectors" bodyClass="p-0">
       <ul className="divide-y divide-secondary">
         {connectors.map((c) => (
-          <ConnectorRow key={c.id} connector={c} onDeleted={onDeleted} />
+          <ConnectorRow key={c.id} connector={c} canRemove={canRemove} onDeleted={onDeleted} />
         ))}
       </ul>
     </Card>
   )
 }
 
-function ConnectorRow({ connector, onDeleted }: { connector: Connector; onDeleted: () => void }) {
+function ConnectorRow({ connector, canRemove, onDeleted }: { connector: Connector; canRemove: boolean; onDeleted: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -275,9 +285,11 @@ function ConnectorRow({ connector, onDeleted }: { connector: Connector; onDelete
         {connector.apiBase && <p className="mt-0.5 truncate font-mono text-xs text-tertiary">API {connector.apiBase}</p>}
         {error && <p className="mt-1 text-xs text-critical">{error}</p>}
       </div>
-      <Button variant="secondary" onClick={remove} loading={busy} className="shrink-0" aria-label={`Remove connector ${connector.name}`}>
-        <Trash01 className="size-4" /> Remove
-      </Button>
+      {canRemove && (
+        <Button variant="secondary" onClick={remove} loading={busy} className="shrink-0" aria-label={`Remove connector ${connector.name}`}>
+          <Trash01 className="size-4" /> Remove
+        </Button>
+      )}
     </li>
   )
 }

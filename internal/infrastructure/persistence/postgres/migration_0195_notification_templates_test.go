@@ -156,7 +156,9 @@ func TestNotificationTemplateStoreConformancePostgres(t *testing.T) {
 	}
 	notificationtemplatetest.Run(t, func(t *testing.T) ports.NotificationTemplateStore {
 		// TRUNCATE fires no row triggers, so the owner can reset the append-only table between cases.
-		if _, err := db.Exec(`TRUNCATE notification_template_versions, notification_templates`); err != nil {
+		// CASCADE also empties notification_channels, whose template binding (0200) references
+		// notification_templates; the conformance cases create no channel.
+		if _, err := db.Exec(`TRUNCATE notification_template_versions, notification_templates CASCADE`); err != nil {
 			t.Fatal(err)
 		}
 		return NewNotificationTemplateStore(pool)

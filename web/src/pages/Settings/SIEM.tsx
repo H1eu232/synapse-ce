@@ -4,6 +4,7 @@ import { ApiError, api } from '../../lib/api'
 import type { SIEMAckMode, SIEMProvider, SIEMSink, SIEMStatus } from '../../lib/api'
 import { Button, Card, EmptyState, ErrorState, Field, Input, Select, Spinner } from '../../components/ui'
 import { useFetch } from '../../hooks'
+import { canManageIntegrations, isAdminRole } from '../../lib/roles'
 
 export const SIEM_PROVIDER_OPTIONS: Array<{ value: SIEMProvider; label: string }> = [
   { value: 'splunk_hec', label: 'Splunk HEC' },
@@ -61,7 +62,9 @@ const guarantees: Record<SIEMAckMode, string> = {
 
 export function SIEM() {
   const { data: me } = useFetch(() => api.me(), { deps: [] })
-  const canAdmin = me?.role === 'admin' || me?.role === 'owner'
+  // Reading, pausing, resuming and status need manage_integrations; adding a sink needs administer (#1358).
+  const canAdmin = isAdminRole(me?.role)
+  const canManage = canManageIntegrations(me?.role)
   const [sinks, setSinks] = useState<SIEMSink[] | null | undefined>(undefined)
   const [status, setStatus] = useState<SIEMStatus | null>(null)
   const [tested, setTested] = useState<{ id: string; guarantee: string } | null>(null)
@@ -89,8 +92,8 @@ export function SIEM() {
     }
   }, [])
   useEffect(() => {
-    if (canAdmin) void load()
-  }, [canAdmin, load])
+    if (canManage) void load()
+  }, [canManage, load])
   async function testConnection(id: string) {
     setTested(null)
     setError(null)
@@ -103,12 +106,12 @@ export function SIEM() {
   }
 
   if (!me) return <Spinner label="Loading permissions" />
-  if (!canAdmin) {
+  if (!canManage) {
     return (
       <EmptyState
         icon={Dataflow03}
         title="Administrator access required"
-        hint="Only a tenant administrator can create SIEM destinations or see their status."
+        hint="Only a tenant administrator or an integration administrator can see SIEM destinations and their status."
       />
     )
   }
@@ -127,7 +130,11 @@ export function SIEM() {
           Audit and incident records are exported at least once. A gap stops the stream until someone resumes it. Legacy audit history from before tenant chains is not included.
         </p>
       </header>
-      <CreateSink onCreated={() => void load()} />
+      {canAdmin ? (
+        <CreateSink onCreated={() => void load()} />
+      ) : (
+        <p className="text-sm text-tertiary">Only tenant administrators can add a sink or change its host, secret or data class.</p>
+      )}
       {error ? <ErrorState message={error} /> : null}
       {sinks.length === 0 ? (
         <EmptyState icon={Dataflow03} title="No SIEM destinations" hint="Add a Splunk, Elasticsearch, syslog, or Microsoft Sentinel sink to start a stream." />

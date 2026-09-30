@@ -12,6 +12,7 @@ const ROLE_OPTIONS = [
   { value: 'consultant', label: 'Consultant' },
   { value: 'reviewer', label: 'Reviewer' },
   { value: 'readonly', label: 'Read only' },
+  { value: 'integration_admin', label: 'Integration admin' },
   { value: 'admin', label: 'Admin' },
 ]
 
@@ -281,7 +282,7 @@ function CreateUserInline({ onCreated }: { onCreated: () => void }) {
           value={role}
           onValueChange={(v) => setRole(v as UserRole)}
           ariaLabel="Role"
-          className="h-9 w-32 text-sm"
+          className="h-9 w-40 text-sm"
           options={ROLE_OPTIONS}
         />
         <Button loading={busy} onClick={submit} className="h-9 px-3.5 text-sm">

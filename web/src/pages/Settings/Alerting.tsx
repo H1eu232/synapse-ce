@@ -8,6 +8,7 @@ import type {
   NotificationSourceFailure,
   NotificationEventSpec,
   NotificationEventType,
+  NotificationLocale,
   NotificationRule,
   NotificationRuleFilter,
 } from '../../lib/api'
@@ -26,7 +27,9 @@ import { useToast } from '../../components/synapse/Toast'
 import { capabilityHint, disabledCapability, loadCapabilities, useCapabilities } from '../../lib/capabilities'
 import type { Capability } from '../../lib/types'
 import { useFetch } from '../../hooks'
+import { canManageIntegrations, isAdminRole } from '../../lib/roles'
 import { RuleTargetPicker } from './RuleTargetPicker'
+import { ChannelTemplateFields, RuleTemplatePreview } from './ChannelTemplateBinding'
 
 // A new rule starts on the most common subscription when the catalog offers it.
 const DEFAULT_RULE_EVENT = 'vulnerability_action.created'
@@ -46,7 +49,10 @@ const stateTone: Record<string, string> = {
 export function Alerting() {
   const { notify } = useToast()
   const { data: me } = useFetch(() => api.me(), { deps: [] })
-  const canAdmin = me?.role === 'admin' || me?.role === 'owner'
+  // manage_integrations runs channels, rules and history; only administer adds a channel or
+  // changes where one delivers (#1358).
+  const canAdmin = isAdminRole(me?.role)
+  const canManage = canManageIntegrations(me?.role)
   const [channels, setChannels] = useState<
     NotificationChannel[] | null | undefined
   >(undefined)
@@ -102,18 +108,18 @@ export function Alerting() {
     }
   }, [loadCatalog])
   useEffect(() => {
-    if (canAdmin) void load()
-  }, [load, canAdmin])
+    if (canManage) void load()
+  }, [load, canManage])
   return (
     <div className="space-y-6">
-      <LegacyAlertTest canAdmin={canAdmin} />
+      <LegacyAlertTest canAdmin={canManage} />
       {!me ? (
         <Spinner label="Loading permissions…" />
-      ) : !canAdmin ? (
+      ) : !canManage ? (
         <EmptyState
           icon={BellRinging01}
           title="Administrator access required"
-          hint="Only tenant administrators can manage notification settings and delivery history."
+          hint="Only tenant administrators and integration administrators can manage notification settings and delivery history."
         />
       ) : disabled ? (
         <EmptyState
@@ -127,6 +133,7 @@ export function Alerting() {
             key={editingChannel?.id ?? 'new-channel'}
             initial={editingChannel}
             canAdmin={canAdmin}
+            canManage={canManage}
             types={channelTypes}
             onCreated={() => {
               setEditingChannel(undefined)
@@ -141,7 +148,7 @@ export function Alerting() {
             <ChannelList
               channels={channels}
               types={channelTypes}
-              canAdmin={canAdmin}
+              canAdmin={canManage}
               refresh={load}
               notify={notify}
               onEdit={setEditingChannel}
@@ -179,7 +186,7 @@ export function Alerting() {
             <RuleCreate
               channels={channels}
               eventTypes={eventTypes}
-              canAdmin={canAdmin}
+              canAdmin={canManage}
               key={editingRule?.id ?? 'new-rule'}
               initial={editingRule}
               onCreated={() => {
@@ -193,10 +200,10 @@ export function Alerting() {
             rules={rules}
             channels={channels ?? []}
             eventTypes={eventTypes ?? []}
-            canAdmin={canAdmin}
+            canAdmin={canManage}
             refresh={load}
           />
-          {canAdmin && channels !== undefined && (
+          {canManage && channels !== undefined && (
             <DeliveryHistory
               key={historyVersion}
               channels={channels ?? []}
@@ -312,11 +319,15 @@ function operatorDisabledHint(type: string): string {
 function ChannelCreate({
   initial,
   canAdmin,
+  canManage,
   types,
   onCreated,
 }: {
   initial?: NotificationChannel
+  /** Holds administer: may add a channel and change a destination. */
   canAdmin: boolean
+  /** Holds manage_integrations: may rename, enable or disable an existing channel. */
+  canManage: boolean
   /** Channel types the server advertises; null means it does not say, so offer every known type. */
   types: string[] | null
   onCreated: () => void
@@ -335,8 +346,15 @@ function ChannelCreate({
   const [recipients, setRecipients] = useState(
     initial?.recipients?.join(', ') ?? '',
   )
+  // The template binding (#1371) is not a destination, so manage_integrations may change it.
+  const [templateId, setTemplateId] = useState(initial?.template_id ?? '')
+  const [locale, setLocale] = useState<NotificationLocale | ''>(initial?.locale ?? '')
+  const [customBody, setCustomBody] = useState(initial?.custom_body ?? false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Without administer the destination is read-only: the server refuses a new URL, secret or
+  // recipient list from an integration_admin with 403, so the form never sends one.
+  const destinationLocked = !canAdmin
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -347,14 +365,24 @@ function ChannelCreate({
         type,
         enabled: initial?.enabled ?? true,
         revision: initial?.revision,
-        url: type === 'email' ? undefined : url.trim(),
-        secret: type === 'webhook' ? secret : undefined,
+        url: type === 'email' || destinationLocked ? undefined : url.trim(),
+        secret: type === 'webhook' && !destinationLocked ? secret : undefined,
         recipients:
-          type === 'email'
-            ? recipients
-                .split(',')
-                .map((x) => x.trim())
-                .filter(Boolean)
+          type !== 'email'
+            ? undefined
+            : destinationLocked
+              ? initial?.recipients
+              : recipients
+                  .split(',')
+                  .map((x) => x.trim())
+                  .filter(Boolean),
+        // Sent only when changed, so saving a rename never revalidates an existing binding.
+        template_id:
+          templateId !== (initial?.template_id ?? '') ? templateId : undefined,
+        locale: locale !== (initial?.locale ?? '') ? locale : undefined,
+        custom_body:
+          type === 'webhook' && customBody !== (initial?.custom_body ?? false)
+            ? customBody
             : undefined,
       }
       if (initial) await api.updateNotificationChannel(initial.id, input)
@@ -370,6 +398,16 @@ function ChannelCreate({
       setBusy(false)
     }
   }
+  if (!initial && !canAdmin)
+    return (
+      <Card title="Add notification channel">
+        <p className="text-sm text-tertiary">
+          Only tenant administrators can add a channel or change where one
+          delivers. You can rename, test, switch on or off, resume and delete
+          existing channels, and edit routing rules.
+        </p>
+      </Card>
+    )
   if (!initial && typeOptions.length === 0)
     return (
       <Card title="Add notification channel">
@@ -389,10 +427,16 @@ function ChannelCreate({
           off, but not switch it on or change its destination.
         </p>
       )}
-      {initial && (
+      {initial && !destinationLocked && (
         <p className="mb-4 text-sm text-tertiary">
           Leave URL and secret blank to keep them. To replace a webhook
           destination, supply both a new URL and signing secret.
+        </p>
+      )}
+      {initial && destinationLocked && (
+        <p className="mb-4 text-sm text-tertiary">
+          Only tenant administrators can change this channel&apos;s
+          destination. You can rename it here.
         </p>
       )}
       <form className="grid grid-cols-1 gap-4 md:grid-cols-2" onSubmit={submit}>
@@ -421,6 +465,7 @@ function ChannelCreate({
           >
             <Input
               id="notification-recipients"
+              disabled={destinationLocked}
               value={recipients}
               onChange={(e) => setRecipients(e.target.value)}
               placeholder="security@example.com"
@@ -434,6 +479,7 @@ function ChannelCreate({
             <Input
               id="notification-url"
               type="password"
+              disabled={destinationLocked}
               value={url}
               onChange={(e) => setURL(e.target.value)}
               placeholder="https://…"
@@ -450,12 +496,27 @@ function ChannelCreate({
             <Input
               id="notification-secret"
               type="password"
+              disabled={destinationLocked}
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
               autoComplete="new-password"
             />
           </Field>
         )}
+        <ChannelTemplateFields
+          type={type}
+          templateId={templateId}
+          locale={locale}
+          onTemplateChange={(id) => {
+            setTemplateId(id)
+            // A custom body needs a bound template, so unbinding also opts out.
+            if (!id) setCustomBody(false)
+          }}
+          onLocaleChange={setLocale}
+          customBody={customBody}
+          onCustomBodyChange={setCustomBody}
+          disabled={!(initial ? canManage : canAdmin)}
+        />
         <div className="flex items-end md:col-span-2">
           <div className="flex-1">
             {error && <ErrorState message={error} />}
@@ -464,7 +525,7 @@ function ChannelCreate({
             type="submit"
             loading={busy}
             disabled={
-              !canAdmin ||
+              !(initial ? canManage : canAdmin) ||
               !name.trim() ||
               (type === 'email'
                 ? !recipients.trim()
@@ -969,6 +1030,10 @@ function RuleCreate({
             </label>
           ))}
         </fieldset>
+        <RuleTemplatePreview
+          channels={channels.filter((c) => selected.includes(c.id))}
+          eventType={event}
+        />
         {allows('engagement_ids') && (
           <RuleTargetPicker
             label="Engagements (optional)"

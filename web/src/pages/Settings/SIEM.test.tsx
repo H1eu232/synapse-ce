@@ -162,6 +162,23 @@ describe('SIEM settings', () => {
     })
   })
 
+  // #1358: an integration_admin runs existing sinks; adding one stays with administrators.
+  it('lets an integration_admin pause and resume a sink but not add one', async () => {
+    vi.mocked(api.me).mockResolvedValue({ role: 'integration_admin' } as never)
+    vi.mocked(api.listSIEMSinks).mockResolvedValue([blockedSink])
+    vi.mocked(api.resumeSIEMSink).mockResolvedValue({ ...blockedSink, blocked_reason: undefined, version: 5 })
+    vi.mocked(api.testSIEMSink).mockResolvedValue({ guarantee: 'hec_acceptance', result: 'accepted' })
+    render(<SIEM />)
+    expect(await screen.findByText('Blocked collector')).toBeInTheDocument()
+    expect(screen.getByText(/Only tenant administrators can add a sink/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add sink' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Connection test accepted (hec_acceptance).')
+    expect(api.testSIEMSink).toHaveBeenCalledWith('sink-blocked')
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    await waitFor(() => expect(api.resumeSIEMSink).toHaveBeenCalledWith('sink-blocked', 4))
+  })
+
   it('shows a load error', async () => {
     vi.mocked(api.me).mockResolvedValue({ role: 'admin' } as never)
     vi.mocked(api.listSIEMSinks).mockRejectedValue(new Error('database unavailable'))

@@ -102,6 +102,7 @@ describe('IntegrationsHub', () => {
     expect(screen.getByRole('link', { name: 'Manage CI/CD' })).toHaveAttribute('href', '/settings/integrations/ci')
     expect(screen.getByRole('link', { name: 'Manage connectors' })).toHaveAttribute('href', '/settings/connectors')
     expect(screen.getByRole('link', { name: 'Manage channels' })).toHaveAttribute('href', '/settings/alerting')
+    expect(screen.getByRole('link', { name: 'Message templates' })).toHaveAttribute('href', '/settings/templates')
     expect(screen.getByRole('link', { name: 'Manage SIEM streams' })).toHaveAttribute('href', '/settings/siem')
   })
 
@@ -229,13 +230,29 @@ describe('IntegrationsHub', () => {
     expect((await group('Documentation')).getByText('Documentation is not available in this build yet')).toBeInTheDocument()
   })
 
+  // #1358: everything the hub reads or tests needs manage_integrations, which integration_admin holds.
+  it('shows an integration_admin every group and lets them run a test', async () => {
+    vi.mocked(api.me).mockResolvedValue({ id: 'u', name: 'Integrator', role: 'integration_admin' })
+    vi.mocked(api.listIntegrations).mockResolvedValue([integration])
+    renderHub()
+    const card = within(await screen.findByRole('listitem', { name: 'Production Jenkins' }))
+    expect(card.getByRole('button', { name: 'Test Production Jenkins' })).toBeEnabled()
+    expect(await (await group('Source control')).findByText('No source-control connectors yet')).toBeInTheDocument()
+    expect(await (await group('Messaging')).findByText('No notification channels yet')).toBeInTheDocument()
+    expect(await (await group('SIEM')).findByText('No SIEM destinations yet')).toBeInTheDocument()
+    expect(screen.queryByText('Administrator access required')).not.toBeInTheDocument()
+    expect(api.listConnectors).toHaveBeenCalled()
+    expect(api.listNotificationChannels).toHaveBeenCalled()
+    expect(api.listSIEMSinks).toHaveBeenCalled()
+  })
+
   it('limits a non-admin to viewing CI/CD and never calls admin-only APIs', async () => {
     vi.mocked(api.me).mockResolvedValue({ id: 'u', name: 'Member', role: 'member' })
     vi.mocked(api.listIntegrations).mockResolvedValue([integration])
     renderHub()
     const card = within(await screen.findByRole('listitem', { name: 'Production Jenkins' }))
     expect(card.getByRole('button', { name: 'Test Production Jenkins' })).toBeDisabled()
-    expect(card.getByText('Only tenant administrators can run a test.')).toBeInTheDocument()
+    expect(card.getByText('Only tenant administrators and integration administrators can run a test.')).toBeInTheDocument()
     expect((await group('Source control')).getByText('Administrator access required')).toBeInTheDocument()
     expect((await group('Messaging')).getByText('Administrator access required')).toBeInTheDocument()
     expect((await group('SIEM')).getByText('Administrator access required')).toBeInTheDocument()

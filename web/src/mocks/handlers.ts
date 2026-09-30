@@ -543,6 +543,90 @@ const COVERAGE_WINDOWS = [
   },
 ]
 
+// ============================================================================
+// NOTIFICATION TEMPLATES (#1373) — an in-memory store so the editor can be exercised in dev.
+// ============================================================================
+const NOTIFICATION_EVENT_TYPES = [
+  {
+    type: 'incident.created', label: 'Incident created', schema_version: 1, subject_kind: 'incident', has_engagement: true,
+    has_severity: true, has_team: false, has_lead_time: false, filters: ['min_severity', 'engagement_ids'], max_data_class: 'summary',
+    mandatory: false, operator_only: false,
+    variables: [
+      { name: 'title', class: 'signal', description: 'Incident title as the analyst wrote it', list_cap: 0 },
+      { name: 'severity', class: 'signal', description: 'Incident severity: critical, high, medium, low or info', list_cap: 0 },
+      { name: 'affected_assets', class: 'summary', description: 'Assets the incident touches', list_cap: 50 },
+    ],
+  },
+  {
+    type: 'vulnerability_action.created', label: 'Vulnerability action created', schema_version: 1, subject_kind: 'vulnerability_action',
+    has_engagement: true, has_severity: true, has_team: false, has_lead_time: false, filters: ['min_severity', 'action_types', 'engagement_ids'],
+    max_data_class: 'summary', mandatory: false, operator_only: false, variables: [] as Array<{ name: string; class: string; description: string; list_cap: number }>,
+  },
+]
+
+interface MockTemplateVersion { version: number; fields: Record<string, string>; checksum: string; created_at: string; created_by: string }
+interface MockTemplate {
+  id: string; name: string; event_type: string; family: string; locale: string; status: 'draft' | 'active' | 'archived'
+  active_version: number; revision: number; created_at: string; updated_at: string; versions: MockTemplateVersion[]
+}
+
+function mockTemplateVersion(version: number, fields: Record<string, string>): MockTemplateVersion {
+  return { version, fields, checksum: `mock-${version}`, created_at: new Date().toISOString(), created_by: 'admin@dev' }
+}
+
+const TEMPLATE_STORE: MockTemplate[] = [
+  {
+    id: 'tpl-incident-chat', name: 'Incident alert for chat', event_type: 'incident.created', family: 'chat', locale: 'en',
+    status: 'active', active_version: 2, revision: 3, created_at: WEEK_AGO, updated_at: DAY_AGO,
+    versions: [
+      { ...mockTemplateVersion(1, { title: 'New incident', body: 'Open the console for details.' }), created_at: WEEK_AGO },
+      { ...mockTemplateVersion(2, { title: '{{.severity}}: {{.title}}', body: 'A new incident was opened.' }), created_at: DAY_AGO },
+    ],
+  },
+  {
+    id: 'tpl-any-email', name: 'Plain email for every event', event_type: '*', family: 'email', locale: '*',
+    status: 'draft', active_version: 0, revision: 1, created_at: HOUR_AGO, updated_at: HOUR_AGO,
+    versions: [{ ...mockTemplateVersion(1, { subject: 'Synapse notification', body: 'Something happened. Open the console.' }), created_at: HOUR_AGO }],
+  },
+]
+
+function templateHead(t: MockTemplate) {
+  return {
+    tenant_id: 'tenant-dev', id: t.id, name: t.name, event_type: t.event_type, family: t.family, locale: t.locale, status: t.status,
+    latest_version: t.versions.length, active_version: t.active_version, revision: t.revision,
+    created_at: t.created_at, created_by: 'admin@dev', updated_at: t.updated_at, updated_by: 'admin@dev',
+  }
+}
+
+function templateDetail(t: MockTemplate) {
+  const wrap = (v: MockTemplateVersion | undefined) => (v ? { ...v, tenant_id: 'tenant-dev', template_id: t.id } : undefined)
+  return { ...templateHead(t), latest: wrap(t.versions[t.versions.length - 1]), active: wrap(t.versions.find((v) => v.version === t.active_version)) }
+}
+
+/** Mirrors the engine's unknown_variable rejection for any variable the catalog does not declare. */
+function mockTemplateRejection(fields: Record<string, string>, eventType: string) {
+  const known = eventType === '*'
+    ? NOTIFICATION_EVENT_TYPES.reduce<string[]>((names, spec, index) => {
+        const own = spec.variables.map((v) => v.name)
+        return index === 0 ? own : names.filter((name) => own.includes(name))
+      }, [])
+    : (NOTIFICATION_EVENT_TYPES.find((spec) => spec.type === eventType)?.variables ?? []).map((v) => v.name)
+  for (const [field, source] of Object.entries(fields)) {
+    const lines = source.split('\n')
+    for (let index = 0; index < lines.length; index++) {
+      for (const match of lines[index].matchAll(/\{\{\s*\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
+        if (!known.includes(match[1])) {
+          return {
+            error: `template field "${field}" is invalid for event type ${eventType}: unknown_variable at line ${index + 1}: ${match[1]}`,
+            field, event_type: eventType, code: 'unknown_variable', line: index + 1,
+          }
+        }
+      }
+    }
+  }
+  return null
+}
+
 export const handlers = [
   // --- Auth (BFF) ---
   // discoverSession() calls GET /api/auth/session and expects an authenticated
@@ -1806,6 +1890,83 @@ export const handlers = [
       { ID: 'occrisk-0', OccurrenceID: params.oid, Severity: 'high', CVSSScore: 7.5, KEV: false, EPSS: 0.1, RiskScore: 6.0, Priority: 2, ReasonCodes: [], AssessedAt: '2026-09-01T09:00:00Z' },
     ], next: null }),
   ),
+
+  // --- Notification event catalog and custom message templates (#1370, #1373) ---
+  http.get('/api/v1/notifications/event-types', () => HttpResponse.json({ items: NOTIFICATION_EVENT_TYPES })),
+  http.get('/api/v1/notifications/templates', ({ request }) => {
+    const query = new URL(request.url).searchParams
+    const items = TEMPLATE_STORE.filter((t) =>
+      (!query.get('event_type') || t.event_type === query.get('event_type')) &&
+      (!query.get('family') || t.family === query.get('family')) &&
+      (!query.get('locale') || t.locale === query.get('locale')) &&
+      (!query.get('status') || t.status === query.get('status')),
+    ).map(templateHead)
+    return HttpResponse.json({ items })
+  }),
+  http.post('/api/v1/notifications/templates', async ({ request }) => {
+    const body = (await request.json()) as { name: string; event_type: string; family: string; locale: string; fields: Record<string, string> }
+    const rejected = mockTemplateRejection(body.fields, body.event_type)
+    if (rejected) return HttpResponse.json(rejected, { status: 400 })
+    const template: MockTemplate = {
+      id: `tpl-${TEMPLATE_STORE.length + 1}-${Date.now().toString(36)}`, name: body.name, event_type: body.event_type,
+      family: body.family, locale: body.locale, status: 'draft', active_version: 0, revision: 1,
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      versions: [mockTemplateVersion(1, body.fields)],
+    }
+    TEMPLATE_STORE.push(template)
+    return HttpResponse.json(templateDetail(template), { status: 201 })
+  }),
+  http.get('/api/v1/notifications/templates/:nid', ({ params }) => {
+    const template = TEMPLATE_STORE.find((t) => t.id === params.nid)
+    return template ? HttpResponse.json(templateDetail(template)) : HttpResponse.json({ error: 'not found' }, { status: 404 })
+  }),
+  http.get('/api/v1/notifications/templates/:nid/versions', ({ params }) => {
+    const template = TEMPLATE_STORE.find((t) => t.id === params.nid)
+    if (!template) return HttpResponse.json({ error: 'not found' }, { status: 404 })
+    return HttpResponse.json({ items: [...template.versions].reverse().map((v) => ({ ...v, tenant_id: 'tenant-dev', template_id: template.id })) })
+  }),
+  http.patch('/api/v1/notifications/templates/:nid', async ({ params, request }) => {
+    const template = TEMPLATE_STORE.find((t) => t.id === params.nid)
+    if (!template) return HttpResponse.json({ error: 'not found' }, { status: 404 })
+    const body = (await request.json()) as { name?: string; fields: Record<string, string>; revision: number }
+    if (body.revision !== template.revision) return HttpResponse.json({ error: 'stale revision' }, { status: 409 })
+    const rejected = mockTemplateRejection(body.fields, template.event_type)
+    if (rejected) return HttpResponse.json(rejected, { status: 400 })
+    if (body.name) template.name = body.name
+    template.versions.push(mockTemplateVersion(template.versions.length + 1, body.fields))
+    template.revision++
+    template.updated_at = new Date().toISOString()
+    return HttpResponse.json(templateDetail(template))
+  }),
+  http.post('/api/v1/notifications/templates/:nid/:action', async ({ params, request }) => {
+    const template = TEMPLATE_STORE.find((t) => t.id === params.nid)
+    if (!template) return HttpResponse.json({ error: 'not found' }, { status: 404 })
+    const body = (await request.json()) as { revision: number; version?: number }
+    if (body.revision !== template.revision) return HttpResponse.json({ error: 'stale revision' }, { status: 409 })
+    let archived: string | undefined
+    if (params.action === 'archive') {
+      template.status = 'archived'
+    } else if (params.action === 'activate' || params.action === 'rollback') {
+      const version = body.version || template.versions.length
+      if (params.action === 'rollback' && template.status === 'active' && template.active_version === version) {
+        return HttpResponse.json({ error: 'version already renders' }, { status: 409 })
+      }
+      for (const other of TEMPLATE_STORE) {
+        if (other !== template && other.status === 'active' && other.event_type === template.event_type && other.family === template.family && other.locale === template.locale) {
+          other.status = 'archived'
+          other.revision++
+          archived = other.id
+        }
+      }
+      template.status = 'active'
+      template.active_version = version
+    } else {
+      return HttpResponse.json({ error: 'not found' }, { status: 404 })
+    }
+    template.revision++
+    template.updated_at = new Date().toISOString()
+    return HttpResponse.json({ ...templateDetail(template), archived_template_id: archived })
+  }),
 
   // --- Catch-all fallback ---
   http.get('/api/v1/*', ({ request }) => {

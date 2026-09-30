@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -164,6 +165,7 @@ func (service *Service) Update(ctx context.Context, tenantID, id shared.ID, inpu
 	if err != nil {
 		return integration.Integration{}, fmt.Errorf("%w: integration configuration is invalid", shared.ErrValidation)
 	}
+	previousDestination := auditDestination(current.Endpoint)
 	current.Name = input.Name
 	current.Endpoint = input.Endpoint
 	current.Config = config
@@ -176,7 +178,12 @@ func (service *Service) Update(ctx context.Context, tenantID, id shared.ID, inpu
 	if err := checkEndpointRules(service.registry.SelfHostedRules(), descriptor, current.Endpoint, current.AllowPrivateNetwork); err != nil {
 		return integration.Integration{}, err
 	}
-	audit := service.auditEntry(input.Actor, "integration.updated", id, integrationAuditMetadata(current))
+	metadata := integrationAuditMetadata(current)
+	metadata["destination_changed"] = fmt.Sprintf("%t", previousDestination != metadata["destination"])
+	if metadata["destination_changed"] == "true" {
+		metadata["previous_destination"] = previousDestination
+	}
+	audit := service.auditEntry(input.Actor, "integration.updated", id, metadata)
 	updated, err := service.store.UpdateIntegration(tenantCtx, current, input.Version, audit)
 	if err != nil {
 		return integration.Integration{}, err
@@ -202,7 +209,7 @@ func (service *Service) SetCredential(ctx context.Context, tenantID, integration
 	if err != nil || len(plaintext) > integration.MaxCredentialBytes {
 		return fmt.Errorf("%w: integration credential bundle is invalid", shared.ErrValidation)
 	}
-	audit := service.auditEntry(actor, "integration.credential_replaced", integrationID, map[string]string{"provider": string(item.Provider)})
+	audit := service.auditEntry(actor, "integration.credential_replaced", integrationID, integrationTargetMetadata(item, nil))
 	return service.store.PutIntegrationCredential(tenantCtx, integrationID, credentialIdentity, plaintext, expectedVersion, expectedConnectionRevision, audit)
 }
 
@@ -213,7 +220,7 @@ func (service *Service) DeleteCredential(ctx context.Context, tenantID, integrat
 	if err != nil {
 		return err
 	}
-	audit := service.auditEntry(actor, "integration.credential_deleted", integrationID, map[string]string{"provider": string(item.Provider)})
+	audit := service.auditEntry(actor, "integration.credential_deleted", integrationID, integrationTargetMetadata(item, nil))
 	return service.store.DeleteIntegrationCredential(tenantCtx, integrationID, credentialIdentity, expectedVersion, expectedConnectionRevision, audit)
 }
 
@@ -237,7 +244,7 @@ func (service *Service) SetEnabled(ctx context.Context, tenantID, integrationID 
 	if enabled {
 		action = "integration.enabled"
 	}
-	audit := service.auditEntry(actor, action, integrationID, map[string]string{"provider": string(item.Provider)})
+	audit := service.auditEntry(actor, action, integrationID, integrationTargetMetadata(item, nil))
 	updated, err := service.store.SetIntegrationEnabled(tenantCtx, integrationID, enabled, version, audit)
 	if err != nil {
 		if enabled && errors.Is(err, shared.ErrConflict) {
@@ -255,14 +262,15 @@ func (service *Service) Archive(ctx context.Context, tenantID, integrationID sha
 	if err != nil {
 		return err
 	}
-	audit := service.auditEntry(actor, "integration.archived", integrationID, map[string]string{"provider": string(item.Provider)})
+	audit := service.auditEntry(actor, "integration.archived", integrationID, integrationTargetMetadata(item, nil))
 	return service.store.ArchiveIntegration(tenantCtx, integrationID, version, audit)
 }
 
 func (service *Service) CreateBinding(ctx context.Context, tenantID, integrationID, projectID shared.ID, externalKey, externalName, actor string) (integration.Binding, error) {
 	tenantID = shared.TenantOrDefault(tenantID)
 	tenantCtx := shared.WithTenant(ctx, tenantID)
-	if _, err := service.store.GetIntegration(tenantCtx, integrationID); err != nil {
+	item, err := service.store.GetIntegration(tenantCtx, integrationID)
+	if err != nil {
 		return integration.Binding{}, err
 	}
 	if _, err := service.projects.GetByID(tenantCtx, tenantID, projectID); err != nil {
@@ -280,7 +288,7 @@ func (service *Service) CreateBinding(ctx context.Context, tenantID, integration
 	if err := binding.Normalize(); err != nil {
 		return integration.Binding{}, err
 	}
-	audit := service.auditEntry(actor, "integration.binding_created", binding.ID, map[string]string{"integration_id": integrationID.String(), "project_id": projectID.String()})
+	audit := service.auditEntry(actor, "integration.binding_created", binding.ID, integrationTargetMetadata(item, map[string]string{"integration_id": integrationID.String(), "project_id": projectID.String()}))
 	if err := service.store.CreateIntegrationBinding(tenantCtx, binding, audit); err != nil {
 		return integration.Binding{}, err
 	}
@@ -293,7 +301,11 @@ func (service *Service) ListBindings(ctx context.Context, tenantID, integrationI
 
 func (service *Service) DeleteBinding(ctx context.Context, tenantID, integrationID, bindingID shared.ID, actor string) error {
 	tenantCtx := shared.WithTenant(ctx, shared.TenantOrDefault(tenantID))
-	audit := service.auditEntry(actor, "integration.binding_deleted", bindingID, map[string]string{"integration_id": integrationID.String()})
+	item, err := service.store.GetIntegration(tenantCtx, integrationID)
+	if err != nil {
+		return err
+	}
+	audit := service.auditEntry(actor, "integration.binding_deleted", bindingID, integrationTargetMetadata(item, map[string]string{"integration_id": integrationID.String()}))
 	return service.store.DeleteIntegrationBinding(tenantCtx, integrationID, bindingID, audit)
 }
 
@@ -333,7 +345,7 @@ func (service *Service) StartOperation(ctx context.Context, tenantID, integratio
 	if operation.Actor != "system:integration-scheduler" {
 		audit = ports.AuditEntry{
 			Actor: operation.Actor, Action: "integration.operation_started", Target: operation.ID.String(), At: now,
-			Metadata: map[string]string{"integration_id": integrationID.String(), "operation": string(operationType), "provider": string(item.Provider)},
+			Metadata: integrationTargetMetadata(item, map[string]string{"integration_id": integrationID.String(), "operation": string(operationType)}),
 		}
 	}
 	operation, err = service.store.StartIntegrationOperation(tenantCtx, operation, JobKind, payload, audit)
@@ -360,7 +372,11 @@ func (service *Service) CancelOperation(ctx context.Context, tenantID, operation
 	if err != nil {
 		return integration.Operation{}, err
 	}
-	audit := service.auditEntry(actor, "integration.operation_cancelled", operationID, map[string]string{"integration_id": current.IntegrationID.String(), "operation": string(current.Type)})
+	metadata := map[string]string{"integration_id": current.IntegrationID.String(), "operation": string(current.Type)}
+	if item, getErr := service.store.GetIntegration(tenantCtx, current.IntegrationID); getErr == nil {
+		metadata = integrationTargetMetadata(item, metadata)
+	}
+	audit := service.auditEntry(actor, "integration.operation_cancelled", operationID, metadata)
 	operation, err := service.store.CancelIntegrationOperation(tenantCtx, operationID, service.clock.Now().UTC(), audit)
 	if err != nil {
 		return integration.Operation{}, err
@@ -672,10 +688,31 @@ func sanitizeOperationReason(raw string) string {
 	return clean
 }
 
+// auditDestination masks an integration endpoint to scheme://host for the audit log (#1358). A path
+// can name a customer's job layout, so it stays out; an unparseable endpoint records nothing.
+func auditDestination(endpoint string) string {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
+}
+
+// integrationTargetMetadata is the metadata every integration audit entry carries: the provider and
+// the masked destination, plus extra. The actor is the entry's Actor. Integrations have no data
+// class yet (#1360); it joins this map when they gain one.
+func integrationTargetMetadata(item integration.Integration, extra map[string]string) map[string]string {
+	meta := map[string]string{"provider": string(item.Provider), "destination": auditDestination(item.Endpoint)}
+	for k, v := range extra {
+		meta[k] = v
+	}
+	return meta
+}
+
 func integrationAuditMetadata(item integration.Integration) map[string]string {
 	return map[string]string{
 		"provider":              string(item.Provider),
-		"endpoint":              item.Endpoint,
+		"destination":           auditDestination(item.Endpoint),
 		"allow_private_network": fmt.Sprintf("%t", item.AllowPrivateNetwork),
 	}
 }

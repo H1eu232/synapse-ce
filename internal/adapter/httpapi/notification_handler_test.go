@@ -11,7 +11,7 @@ import (
 	notificationuc "github.com/KKloudTarus/synapse-ce/internal/usecase/notification"
 )
 
-func TestNotificationRoutesRequireAdministrator(t *testing.T) {
+func TestNotificationRoutesRefuseRolesWithoutManageIntegrations(t *testing.T) {
 	rt := &Router{log: discardLog()}
 	req := httptest.NewRequest("GET", "/api/v1/notifications/channels", nil)
 	response := httptest.NewRecorder()

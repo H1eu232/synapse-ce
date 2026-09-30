@@ -93,6 +93,25 @@ describe('notification API', () => {
     expect(all).toMatchObject({ all_teams: true, revision: 5 })
     expect(all).not.toHaveProperty('team_ids')
   })
+  it('lists bindable templates of one family and previews a resolution', async () => {
+    respond({ items: [{ id: 't1', family: 'chat' }] })
+    expect(await notificationsApi.listBindableNotificationTemplates('chat')).toHaveLength(1)
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain('/notifications/templates?family=chat&status=active')
+    respond({ tier: 'channel', event_type: 'scan.completed', locale: 'en', locale_source: 'default' })
+    const resolution = await notificationsApi.previewNotificationTemplateResolution('c/1', 'scan.completed')
+    expect(resolution.tier).toBe('channel')
+    expect(String(vi.mocked(fetch).mock.calls[1][0])).toContain('/notifications/channels/c%2F1/template-resolution?event_type=scan.completed')
+  })
+  it('sends a channel binding only when given', async () => {
+    respond({})
+    await notificationsApi.updateNotificationChannel('c1', { name: 'ops', type: 'slack', enabled: true, revision: 2, template_id: '', locale: 'vi' })
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toMatchObject({ template_id: '', locale: 'vi' })
+    respond({})
+    await notificationsApi.updateNotificationChannel('c1', { name: 'ops', type: 'slack', enabled: true, revision: 3 })
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[1][1]?.body))
+    expect(body).not.toHaveProperty('template_id')
+    expect(body).not.toHaveProperty('locale')
+  })
   it('encodes delivery cursor and filters', async () => {
     respond({ items: [], next: 'next' })
     await notificationsApi.notificationDeliveryPage({

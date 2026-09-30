@@ -168,6 +168,72 @@ tenant administrators can change them with `PUT /api/v1/tenant/settings`, which
 takes the `revision` the caller read and answers `409` when another
 administrator saved first. Each change is written to the audit log.
 
+## Custom message templates
+
+A tenant can replace the wording of a message with its own template. Templates
+are managed in the console under **Settings → Templates** (`/settings/templates`,
+also linked from the Messaging group of **Settings → Integrations**) or over the
+API. The console lists custom templates by event type and channel family, and its
+editor offers a variable picker (each variable's description, data class and list
+cap), shows an engine rejection under the field it names with its line, and
+saves, activates, rolls back and archives versions. Built-in defaults will be
+listed there, read-only with "clone to customize", once the default template set
+ships. Every route needs `manage_integrations` (`admin` or `integration_admin`), takes the
+tenant from the session, and is registered only when notifications are enabled.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/v1/notifications/templates` | List templates; filter by `event_type`, `family`, `locale`, `status`; page with `after` and `limit` |
+| `POST /api/v1/notifications/templates` | Create a draft with version 1 |
+| `GET /api/v1/notifications/templates/{id}` | The template, its newest version (`latest`) and the version that renders (`active`) |
+| `PATCH /api/v1/notifications/templates/{id}` | Save a new version (and optionally rename); what renders does not change |
+| `GET /api/v1/notifications/templates/{id}/versions` | Versions, newest first; page with `before` and `limit` |
+| `POST /api/v1/notifications/templates/{id}/activate` | Make a version render (`version` omitted or `0` means the newest) |
+| `POST /api/v1/notifications/templates/{id}/rollback` | Activate an earlier `version` |
+| `POST /api/v1/notifications/templates/{id}/archive` | Retire the template |
+
+A template is keyed by event type (a catalog type or `*`), channel family and
+locale (`en`, `vi` or `*`); the key never changes. Each family has fixed
+content fields: `chat` has `title` and `body`, `email` has `subject` and
+`body`, `pager` has `summary`, `ticket` has `summary` and `description`, and
+`webhook` has `body`. At most one template per key is active: activating one
+archives the key's previous active template in the same transaction and returns
+its ID as `archived_template_id`. Versions are append-only, so a rollback
+activates an earlier version instead of rewriting one. Every mutation takes the
+`revision` the caller read and answers `409` when it is stale.
+
+Every non-empty field is compiled when it is saved, and again when a version is
+activated, by the template engine against the variables the event type declares
+in the event catalog (`GET /api/v1/notifications/event-types`). A `*` template
+is compiled against every catalog event type, so it can only use variables all
+of them declare. A rejected field answers `400` with the field, the event type,
+the engine code (for example `unknown_variable`, `forbidden_function`,
+`parse_error` or `iteration_bound_exceeded`) and the line. The message ends with
+the engine's short detail, such as the unknown name or the parser's message, capped
+at 200 characters; the response never repeats the template source:
+
+```json
+{"error": "template field \"body\" is invalid for event type incident.created: unknown_variable at line 2: nope",
+ "field": "body", "event_type": "incident.created", "code": "unknown_variable", "line": 2}
+```
+
+The event catalog does not declare template variables yet, so for now a
+template can contain literal text and functions applied to literals only; any
+`{{.variable}}` is rejected until the event builders declare their variables.
+List variables will also need their item fields declared before a template can
+`range` over them. The `webhook` family's `body` is compiled as text; the
+structured JSON body of a custom webhook is validated separately when that
+feature lands. Channels carry no data class and cannot be bound to a template
+yet, so saving does not yet warn about bound channels whose class is below a
+variable the template uses.
+
+Every create, update, activation, rollback and archive is written to the audit
+log (`notification.template.created`, `.updated`, `.activated`, `.rolled_back`,
+`.archived`) with the actor, the key, the status, the versions involved, the new
+version's checksum, and a diff summary. The summary lists each changed field as
+`field:+added/-removed`, counting lines added and removed (for example
+`body:+2/-1,title:+1/-0`), or `none`. It never quotes template source.
+
 ## Personal inbox
 
 When notifications are enabled, each human user has an inbox at `/inbox` and a bell in the application header. `GET /api/v1/me/inbox` and `GET /api/v1/me/inbox/unread` are scoped to the signed-in user. Machine roles are denied. The bell polls at most every 30 seconds and pauses while the tab is hidden. A deployment without the inbox returns 404 and the bell stops asking.
@@ -181,8 +247,29 @@ Personal recipients come from structured IDs already on the event: the canonical
 Events created before the framework first
 activates for a tenant are not replayed automatically.
 
-Only tenant administrators (`PermAdminister`) can read or change these settings,
-test channels, or inspect history. Channel type is immutable. Editing a URL or
+### Who can manage notifications
+
+Two roles hold the `manage_integrations` permission: `admin` and `integration_admin`.
+It lets a user read, test, rename, enable, disable, resume and delete channels, create
+and edit routing rules, manage message templates, and read delivery history and
+quarantined sources. Actions that point Synapse at a new destination still require
+`administer`, which only `admin` holds:
+
+| Action | `integration_admin` | `admin` |
+| --- | --- | --- |
+| List, read, test, rename, enable, disable, resume or delete a channel | yes | yes |
+| Create, edit or delete a routing rule; read delivery history | yes | yes |
+| Create a channel | no (`403`) | yes |
+| Change a channel's URL, secret or email recipients | no (`403`) | yes |
+
+A `PATCH` that sends the channel's current recipients back is not a change. Machine
+roles (`agent`, `mcp`) never hold either permission. Every channel audit entry records
+the actor and the destination masked to `scheme://host` (`mailto://` and the recipient
+domains for email); an update also records `destination_changed` and, when it is
+`true`, the previous masked destination. Channels carry no data class yet, so none is
+recorded.
+
+Channel type is immutable. Editing a URL or
 HMAC key creates a new encrypted version; pending deliveries retain their original
 version. Leaving both fields blank retains the secret. Email recipients are
 snapshotted individually when an event is routed. Rule updates require the current
@@ -344,9 +431,10 @@ When a channel pauses:
 
 Resume a channel from **Settings > Alerting** (the **Resume** button next to the
 **Paused** badge) or with `POST /api/v1/notifications/channels/{id}/resume` and the
-body `{"revision": <current revision>}`. Only tenant administrators can resume. A
+body `{"revision": <current revision>}`. Resuming needs `manage_integrations`, so an
+`admin` or an `integration_admin` can resume. A
 resume clears the pause and the count, bumps the channel revision, appends a
-`resumed` row naming the administrator and writes a `notification.channel.resumed`
+`resumed` row naming the user and writes a `notification.channel.resumed`
 audit entry. Deliveries cancelled during the pause are not re-sent. Fix the
 destination first: if it still fails, the channel pauses again after another
 run of permanent failures, and administrators get a new notice.
