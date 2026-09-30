@@ -22,6 +22,7 @@ func NewInboundWebhookRepository(pool *pgxpool.Pool) *InboundWebhookRepository {
 }
 
 var _ ports.InboundWebhookStore = (*InboundWebhookRepository)(nil)
+var _ ports.InboundWebhookAdminStore = (*InboundWebhookRepository)(nil)
 
 // LookupInboundWebhook first asks the single privileged lookup for ONLY a
 // tenant ID. The sealed keys, owner and status are then read under FORCE RLS
@@ -143,5 +144,72 @@ func (s *InboundWebhookRepository) ReleaseInboundWebhookEvent(ctx context.Contex
 		`, identity.TenantID, identity.PublicID, provider, eventID)
 		return err
 	})
+}
+
+func (s *InboundWebhookRepository) GetInboundWebhookForOwner(ctx context.Context, tenantID shared.ID, ownerKind, ownerID string) (ports.InboundWebhookEndpoint, bool, error) {
+	if s == nil || s.pool == nil || tenantID.IsZero() || ownerKind != "integration" || ownerID == "" {
+		return ports.InboundWebhookEndpoint{}, false, nil
+	}
+	var e ports.InboundWebhookEndpoint
+	var previousExpiresAt *time.Time
+	err := requireTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT e.public_id, e.owner_kind, e.owner_id, i.provider,
+			       e.enabled, e.current_version, e.current_sealed, e.previous_sealed,
+			       e.previous_expires_at, e.revoked_at, e.rate_per_minute
+			  FROM inbound_webhook_endpoints e
+			  JOIN integrations i ON i.tenant_id=e.tenant_id AND i.id=e.owner_id
+			 WHERE e.tenant_id=$1 AND e.owner_kind=$2 AND e.owner_id=$3
+		`, tenantID, ownerKind, ownerID).Scan(
+			&e.PublicID, &e.OwnerKind, &e.OwnerID, &e.Provider,
+			&e.Enabled, &e.CurrentVersion, &e.CurrentSealed, &e.PreviousSealed,
+			&previousExpiresAt, &e.RevokedAt, &e.RatePerMinute,
+		)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ports.InboundWebhookEndpoint{}, false, nil
+	}
+	if err != nil {
+		return ports.InboundWebhookEndpoint{}, false, err
+	}
+	e.TenantID = tenantID
+	if previousExpiresAt != nil {
+		e.PreviousExpiresAt = *previousExpiresAt
+	}
+	return e, true, nil
+}
+
+func (s *InboundWebhookRepository) ProvisionInboundWebhook(ctx context.Context, endpoint ports.InboundWebhookEndpoint) (bool, error) {
+	if s == nil || s.pool == nil || endpoint.TenantID.IsZero() || endpoint.PublicID == "" ||
+		endpoint.OwnerKind != "integration" || endpoint.OwnerID == "" || endpoint.CurrentVersion != 1 ||
+		endpoint.CurrentSealed == "" || endpoint.RatePerMinute < 1 || endpoint.RatePerMinute > 600 {
+		return false, nil
+	}
+	provisioned := false
+	err := requireTenant(ctx, s.pool, endpoint.TenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT synapse_provision_github_inbound_webhook($1,$2,$3,$4,$5)",
+			endpoint.TenantID.String(), endpoint.PublicID, endpoint.OwnerID,
+			endpoint.CurrentSealed, endpoint.RatePerMinute,
+		).Scan(&provisioned)
+	})
+	return provisioned, err
+}
+
+func (s *InboundWebhookRepository) RotateInboundWebhook(ctx context.Context, identity ports.InboundWebhookIdentity, expectedVersion int, currentSealed string, previousExpiresAt time.Time) (bool, error) {
+	if s == nil || s.pool == nil || identity.TenantID.IsZero() || identity.PublicID == "" ||
+		identity.OwnerKind != "integration" || identity.OwnerID == "" || expectedVersion < 1 ||
+		currentSealed == "" || previousExpiresAt.IsZero() {
+		return false, nil
+	}
+	rotated := false
+	err := requireTenant(ctx, s.pool, identity.TenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT synapse_rotate_github_inbound_webhook($1,$2,$3,$4,$5,$6)",
+			identity.TenantID.String(), identity.PublicID, identity.OwnerID,
+			expectedVersion, currentSealed, previousExpiresAt.UTC(),
+		).Scan(&rotated)
+	})
+	return rotated, err
 }
 
