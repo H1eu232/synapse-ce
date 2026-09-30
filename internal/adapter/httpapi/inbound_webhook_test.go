@@ -28,6 +28,7 @@ type fakeHookStore struct {
 	mu       sync.Mutex
 	records  map[string]ports.InboundWebhookEndpoint
 	admitted map[string]int
+	events   map[string]bool
 	fail     bool
 	decision *int
 }
@@ -64,11 +65,27 @@ func (s *fakeHookStore) AdmitInboundWebhook(_ context.Context, id ports.InboundW
 	s.admitted[id.PublicID]++
 	return 1, nil
 }
+func (s *fakeHookStore) ClaimInboundWebhookEvent(_ context.Context, id ports.InboundWebhookIdentity, provider, eventID string, _ time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail {
+		return false, errors.New("db unavailable: do not echo")
+	}
+	key := id.TenantID.String() + "|" + id.PublicID + "|" + provider + "|" + eventID
+	if s.events[key] {
+		return false, nil
+	}
+	s.events[key] = true
+	return true, nil
+}
 
 type verifiedHook struct {
-	tenant shared.ID
-	id     string
-	body   string
+	tenant    shared.ID
+	id        string
+	provider  string
+	eventType string
+	eventID   string
+	body      string
 }
 type captureHookReceiver struct {
 	mu   sync.Mutex
@@ -76,14 +93,14 @@ type captureHookReceiver struct {
 	err  error
 }
 
-func (c *captureHookReceiver) ReceiveInboundWebhook(ctx context.Context, id ports.InboundWebhookIdentity, body []byte) error {
+func (c *captureHookReceiver) ReceiveInboundWebhook(ctx context.Context, id ports.InboundWebhookIdentity, event ports.InboundWebhookEvent) error {
 	tenant, ok := shared.TenantFrom(ctx)
 	if !ok || tenant.IsZero() || tenant != id.TenantID {
 		return errors.New("receiver missing or mismatched authenticated tenant")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.seen = append(c.seen, verifiedHook{tenant: tenant, id: id.PublicID, body: string(body)})
+	c.seen = append(c.seen, verifiedHook{tenant: tenant, id: id.PublicID, provider: event.Provider, eventType: event.EventType, eventID: event.EventID, body: string(event.Body)})
 	return c.err
 }
 func (c *captureHookReceiver) snapshot() []verifiedHook {
@@ -121,7 +138,7 @@ func setupHookWithObserver(t *testing.T, observer HTTPObserver) (http.Handler, *
 	store := &fakeHookStore{records: map[string]ports.InboundWebhookEndpoint{
 		hookIDA: mk("tenant-A", hookIDA, "integration-A", hookSecret('a')),
 		hookIDB: mk("tenant-B", hookIDB, "integration-B", hookSecret('b')),
-	}, admitted: map[string]int{}}
+	}, admitted: map[string]int{}, events: map[string]bool{}}
 	receiver := &captureHookReceiver{}
 	// Route through the real root Handler, not only the isolated hook function.
 	// The human resolver deliberately rejects every bearer credential.
@@ -152,6 +169,34 @@ func assertHookNoStore(t *testing.T, got *httptest.ResponseRecorder) {
 	if got.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("hook response Cache-Control = %q, want no-store", got.Header().Get("Cache-Control"))
 	}
+}
+
+func TestInboundWebhookGitHubSignatureMetadataAndReplay(t *testing.T) {
+	h, store, receiver, _ := setupHook(t)
+	body := []byte(`{"ref":"refs/heads/main","after":"0123456789abcdef0123456789abcdef01234567"}`)
+	store.mu.Lock()
+	e := store.records[hookIDA]
+	e.Provider = "github"
+	store.records[hookIDA] = e
+	store.mu.Unlock()
+	path := "/api/v1/hooks/" + hookIDA
+	request := func(delivery string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set(githubSignatureHeader, webhookSig(hookSecret('a'), body))
+		req.Header.Set(githubEventHeader, "push")
+		req.Header.Set(githubDeliveryHeader, delivery)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	assertHookCode(t, request("delivery-1"), http.StatusAccepted)
+	assertHookCode(t, request("delivery-1"), http.StatusAccepted)
+	seen := receiver.snapshot()
+	if len(seen) != 1 || seen[0].provider != "github" || seen[0].eventType != "push" || seen[0].eventID != "delivery-1" || seen[0].body != string(body) {
+		t.Fatalf("github receiver = %#v", seen)
+	}
+	// The legacy Synapse signature must not authenticate a GitHub endpoint.
+	assertHookCode(t, requestHook(h, http.MethodPost, path, body, webhookSig(hookSecret('a'), body)), http.StatusUnauthorized)
 }
 
 func TestInboundWebhookHostileCrossTenantAndNoHumanFallback(t *testing.T) {
