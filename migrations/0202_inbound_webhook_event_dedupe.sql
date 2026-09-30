@@ -1,5 +1,5 @@
 -- +goose Up
--- #1452. Provider event IDs are claimed only after webhook authentication.
+-- #1451. Provider event IDs are claimed only after webhook authentication.
 -- The composite endpoint key prevents a privileged row mix-up from attaching
 -- an event claim to another tenant's opaque endpoint.
 ALTER TABLE inbound_webhook_endpoints
