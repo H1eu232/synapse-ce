@@ -132,6 +132,7 @@ function Group({
   info,
   status,
   manage,
+  links = [],
   children,
 }: {
   title: string
@@ -139,6 +140,8 @@ function Group({
   info: string
   status: GroupStatus
   manage?: { to: string; label: string }
+  /** Further configuration pages of the group, shown beside `manage`. */
+  links?: Array<{ to: string; label: string }>
   children: ReactNode
 }) {
   const headingId = `integration-group-${title.toLowerCase().replace(/[^a-z]+/g, '-')}`
@@ -153,10 +156,14 @@ function Group({
           <InfoNote label={`About ${title}`}>{info}</InfoNote>
           <Pill className={GROUP_STATUS[status].className}>{GROUP_STATUS[status].label}</Pill>
         </div>
-        {manage && (
-          <Link to={manage.to} className="text-sm font-semibold text-brand-secondary hover:underline">
-            {manage.label}
-          </Link>
+        {(manage || links.length > 0) && (
+          <div className="flex flex-wrap items-center gap-4">
+            {[...(manage ? [manage] : []), ...links].map((link) => (
+              <Link key={link.to} to={link.to} className="text-sm font-semibold text-brand-secondary hover:underline">
+                {link.label}
+              </Link>
+            ))}
+          </div>
         )}
       </header>
       {children}
@@ -579,6 +586,7 @@ function MessagingGroup({ canAdmin, capabilities }: { canAdmin: boolean; capabil
       info={`Notification channels that deliver alerts to people.${channelTypes.length > 0 ? ` This build delivers to: ${channelTypes.join(', ')}.` : ''}`}
       status={status}
       manage={status === 'on' ? { to: '/settings/alerting', label: 'Manage channels' } : undefined}
+      links={status === 'on' ? [{ to: '/settings/templates', label: 'Message templates' }] : undefined}
     >
       {notice && <Notice tone="success">{notice}</Notice>}
       {off ? (

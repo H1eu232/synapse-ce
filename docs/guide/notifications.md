@@ -171,8 +171,14 @@ administrator saved first. Each change is written to the audit log.
 ## Custom message templates
 
 A tenant can replace the wording of a message with its own template. Templates
-are managed over the API; the console editor follows in a later release. Every
-route needs `manage_integrations` (`admin` or `integration_admin`), takes the
+are managed in the console under **Settings → Templates** (`/settings/templates`,
+also linked from the Messaging group of **Settings → Integrations**) or over the
+API. The console lists custom templates by event type and channel family, and its
+editor offers a variable picker (each variable's description, data class and list
+cap), shows an engine rejection under the field it names with its line, and
+saves, activates, rolls back and archives versions. Built-in defaults will be
+listed there, read-only with "clone to customize", once the default template set
+ships. Every route needs `manage_integrations` (`admin` or `integration_admin`), takes the
 tenant from the session, and is registered only when notifications are enabled.
 
 | Route | Purpose |

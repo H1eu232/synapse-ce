@@ -8,6 +8,7 @@ import type {
   NotificationSourceFailure,
   NotificationEventSpec,
   NotificationEventType,
+  NotificationLocale,
   NotificationRule,
   NotificationRuleFilter,
 } from '../../lib/api'
@@ -28,6 +29,7 @@ import type { Capability } from '../../lib/types'
 import { useFetch } from '../../hooks'
 import { canManageIntegrations, isAdminRole } from '../../lib/roles'
 import { RuleTargetPicker } from './RuleTargetPicker'
+import { ChannelTemplateFields, RuleTemplatePreview } from './ChannelTemplateBinding'
 
 // A new rule starts on the most common subscription when the catalog offers it.
 const DEFAULT_RULE_EVENT = 'vulnerability_action.created'
@@ -344,6 +346,10 @@ function ChannelCreate({
   const [recipients, setRecipients] = useState(
     initial?.recipients?.join(', ') ?? '',
   )
+  // The template binding (#1371) is not a destination, so manage_integrations may change it.
+  const [templateId, setTemplateId] = useState(initial?.template_id ?? '')
+  const [locale, setLocale] = useState<NotificationLocale | ''>(initial?.locale ?? '')
+  const [customBody, setCustomBody] = useState(initial?.custom_body ?? false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Without administer the destination is read-only: the server refuses a new URL, secret or
@@ -370,6 +376,14 @@ function ChannelCreate({
                   .split(',')
                   .map((x) => x.trim())
                   .filter(Boolean),
+        // Sent only when changed, so saving a rename never revalidates an existing binding.
+        template_id:
+          templateId !== (initial?.template_id ?? '') ? templateId : undefined,
+        locale: locale !== (initial?.locale ?? '') ? locale : undefined,
+        custom_body:
+          type === 'webhook' && customBody !== (initial?.custom_body ?? false)
+            ? customBody
+            : undefined,
       }
       if (initial) await api.updateNotificationChannel(initial.id, input)
       else await api.createNotificationChannel(input)
@@ -489,6 +503,20 @@ function ChannelCreate({
             />
           </Field>
         )}
+        <ChannelTemplateFields
+          type={type}
+          templateId={templateId}
+          locale={locale}
+          onTemplateChange={(id) => {
+            setTemplateId(id)
+            // A custom body needs a bound template, so unbinding also opts out.
+            if (!id) setCustomBody(false)
+          }}
+          onLocaleChange={setLocale}
+          customBody={customBody}
+          onCustomBodyChange={setCustomBody}
+          disabled={!(initial ? canManage : canAdmin)}
+        />
         <div className="flex items-end md:col-span-2">
           <div className="flex-1">
             {error && <ErrorState message={error} />}
@@ -1002,6 +1030,10 @@ function RuleCreate({
             </label>
           ))}
         </fieldset>
+        <RuleTemplatePreview
+          channels={channels.filter((c) => selected.includes(c.id))}
+          eventType={event}
+        />
         {allows('engagement_ids') && (
           <RuleTargetPicker
             label="Engagements (optional)"

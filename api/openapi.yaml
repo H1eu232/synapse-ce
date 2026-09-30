@@ -3065,6 +3065,10 @@ paths:
         and, on a change, the previous masked destination.
         A channel whose type the operator switched off with `SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED`
         can be renamed or switched off, but switching it on or giving it a new URL or secret answers `400`.
+        Binding a template (`template_id`) or setting `locale` is not a destination change and needs
+        `manage_integrations` only; a changed binding is validated (template of the channel family,
+        active, locale compatible, covers every event routed to the channel) and the audit entry records
+        `binding_changed`, `template_id` and `locale` with their previous values.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannelInput'}}}}
       responses:
         '200': {description: Updated channel, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationChannel'}}}}
@@ -3122,6 +3126,25 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {description: Stale revision, or the channel is not paused}
 
+  /api/v1/notifications/channels/{nid}/template-resolution:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    get:
+      tags: [notifications]
+      operationId: previewNotificationTemplateResolution
+      summary: Show which template a channel renders an event type with
+      description: >
+        Resolves on the server with the same resolver the send-time renderer uses, so the rule form
+        can show the template each selected channel will use. Registered only when templates are
+        configured. Requires manage_integrations.
+      parameters:
+        - {name: event_type, in: query, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Resolution, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateResolution'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /api/v1/notifications/channels/{nid}/health-events:
     parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
     get:
@@ -3145,6 +3168,10 @@ paths:
       tags: [notifications]
       operationId: createNotificationRule
       summary: Create a routing rule
+      description: >
+        A rule that routes its event type to a channel whose bound template covers only another event
+        type answers `400` naming the channel and template (#1371); bind a `*` template or unbind first.
+        Updates are checked the same way.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationRuleInput'}}}}
       responses:
         '201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationRule'}}}}
@@ -12728,6 +12755,24 @@ components:
         secret: {type: string, writeOnly: true, description: At least 16 bytes on creation or rotation; blank retains the current secret on PATCH}
         recipients: {type: array, maxItems: 50, items: {type: string, format: email}}
         revision: {type: integer, minimum: 1}
+        template_id:
+          type: string
+          maxLength: 128
+          description: >-
+            Binds an active template of the channel family (webhook, chat for Slack, email) that
+            renders before the tenant templates. Empty unbinds; omitted keeps the current binding.
+            A template for one event type can only be bound while every rule routing to the channel
+            is for that event type. Binding needs manage_integrations only and is audited.
+        locale:
+          type: string
+          enum: ['', en, vi]
+          description: The channel locale; empty uses the tenant default_locale, omitted keeps the current value.
+        custom_body:
+          type: boolean
+          description: >-
+            Webhook channels only (#1376): send the body of the resolved webhook template as a custom
+            JSON body instead of the event envelope, with `X-Synapse-Body: custom`; the signature covers
+            the body as sent. Needs a bound template whose body still validates; omitted keeps the value.
 
     NotificationChannel:
       type: object
@@ -12744,6 +12789,33 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         health: {$ref: '#/components/schemas/NotificationChannelHealth'}
+        template_id: {type: string, description: The bound template (#1371); absent when none is bound}
+        locale: {type: string, enum: [en, vi], description: The channel locale; absent when the tenant default applies}
+        custom_body: {type: boolean, description: The webhook channel sends its template body as a custom JSON body (#1376)}
+
+    NotificationTemplateResolution:
+      type: object
+      description: >-
+        Which template a channel renders an event type with. Tiers are tried in order: the channel
+        binding, the tenant template for the event type, the tenant `*` template, the built-in, then
+        the fallback (raw rendering). Within each tier the locale is tried exactly, then `*`, then en.
+        The locale is the channel locale, else the tenant default_locale, else en. Never carries
+        template source.
+      required: [tier, event_type, locale, locale_source]
+      properties:
+        tier: {type: string, enum: [channel, tenant_event, tenant_wildcard, builtin, fallback]}
+        event_type: {type: string}
+        family: {type: string, enum: [chat, email, pager, ticket, webhook]}
+        locale: {type: string, enum: [en, vi], description: The language to render in}
+        locale_source: {type: string, enum: [channel, tenant, default]}
+        matched_locale: {type: string, enum: [en, vi, '*'], description: The locale key of the matched template}
+        template: {$ref: '#/components/schemas/NotificationTemplate'}
+        version: {type: integer, description: The active version that renders}
+        builtin_ref: {type: string}
+        binding_skipped:
+          type: string
+          enum: [template_not_active, event_not_covered, locale_not_covered, family_mismatch, template_missing]
+          description: Why the channel's bound template did not apply
 
     NotificationChannelHealth:
       type: object
@@ -12783,6 +12855,10 @@ components:
       description: >
         Channel family a template renders for. Fields per family: chat `title`, `body`; email
         `subject`, `body`; pager `summary`; ticket `summary`, `description`; webhook `body`.
+        A webhook `body` is a custom JSON body (#1376): one JSON object of at most 16 KiB, at most 8
+        levels deep and 256 values, without duplicate keys, with template expressions only inside
+        string values (never in a key or as a bare value). Each string value renders on its own and
+        the tree is re-encoded as JSON, so a value can never change the body's structure or types.
 
     NotificationTemplateStatus:
       type: string
@@ -12870,6 +12946,7 @@ components:
           type: string
           description: Stable engine code, for example `unknown_variable`, `forbidden_function`, `parse_error`, `iteration_bound_exceeded`.
         line: {type: integer, minimum: 1}
+        path: {type: string, description: 'For a webhook body, the value that was refused, for example $.alert.title'}
 
     NotificationRuleInput:
       type: object

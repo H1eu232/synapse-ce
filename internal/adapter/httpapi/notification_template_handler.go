@@ -22,13 +22,15 @@ type templateValidationBody struct {
 	EventType domain.EventType `json:"event_type"`
 	Code      string           `json:"code"`
 	Line      int              `json:"line,omitempty"`
+	// Path locates the value inside a webhook custom body (#1376).
+	Path string `json:"path,omitempty"`
 }
 
 func (rt *Router) writeTemplateError(w http.ResponseWriter, err error) {
 	var rejection *notificationuc.TemplateValidationError
 	if errors.As(err, &rejection) {
 		writeJSON(w, http.StatusBadRequest, templateValidationBody{
-			Error: rejection.Error(), Field: rejection.Field, EventType: rejection.EventType, Code: string(rejection.Code), Line: rejection.Line,
+			Error: rejection.Error(), Field: rejection.Field, EventType: rejection.EventType, Code: string(rejection.Code), Line: rejection.Line, Path: rejection.Path,
 		})
 		return
 	}
@@ -185,4 +187,22 @@ func (rt *Router) archiveNotificationTemplate(w http.ResponseWriter, r *http.Req
 	rt.changeNotificationTemplate(func(s *notificationuc.Service, r *http.Request, actor string, id shared.ID, in notificationuc.TemplateChangeInput) (notificationuc.TemplateDetail, error) {
 		return s.ArchiveTemplate(r.Context(), actor, id, in)
 	})(w, r)
+}
+
+// previewNotificationTemplateResolution answers which template a channel renders an event type
+// with (#1371), so the rule form can show it per selected channel. It resolves on the server,
+// through the same code the send-time renderer (#1365) will call, instead of re-implementing the
+// tiers in the console. The body names the tier, template and version, never template source.
+func (rt *Router) previewNotificationTemplateResolution(w http.ResponseWriter, r *http.Request) {
+	id, err := notificationID(r)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	resolution, err := rt.notifications.PreviewTemplateResolution(r.Context(), id, domain.EventType(r.URL.Query().Get("event_type")))
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resolution)
 }
