@@ -63,6 +63,29 @@ describe('ChannelTemplateFields', () => {
   })
 })
 
+describe('custom webhook body toggle', () => {
+  beforeEach(() => vi.resetAllMocks())
+
+  it('is offered on webhook channels only and needs a bound template', async () => {
+    vi.mocked(api.listBindableNotificationTemplates).mockResolvedValue([])
+    const onCustomBody = vi.fn()
+    const { rerender } = render(
+      <ChannelTemplateFields type="webhook" templateId="" locale="" onTemplateChange={vi.fn()} onLocaleChange={vi.fn()} customBody={false} onCustomBodyChange={onCustomBody} />,
+    )
+    const toggle = await screen.findByRole('checkbox', { name: /custom JSON body/ })
+    expect(toggle).toBeDisabled()
+    expect(screen.getByText(/Bind a webhook template first/)).toBeInTheDocument()
+
+    rerender(<ChannelTemplateFields type="webhook" templateId="tpl-1" locale="" onTemplateChange={vi.fn()} onLocaleChange={vi.fn()} customBody={false} onCustomBodyChange={onCustomBody} />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /custom JSON body/ }))
+    expect(onCustomBody).toHaveBeenCalledWith(true)
+
+    rerender(<ChannelTemplateFields type="slack" templateId="tpl-1" locale="" onTemplateChange={vi.fn()} onLocaleChange={vi.fn()} customBody={false} onCustomBodyChange={onCustomBody} />)
+    expect(screen.queryByRole('checkbox', { name: /custom JSON body/ })).not.toBeInTheDocument()
+    await waitFor(() => expect(api.listBindableNotificationTemplates).toHaveBeenCalledWith('chat'))
+  })
+})
+
 describe('RuleTemplatePreview', () => {
   beforeEach(() => vi.resetAllMocks())
 

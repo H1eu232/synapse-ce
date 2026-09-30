@@ -117,6 +117,9 @@ type ChannelInput struct {
 	// Locale is the channel's locale, en or vi; "" uses the tenant default and an absent field keeps
 	// the current value.
 	Locale *tenancy.Locale `json:"locale,omitempty"`
+	// CustomBody opts a webhook channel into sending its template's body as a custom JSON body
+	// (#1376); it needs a bound template. An absent field keeps the current value.
+	CustomBody *bool `json:"custom_body,omitempty"`
 }
 
 func (s *Service) createChannel(ctx context.Context, actor string, in ChannelInput) (domain.Channel, error) {

@@ -116,6 +116,8 @@ export interface NotificationChannel {
   template_id?: string
   /** The channel locale; absent when the tenant default applies. */
   locale?: NotificationLocale
+  /** A webhook channel sends its template body as a custom JSON body (#1376). */
+  custom_body?: boolean
 }
 export interface NotificationChannelInput {
   name: string
@@ -129,6 +131,8 @@ export interface NotificationChannelInput {
   template_id?: string
   /** Omitted keeps the locale; an empty string uses the tenant default. */
   locale?: NotificationLocale | ''
+  /** Webhook only; needs a bound template. Omitted keeps the current value. */
+  custom_body?: boolean
 }
 export interface NotificationRule {
   id: string

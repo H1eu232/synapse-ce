@@ -41,6 +41,8 @@ export function ChannelTemplateFields({
   locale,
   onTemplateChange,
   onLocaleChange,
+  customBody = false,
+  onCustomBodyChange,
   disabled,
 }: {
   type: NotificationChannelType
@@ -48,6 +50,9 @@ export function ChannelTemplateFields({
   locale: NotificationLocale | ''
   onTemplateChange: (id: string) => void
   onLocaleChange: (locale: NotificationLocale | '') => void
+  /** Webhook channels: send the bound template's body as a custom JSON body (#1376). */
+  customBody?: boolean
+  onCustomBodyChange?: (on: boolean) => void
   disabled?: boolean
 }) {
   const family = CHANNEL_FAMILY[type]
@@ -106,6 +111,21 @@ export function ChannelTemplateFields({
           ]}
         />
       </Field>
+      {type === 'webhook' && onCustomBodyChange && (
+        <label className="flex items-start gap-2 text-sm text-secondary md:col-span-2">
+          <input
+            type="checkbox"
+            checked={customBody}
+            disabled={disabled || !templateId}
+            onChange={(e) => onCustomBodyChange(e.target.checked)}
+          />
+          <span>
+            Send the template body as a custom JSON body instead of the event envelope. The
+            request carries <code>X-Synapse-Body: custom</code> and the signature covers the body
+            as sent. {!templateId && 'Bind a webhook template first.'}
+          </span>
+        </label>
+      )}
     </>
   )
 }

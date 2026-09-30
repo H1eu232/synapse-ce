@@ -24,16 +24,23 @@ func FamilyForChannelType(t ChannelType) (TemplateFamily, bool) {
 }
 
 // TemplateBinding is the template configuration of one channel (#1371): the template it renders
-// with and the language it renders in.
+// with, the language it renders in and, for a generic webhook, whether the template shapes the
+// request body (#1376).
 //
 // TemplateID names a tenant template of the channel's family. Resolution uses that template's
 // active version; while the template is not active (archived, or replaced by another template of
 // the same key) or does not cover the event type, resolution falls through to the tenant tiers.
 //
 // Locale is en or vi, or empty to use the tenant's default locale.
+//
+// CustomBody (webhook channels only, #1376) opts the channel into the custom JSON body: the body
+// of the webhook template that resolution picks replaces the event envelope, and the request
+// carries X-Synapse-Body: custom. It requires a bound template, so opting in is always an explicit
+// choice of one template.
 type TemplateBinding struct {
 	TemplateID shared.ID      `json:"template_id,omitempty"`
 	Locale     tenancy.Locale `json:"locale,omitempty"`
+	CustomBody bool           `json:"custom_body"`
 }
 
 // Validate checks the binding against the channel type. It does not look the template up; the use
@@ -49,6 +56,14 @@ func (b TemplateBinding) Validate(channelType ChannelType) error {
 		}
 		if err := ValidateTemplateID(b.TemplateID); err != nil {
 			return err
+		}
+	}
+	if b.CustomBody {
+		if channelType != ChannelWebhook {
+			return fmt.Errorf("%w: a custom body is only available on webhook channels", shared.ErrValidation)
+		}
+		if b.TemplateID.IsZero() {
+			return fmt.Errorf("%w: a custom body needs a bound webhook template", shared.ErrValidation)
 		}
 	}
 	return nil

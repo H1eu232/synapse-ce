@@ -137,3 +137,62 @@ func TestNotificationTemplateBindingPostgres(t *testing.T) {
 		t.Fatal("tenant B resolved tenant A's channel")
 	}
 }
+
+// The custom body opt-in (#1376, migration 0201) persists on webhook channels only and always with
+// a bound template, even when the API is bypassed.
+func TestNotificationCustomBodyPostgres(t *testing.T) {
+	pool := notificationTestPool(t)
+	ctx := shared.WithTenant(context.Background(), "body-a")
+	if _, err := pool.Exec(ctx, "INSERT INTO tenants(id,name) VALUES('body-a','A')"); err != nil {
+		t.Fatal(err)
+	}
+	cipher, _ := vault.NewCipher([]byte(strings.Repeat("k", 32)))
+	repo := NewNotificationRepository(pool)
+	svc, err := notificationuc.NewService(repo, cipher, nil, NewAuditLog(pool), &notificationTestClock{time.Now().UTC().Truncate(time.Microsecond)}, &notificationTestIDs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetTransactionRunner(NewTenantTransactionRunner(pool))
+	svc.SetTemplateStore(NewNotificationTemplateStore(pool))
+	created, err := svc.CreateTemplate(ctx, "ada", notificationuc.TemplateInput{Name: "Hook", EventType: notification.AnyEventType, Family: notification.FamilyWebhook, Locale: "*",
+		Fields: map[string]string{"body": `{"source":"synapse","n":1}`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ActivateTemplate(ctx, "ada", created.ID, notificationuc.TemplateChangeInput{Revision: created.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	id, on := created.ID, true
+	hook, err := svc.CreateChannel(ctx, "ada", notificationuc.ChannelInput{Name: "hook", Type: notification.ChannelWebhook, Enabled: true,
+		URL: "https://hooks.example.com/in", Secret: "0123456789abcdef", TemplateID: &id, CustomBody: &on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetChannel(ctx, "body-a", hook.ID)
+	if err != nil || !got.CustomBody || got.TemplateID != created.ID {
+		t.Fatalf("get = %+v err=%v", got.TemplateBinding, err)
+	}
+	delivery, err := svc.TestChannel(ctx, "ada", hook.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work, err := repo.LoadWork(ctx, "body-a", delivery); err != nil || !work.Channel.CustomBody {
+		t.Fatalf("work = %+v err=%v", work.Channel.TemplateBinding, err)
+	}
+	slack, err := svc.CreateChannel(ctx, "ada", notificationuc.ChannelInput{Name: "ops", Type: notification.ChannelSlack, Enabled: true, URL: "https://hooks.slack.com/services/T/B/X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, statement := range map[string]string{
+		"slack channel":    `UPDATE notification_channels SET custom_body=true WHERE tenant_id=$1 AND id='` + slack.ID.String() + `'`,
+		"without template": `UPDATE notification_channels SET template_id=NULL WHERE tenant_id=$1 AND id='` + hook.ID.String() + `'`,
+	} {
+		err := WithTenant(ctx, pool, "body-a", func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, statement, "body-a")
+			return err
+		})
+		if err == nil {
+			t.Errorf("%s: custom body stored", name)
+		}
+	}
+}

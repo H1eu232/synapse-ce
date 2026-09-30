@@ -22,13 +22,15 @@ type templateValidationBody struct {
 	EventType domain.EventType `json:"event_type"`
 	Code      string           `json:"code"`
 	Line      int              `json:"line,omitempty"`
+	// Path locates the value inside a webhook custom body (#1376).
+	Path string `json:"path,omitempty"`
 }
 
 func (rt *Router) writeTemplateError(w http.ResponseWriter, err error) {
 	var rejection *notificationuc.TemplateValidationError
 	if errors.As(err, &rejection) {
 		writeJSON(w, http.StatusBadRequest, templateValidationBody{
-			Error: rejection.Error(), Field: rejection.Field, EventType: rejection.EventType, Code: string(rejection.Code), Line: rejection.Line,
+			Error: rejection.Error(), Field: rejection.Field, EventType: rejection.EventType, Code: string(rejection.Code), Line: rejection.Line, Path: rejection.Path,
 		})
 		return
 	}

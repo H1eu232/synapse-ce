@@ -19,7 +19,9 @@ import (
 // Validation when the binding changes:
 //   - the template exists in the tenant, has the channel's family and is active;
 //   - its locale is "*" or one of the channel's locale chain (channel or tenant locale, then en);
-//   - it is "*" or its event type is the event type of every rule that routes to the channel.
+//   - it is "*" or its event type is the event type of every rule that routes to the channel;
+//   - with custom_body (webhook channels only, #1376), its active body is revalidated as a custom
+//     JSON body against the current catalog.
 //
 // Rules are checked the other way on every rule save: a rule that routes an event type to a
 // channel whose bound template does not cover it is refused with a validation error naming the
@@ -36,6 +38,9 @@ func applyBinding(current domain.TemplateBinding, in ChannelInput) domain.Templa
 	}
 	if in.Locale != nil {
 		next.Locale = *in.Locale
+	}
+	if in.CustomBody != nil {
+		next.CustomBody = *in.CustomBody
 	}
 	return next
 }
@@ -72,6 +77,11 @@ func (s *Service) validateBinding(ctx context.Context, tenant shared.ID, channel
 	}
 	if !containsLocale(domain.LocaleChain(locale), head.Locale) {
 		return fmt.Errorf("%w: template %s is for locale %s; the channel renders in %s", shared.ErrValidation, head.ID, head.Locale, locale)
+	}
+	if channel.CustomBody {
+		if err := s.checkCustomBody(ctx, tenant, head); err != nil {
+			return err
+		}
 	}
 	if head.EventType == domain.AnyEventType {
 		return nil
@@ -129,11 +139,26 @@ func bindingAuditMetadata(previous, next domain.TemplateBinding, extra map[strin
 	extra["binding_changed"] = fmt.Sprint(changed)
 	extra["template_id"] = next.TemplateID.String()
 	extra["locale"] = string(next.Locale)
+	extra["custom_body"] = fmt.Sprint(next.CustomBody)
 	if changed {
 		extra["previous_template_id"] = previous.TemplateID.String()
 		extra["previous_locale"] = string(previous.Locale)
+		extra["previous_custom_body"] = fmt.Sprint(previous.CustomBody)
 	}
 	return extra
+}
+
+// checkCustomBody revalidates the active body of a webhook template a channel opts into (#1376):
+// the catalog may have changed since the template was saved.
+func (s *Service) checkCustomBody(ctx context.Context, tenant shared.ID, head domain.Template) error {
+	version, err := s.templates.GetNotificationTemplateVersion(ctx, tenant, head.ID, head.ActiveVersion)
+	if err != nil {
+		return err
+	}
+	if version.Fields["body"] == "" {
+		return fmt.Errorf("%w: template %s has no body to send as a custom body", shared.ErrValidation, head.ID)
+	}
+	return validateTemplateContent(head.TemplateKey, version.Fields)
 }
 
 func containsChannel(ids []shared.ID, id shared.ID) bool {

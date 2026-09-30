@@ -70,11 +70,16 @@ type TemplateValidationError struct {
 	Code      msgtemplate.Code `json:"code"`
 	Line      int              `json:"line,omitempty"`
 	Detail    string           `json:"detail,omitempty"`
+	// Path locates the value inside a webhook custom body (#1376), for example $.alert.title.
+	Path string `json:"path,omitempty"`
 }
 
 func (e *TemplateValidationError) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "template field %q is invalid for event type %s: %s", e.Field, e.EventType, e.Code)
+	if e.Path != "" {
+		b.WriteString(" at " + e.Path)
+	}
 	if e.Line > 0 {
 		b.WriteString(" at line " + strconv.Itoa(e.Line))
 	}
@@ -144,6 +149,12 @@ func validateTemplateContent(key domain.TemplateKey, fields map[string]string) e
 	for _, field := range key.Family.Fields() {
 		source, ok := fields[field]
 		if !ok || source == "" {
+			continue
+		}
+		if key.Family == domain.FamilyWebhook && field == "body" {
+			if err := validateWebhookBody(key.EventType, source, schemas); err != nil {
+				return err
+			}
 			continue
 		}
 		for _, candidate := range schemas {

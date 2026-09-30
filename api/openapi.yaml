@@ -12767,6 +12767,12 @@ components:
           type: string
           enum: ['', en, vi]
           description: The channel locale; empty uses the tenant default_locale, omitted keeps the current value.
+        custom_body:
+          type: boolean
+          description: >-
+            Webhook channels only (#1376): send the body of the resolved webhook template as a custom
+            JSON body instead of the event envelope, with `X-Synapse-Body: custom`; the signature covers
+            the body as sent. Needs a bound template whose body still validates; omitted keeps the value.
 
     NotificationChannel:
       type: object
@@ -12785,6 +12791,7 @@ components:
         health: {$ref: '#/components/schemas/NotificationChannelHealth'}
         template_id: {type: string, description: The bound template (#1371); absent when none is bound}
         locale: {type: string, enum: [en, vi], description: The channel locale; absent when the tenant default applies}
+        custom_body: {type: boolean, description: The webhook channel sends its template body as a custom JSON body (#1376)}
 
     NotificationTemplateResolution:
       type: object
@@ -12848,6 +12855,10 @@ components:
       description: >
         Channel family a template renders for. Fields per family: chat `title`, `body`; email
         `subject`, `body`; pager `summary`; ticket `summary`, `description`; webhook `body`.
+        A webhook `body` is a custom JSON body (#1376): one JSON object of at most 16 KiB, at most 8
+        levels deep and 256 values, without duplicate keys, with template expressions only inside
+        string values (never in a key or as a bare value). Each string value renders on its own and
+        the tree is re-encoded as JSON, so a value can never change the body's structure or types.
 
     NotificationTemplateStatus:
       type: string
@@ -12935,6 +12946,7 @@ components:
           type: string
           description: Stable engine code, for example `unknown_variable`, `forbidden_function`, `parse_error`, `iteration_bound_exceeded`.
         line: {type: integer, minimum: 1}
+        path: {type: string, description: 'For a webhook body, the value that was refused, for example $.alert.title'}
 
     NotificationRuleInput:
       type: object

@@ -349,6 +349,7 @@ function ChannelCreate({
   // The template binding (#1371) is not a destination, so manage_integrations may change it.
   const [templateId, setTemplateId] = useState(initial?.template_id ?? '')
   const [locale, setLocale] = useState<NotificationLocale | ''>(initial?.locale ?? '')
+  const [customBody, setCustomBody] = useState(initial?.custom_body ?? false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Without administer the destination is read-only: the server refuses a new URL, secret or
@@ -379,6 +380,10 @@ function ChannelCreate({
         template_id:
           templateId !== (initial?.template_id ?? '') ? templateId : undefined,
         locale: locale !== (initial?.locale ?? '') ? locale : undefined,
+        custom_body:
+          type === 'webhook' && customBody !== (initial?.custom_body ?? false)
+            ? customBody
+            : undefined,
       }
       if (initial) await api.updateNotificationChannel(initial.id, input)
       else await api.createNotificationChannel(input)
@@ -502,8 +507,14 @@ function ChannelCreate({
           type={type}
           templateId={templateId}
           locale={locale}
-          onTemplateChange={setTemplateId}
+          onTemplateChange={(id) => {
+            setTemplateId(id)
+            // A custom body needs a bound template, so unbinding also opts out.
+            if (!id) setCustomBody(false)
+          }}
           onLocaleChange={setLocale}
+          customBody={customBody}
+          onCustomBodyChange={setCustomBody}
           disabled={!(initial ? canManage : canAdmin)}
         />
         <div className="flex items-end md:col-span-2">

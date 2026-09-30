@@ -48,6 +48,10 @@ func TestTemplateBindingValidate(t *testing.T) {
 		"type w/o family":  {TemplateBinding{TemplateID: "t1"}, "teams", false},
 		"unprintable id":   {TemplateBinding{TemplateID: "t\n1"}, ChannelSlack, false},
 		"unknown, no bind": {TemplateBinding{}, "teams", true},
+		"custom body":      {TemplateBinding{TemplateID: "t1", CustomBody: true}, ChannelWebhook, true},
+		"custom, unbound":  {TemplateBinding{CustomBody: true}, ChannelWebhook, false},
+		"custom on slack":  {TemplateBinding{TemplateID: "t1", CustomBody: true}, ChannelSlack, false},
+		"custom on email":  {TemplateBinding{TemplateID: "t1", CustomBody: true}, ChannelEmail, false},
 	} {
 		err := tc.binding.Validate(tc.channel)
 		if tc.ok != (err == nil) || (err != nil && !errors.Is(err, shared.ErrValidation)) {
