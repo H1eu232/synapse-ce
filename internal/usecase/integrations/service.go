@@ -232,12 +232,18 @@ func (service *Service) SetEnabled(ctx context.Context, tenantID, integrationID 
 		return integration.Integration{}, err
 	}
 	if enabled {
-		configured, err := service.store.IntegrationCredentialConfigured(tenantCtx, integrationID, credentialIdentity)
+		descriptor, err := service.registry.Descriptor(item.Provider)
 		if err != nil {
 			return integration.Integration{}, err
 		}
-		if !configured {
-			return integration.Integration{}, fmt.Errorf("%w: configure credentials before enabling the integration", shared.ErrConflict)
+		if len(descriptor.SecretFields) > 0 {
+			configured, err := service.store.IntegrationCredentialConfigured(tenantCtx, integrationID, credentialIdentity)
+			if err != nil {
+				return integration.Integration{}, err
+			}
+			if !configured {
+				return integration.Integration{}, fmt.Errorf("%w: configure credentials before enabling the integration", shared.ErrConflict)
+			}
 		}
 	}
 	action := "integration.disabled"
