@@ -23,12 +23,12 @@ const inboundWebhookSignature = "X-Synapse-Hook-Signature"
 
 const (
 	gitLabLegacyAuthHeader = "X-Gitlab-Token"
-	gitLabEventHeader       = "X-Gitlab-Event"
-	gitLabEventUUIDHeader   = "X-Gitlab-Event-UUID"
-	gitLabWebhookIDHeader   = "webhook-id"
-	gitLabTimestampHeader   = "webhook-timestamp"
-	gitLabSignatureHeader   = "webhook-signature"
-	gitLabSignatureWindow   = 5 * time.Minute
+	gitLabEventHeader      = "X-Gitlab-Event"
+	gitLabEventUUIDHeader  = "X-Gitlab-Event-UUID"
+	gitLabWebhookIDHeader  = "webhook-id"
+	gitLabTimestampHeader  = "webhook-timestamp"
+	gitLabSignatureHeader  = "webhook-signature"
+	gitLabSignatureWindow  = 5 * time.Minute
 )
 
 // The hook plane is mounted on a method-aware top-level mux outside the human
@@ -213,9 +213,21 @@ func (p *inboundWebhookPlane) verifyRequest(e ports.InboundWebhookEndpoint, publ
 func gitLabEventMetadata(header http.Header) (string, string, bool) {
 	eventType, typeOK := singleWebhookHeader(header, gitLabEventHeader)
 	eventID, idOK := singleWebhookHeader(header, gitLabEventUUIDHeader)
+	if len(header.Values(gitLabSignatureHeader)) > 0 {
+		// Prefer the authenticated message ID; event UUID is an unsigned header.
+		eventID, idOK = singleWebhookHeader(header, gitLabWebhookIDHeader)
+		idOK = idOK && len(eventID) <= 128 && strings.TrimSpace(eventID) == eventID
+		for _, c := range eventID {
+			if c < 0x21 || c > 0x7e {
+				idOK = false
+			}
+		}
+	} else {
+		idOK = idOK && validWebhookUUID(eventID)
+	}
 	eventType = strings.TrimSpace(eventType)
 	eventID = strings.TrimSpace(eventID)
-	return eventType, eventID, typeOK && idOK && eventType != "" && len(eventType) <= 64 && validWebhookUUID(eventID)
+	return eventType, eventID, typeOK && idOK && eventType != "" && len(eventType) <= 64
 }
 
 func singleWebhookHeader(header http.Header, name string) (string, bool) {

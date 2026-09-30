@@ -450,13 +450,14 @@ function DynamicField({ field, value, onChange }: { field: IntegrationFieldDescr
 
 function BindingsCard({ canManage, integration, provider, projects, operations, bindings, busy, operate, onReload }: { canManage: boolean; integration: Integration; provider: IntegrationProviderDescriptor; projects: Project[]; operations: IntegrationOperation[]; bindings: IntegrationBinding[]; busy: string; operate: (key: string, action: () => Promise<void>, success: string) => Promise<void>; onReload: () => Promise<void> }) {
   const supportsDiscover = provider.capabilities.includes('discover_pipelines')
+  const bindableProjects = integration.provider === 'gitlab' ? projects.filter((item) => item.sourceBinding.kind === 'git') : projects
   const pipelines = useMemo(() => operations.find((operation) => operation.type === 'discover' && operation.pipelines.length > 0)?.pipelines ?? [], [operations])
   const available = pipelines.filter((pipeline) => !bindings.some((binding) => binding.externalKey === pipeline.externalKey))
   const [pipelineKey, setPipelineKey] = useState('')
   const [projectId, setProjectId] = useState('')
   const projectNames = new Map(projects.map((project) => [project.id, project.name]))
   const selectedPipeline = available.find((pipeline) => pipeline.externalKey === pipelineKey)
-  const selectedProject = projects.find((project) => project.id === projectId)
+  const selectedProject = bindableProjects.find((project) => project.id === projectId)
 
   async function bind() {
     if (!projectId) return
@@ -493,7 +494,7 @@ function BindingsCard({ canManage, integration, provider, projects, operations, 
           <p className="text-sm text-tertiary">This inbound integration is already bound to a Project. Remove the binding before choosing another Project.</p>
         ) : (
           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-            <Select value={projectId} onValueChange={setProjectId} ariaLabel="Synapse Project" placeholder="Select Project" options={projects.map((project) => ({ value: project.id, label: project.name }))} />
+            <Select value={projectId} onValueChange={setProjectId} ariaLabel="Synapse Project" placeholder="Select Project" options={bindableProjects.map((project) => ({ value: project.id, label: project.name }))} />
             <Button disabled={!selectedProject} loading={busy === 'bind'} onClick={bind}>Bind Project</Button>
           </div>
         )}

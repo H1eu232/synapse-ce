@@ -3,6 +3,7 @@ package scmwebhook
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 )
 
 type fakeWebhookDeduper struct {
+	mu       sync.Mutex
 	claimed  map[string]bool
 	releases int
 	err      error
@@ -21,22 +23,29 @@ func newFakeWebhookDeduper() *fakeWebhookDeduper {
 	return &fakeWebhookDeduper{claimed: map[string]bool{}}
 }
 
-func (f *fakeWebhookDeduper) ClaimInboundWebhookEvent(_ context.Context, id ports.InboundWebhookIdentity, provider, eventID string, _ time.Time) (bool, error) {
+func (f *fakeWebhookDeduper) ProcessInboundWebhookEvent(ctx context.Context, id ports.InboundWebhookIdentity, event ports.InboundWebhookEvent, receive func(context.Context) error) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return false, f.err
 	}
-	key := id.TenantID.String() + ":" + id.PublicID + ":" + provider + ":" + eventID
-	if f.claimed[key] {
+	prefix := id.TenantID.String() + ":" + id.PublicID + ":" + event.Provider + ":"
+	key := prefix + event.EventID
+	bodyKey := prefix + event.PayloadSHA256
+	if f.claimed[key] || f.claimed[bodyKey] {
 		return false, nil
 	}
+	err := receive(ctx)
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		f.releases++
+		return false, err
+	}
 	f.claimed[key] = true
+	f.claimed[bodyKey] = true
 	return true, nil
-}
-
-func (f *fakeWebhookDeduper) ReleaseInboundWebhookEvent(_ context.Context, id ports.InboundWebhookIdentity, provider, eventID string) error {
-	delete(f.claimed, id.TenantID.String()+":"+id.PublicID+":"+provider+":"+eventID)
-	f.releases++
-	return nil
 }
 
 type webhookClock struct{ at time.Time }
@@ -65,6 +74,7 @@ func (f *fakeBindingReader) ListIntegrationBindings(context.Context, shared.ID) 
 }
 
 type webhookScanCall struct {
+	target                    ports.WebhookScanTarget
 	actor, ref, fetchRef, sha string
 	tenant, project           shared.ID
 	fork                      bool
@@ -75,8 +85,8 @@ type fakeProjectScanner struct {
 	err   error
 }
 
-func (f *fakeProjectScanner) StartWebhookAnalysis(_ context.Context, actor string, tenant, project shared.ID, ref, fetchRef, sha string, fork bool) (ports.ScanJob, error) {
-	f.calls = append(f.calls, webhookScanCall{actor: actor, tenant: tenant, project: project, ref: ref, fetchRef: fetchRef, sha: sha, fork: fork})
+func (f *fakeProjectScanner) StartWebhookAnalysis(_ context.Context, actor string, tenant, project shared.ID, target ports.WebhookScanTarget) (ports.ScanJob, error) {
+	f.calls = append(f.calls, webhookScanCall{target: target, actor: actor, tenant: tenant, project: project, ref: target.Ref, fetchRef: target.FetchRef, sha: target.SHA, fork: target.Fork})
 	return ports.ScanJob{}, f.err
 }
 
@@ -156,6 +166,7 @@ func TestGitLabForkMergeRequestDisablesBuildExecutionAtProjectBoundary(t *testin
 		"object_attributes":{
 			"iid":17,
 			"source_branch":"fork/feature",
+ "target_branch":"release/1.0",
 			"source_project_id":22,
 			"target_project_id":11,
 			"last_commit":{"id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
@@ -170,6 +181,9 @@ func TestGitLabForkMergeRequestDisablesBuildExecutionAtProjectBoundary(t *testin
 	}
 	if len(scans.calls) != 1 || !scans.calls[0].fork {
 		t.Fatalf("fork MR scan = %#v", scans.calls)
+	}
+	if scans.calls[0].target.BaseRef != "release/1.0" || scans.calls[0].target.MergeRequestNumber != 17 {
+		t.Fatalf("MR metadata lost: %+v", scans.calls[0].target)
 	}
 	if scans.calls[0].ref != "fork/feature" ||
 		scans.calls[0].fetchRef != "refs/merge-requests/17/head" ||

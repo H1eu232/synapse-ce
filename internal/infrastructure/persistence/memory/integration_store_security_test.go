@@ -218,3 +218,41 @@ func TestIntegrationBindingCountIsCappedAtAdmission(t *testing.T) {
 		}
 	}
 }
+
+func TestGitLabConcurrentBindingsAdmitOnlyOneProject(t *testing.T) {
+	clock := idgen.SystemClock{}
+	ids := idgen.RandomID{}
+	cipher, err := vault.NewCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewIntegrationStore(NewJobQueue(ids, clock.Now), cipher, clock, &integrationFailingAudit{})
+	ctx := shared.WithTenant(context.Background(), "tenant")
+	now := clock.Now()
+	item := integration.Integration{ID: "gitlab-one-binding", TenantID: "tenant", Provider: "gitlab", Name: "GitLab", Endpoint: "https://gitlab.com", Config: []byte(`{}`), PollInterval: time.Minute, Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err = store.CreateIntegration(ctx, item, ports.AuditEntry{Actor: "admin", Action: "integration.created", Target: item.ID.String(), At: now}); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 8)
+	for i := range 8 {
+		go func() {
+			<-start
+			binding := integration.Binding{ID: shared.ID(fmt.Sprintf("b%d", i)), TenantID: "tenant", IntegrationID: item.ID, ProjectID: shared.ID(fmt.Sprintf("p%d", i)), ExternalKey: fmt.Sprintf("org/repo%d", i), ExternalName: "Repo", Version: 1, CreatedAt: now, UpdatedAt: now}
+			results <- store.CreateIntegrationBinding(ctx, binding, ports.AuditEntry{Actor: "admin", Action: "integration.binding_created", Target: binding.ID.String(), At: now})
+		}()
+	}
+	close(start)
+	accepted := 0
+	for range 8 {
+		err := <-results
+		if err == nil {
+			accepted++
+		} else if !errors.Is(err, shared.ErrConflict) {
+			t.Fatal(err)
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("accepted=%d want=1", accepted)
+	}
+}

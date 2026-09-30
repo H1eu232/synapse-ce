@@ -2,6 +2,8 @@ package scmwebhook
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -15,7 +17,7 @@ import (
 const gitLabProvider = "gitlab"
 
 var (
-	webhookSHA = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+	webhookSHA = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 	webhookRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 )
 
@@ -24,7 +26,7 @@ type BindingReader interface {
 }
 
 type ProjectScanner interface {
-	StartWebhookAnalysis(context.Context, string, shared.ID, shared.ID, string, string, string, bool) (ports.ScanJob, error)
+	StartWebhookAnalysis(context.Context, string, shared.ID, shared.ID, ports.WebhookScanTarget) (ports.ScanJob, error)
 }
 
 // Receiver dispatches authenticated SCM webhook events without accepting a
@@ -50,55 +52,52 @@ func (r *Receiver) ReceiveInboundWebhook(ctx context.Context, identity ports.Inb
 	if identity.OwnerKind != "integration" || identity.OwnerID == "" || identity.TenantID.IsZero() || event.EventID == "" {
 		return fmt.Errorf("%w: inbound webhook identity is invalid", shared.ErrValidation)
 	}
-	claimed, err := r.deduper.ClaimInboundWebhookEvent(ctx, identity, gitLabProvider, event.EventID, r.clock.Now())
-	if err != nil {
-		return fmt.Errorf("claim GitLab webhook event: %w", err)
-	}
-	if !claimed {
-		return nil
-	}
-	keepClaim := false
-	defer func() {
-		if !keepClaim {
-			_ = r.deduper.ReleaseInboundWebhookEvent(ctx, identity, gitLabProvider, event.EventID)
-		}
-	}()
-
 	target, scan, err := parseGitLab(event.EventType, event.Body)
 	if err != nil {
 		return err
 	}
 	if !scan {
-		keepClaim = true
 		return nil
 	}
 
-	bindings, err := r.bindings.ListIntegrationBindings(ctx, shared.ID(identity.OwnerID))
-	if err != nil {
-		return fmt.Errorf("list inbound integration bindings: %w", err)
-	}
-	projectID, err := oneBoundProject(bindings)
-	if err != nil {
-		return err
-	}
-	if _, err := r.projects.StartWebhookAnalysis(
-		ctx, "gitlab-webhook", identity.TenantID, projectID,
-		target.Ref, target.FetchRef, target.SHA, target.Fork,
-	); err != nil {
-		return fmt.Errorf("start GitLab webhook analysis: %w", err)
-	}
-	keepClaim = true
-	return nil
+	digest := sha256.Sum256(event.Body)
+	event.PayloadSHA256 = hex.EncodeToString(digest[:])
+	_, err = r.deduper.ProcessInboundWebhookEvent(ctx, identity, event, func(txCtx context.Context) error {
+		bindings, err := r.bindings.ListIntegrationBindings(txCtx, shared.ID(identity.OwnerID))
+		if err != nil {
+			return fmt.Errorf("list inbound integration bindings: %w", err)
+		}
+		projectID, err := oneBoundProject(bindings)
+		if err != nil {
+			return err
+		}
+		target.Provider = gitLabProvider
+		if _, err := r.projects.StartWebhookAnalysis(txCtx, "gitlab-webhook", identity.TenantID, projectID, target); err != nil {
+			return fmt.Errorf("start GitLab webhook analysis: %w", err)
+		}
+		return nil
+	})
+	return err
 }
 
-type gitLabTarget struct {
-	Ref      string
-	FetchRef string
-	SHA      string
-	Fork     bool
-}
+type gitLabTarget = ports.WebhookScanTarget
 
 func parseGitLab(eventType string, body []byte) (gitLabTarget, bool, error) {
+	var envelope struct {
+		ObjectKind string `json:"object_kind"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return gitLabTarget{}, false, fmt.Errorf("%w: invalid GitLab payload", shared.ErrValidation)
+	}
+	// A Standard Webhooks signature covers the body, not X-Gitlab-Event.
+	// A conflicting header must not alter processing of the signed object kind.
+	if envelope.ObjectKind != "" {
+		expected := map[string]string{"push": "Push Hook", "merge_request": "Merge Request Hook"}[envelope.ObjectKind]
+		if (expected != "" && strings.TrimSpace(eventType) != expected) ||
+			(expected == "" && (eventType == "Push Hook" || eventType == "Merge Request Hook")) {
+			return gitLabTarget{}, false, fmt.Errorf("%w: GitLab event type does not match payload", shared.ErrValidation)
+		}
+	}
 	switch strings.TrimSpace(eventType) {
 	case "Push Hook":
 		var payload struct {
@@ -129,6 +128,9 @@ func parseGitLab(eventType string, body []byte) (gitLabTarget, bool, error) {
 		var payload struct {
 			ObjectAttributes struct {
 				IID             int64  `json:"iid"`
+				TargetBranch    string `json:"target_branch"`
+				Action          string `json:"action"`
+				State           string `json:"state"`
 				SourceBranch    string `json:"source_branch"`
 				SourceProjectID int64  `json:"source_project_id"`
 				TargetProjectID int64  `json:"target_project_id"`
@@ -139,6 +141,21 @@ func parseGitLab(eventType string, body []byte) (gitLabTarget, bool, error) {
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return gitLabTarget{}, false, fmt.Errorf("%w: invalid GitLab merge-request payload", shared.ErrValidation)
+		}
+		switch payload.ObjectAttributes.State {
+		case "closed", "merged":
+			return gitLabTarget{}, false, nil
+		}
+		switch payload.ObjectAttributes.Action {
+		case "", "open", "reopen", "update":
+		default:
+			return gitLabTarget{}, false, nil
+		}
+		base := strings.TrimSpace(payload.ObjectAttributes.TargetBranch)
+		if base != "" {
+			if err := validateTarget(base, payload.ObjectAttributes.LastCommit.ID); err != nil {
+				return gitLabTarget{}, false, err
+			}
 		}
 		branch := strings.TrimSpace(payload.ObjectAttributes.SourceBranch)
 		sha := strings.TrimSpace(payload.ObjectAttributes.LastCommit.ID)
@@ -158,7 +175,7 @@ func parseGitLab(eventType string, body []byte) (gitLabTarget, bool, error) {
 		fork := payload.ObjectAttributes.SourceProjectID == 0 ||
 			payload.ObjectAttributes.TargetProjectID == 0 ||
 			payload.ObjectAttributes.SourceProjectID != payload.ObjectAttributes.TargetProjectID
-		return gitLabTarget{Ref: branch, FetchRef: fetchRef, SHA: sha, Fork: fork}, true, nil
+		return gitLabTarget{Ref: branch, FetchRef: fetchRef, SHA: sha, Fork: fork, BaseRef: base, MergeRequestNumber: payload.ObjectAttributes.IID}, true, nil
 	default:
 		// The endpoint may receive other GitLab hook types during configuration
 		// tests. Authenticated unsupported events are acknowledged but never scan.
@@ -172,6 +189,11 @@ func validateTarget(ref, sha string) error {
 		strings.HasSuffix(ref, ".lock") || strings.HasSuffix(ref, ".") {
 		return fmt.Errorf("%w: invalid GitLab webhook ref", shared.ErrValidation)
 	}
+	for _, part := range strings.Split(ref, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return fmt.Errorf("%w: invalid GitLab webhook ref", shared.ErrValidation)
+		}
+	}
 	if !webhookSHA.MatchString(sha) {
 		return fmt.Errorf("%w: invalid GitLab webhook sha", shared.ErrValidation)
 	}
@@ -179,7 +201,7 @@ func validateTarget(ref, sha string) error {
 }
 
 func allZeroSHA(sha string) bool {
-	if len(sha) < 40 || len(sha) > 64 {
+	if len(sha) != 40 && len(sha) != 64 {
 		return false
 	}
 	for _, c := range sha {

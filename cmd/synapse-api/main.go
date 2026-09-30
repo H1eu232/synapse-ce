@@ -1471,7 +1471,7 @@ func main() {
 	}
 	router := httpapi.NewRouter(log, auth, engService, scaService, aupService, findingsService, exportService, reportService, evidenceService, reconService, logBroker, transferService, auditService, vexService, usersService, credentialsService)
 	if cfg.InboundWebhooksEnabled {
-		if databasePool == nil || cfg.VaultMasterKey == "" {
+		if databasePool == nil || reconQueue == nil || cfg.VaultMasterKey == "" {
 			log.Error("inbound webhooks require PostgreSQL and SYNAPSE_VAULT_MASTER_KEY")
 			os.Exit(1)
 		}
@@ -1481,6 +1481,13 @@ func main() {
 		if err != nil {
 			log.Error("inbound webhook runtime DB role cannot enforce tenant isolation", "err", err)
 			os.Exit(1)
+		}
+		// Receipt and enqueue commit together before any source work starts.
+		scaService.SetQueue(reconQueue)
+		if toolExecution != config.ToolExecutionDispatchOnly && scaWorker == nil {
+			scaWorker = worker.New(reconQueue, map[string]worker.Handler{
+				scauc.ScanJobKind: scaJobHandler{svc: scaService},
+			}, worker.Config{Visibility: cfg.ScanTimeout + time.Minute, MaxAttempts: 3}, log)
 		}
 		inboundWebhookStore := postgres.NewInboundWebhookRepository(databasePool)
 		scmReceiver, receiverErr := scmwebhook.NewReceiver(integrationStore, projectService, inboundWebhookStore, clock)
@@ -1597,7 +1604,7 @@ func main() {
 			siem.ProviderSplunk:            splunk.New(5*time.Second, true),
 			siem.ProviderElasticsearch:     elastic.New(5 * time.Second),
 			siem.ProviderMicrosoftSentinel: sentinel.New(5 * time.Second),
-			siem.ProviderSyslogTLS:     syslogtls.New(5 * time.Second),
+			siem.ProviderSyslogTLS:         syslogtls.New(5 * time.Second),
 		}, auditLog, clock, ids)
 		if siemErr != nil {
 			log.Error("siem service init failed", "err", siemErr)

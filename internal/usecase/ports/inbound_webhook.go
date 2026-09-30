@@ -37,12 +37,10 @@ type InboundWebhookStore interface {
 }
 
 type InboundWebhookEventDeduper interface {
-	// ClaimInboundWebhookEvent atomically records a provider event ID after
-	// authentication. false,nil is an exact replay.
-	ClaimInboundWebhookEvent(context.Context, InboundWebhookIdentity, string, string, time.Time) (bool, error)
-	// ReleaseInboundWebhookEvent removes a claim when provider processing failed
-	// before durable work was accepted, allowing a provider retry to run again.
-	ReleaseInboundWebhookEvent(context.Context, InboundWebhookIdentity, string, string) error
+	// ProcessInboundWebhookEvent atomically commits dedupe and durable enqueue.
+	// The callback must use the supplied transaction context and perform no
+	// inline work or remote writes. Failure rolls back both; false,nil is a replay.
+	ProcessInboundWebhookEvent(context.Context, InboundWebhookIdentity, InboundWebhookEvent, func(context.Context) error) (bool, error)
 }
 
 type InboundWebhookIdentity struct {
@@ -53,10 +51,11 @@ type InboundWebhookIdentity struct {
 }
 
 type InboundWebhookEvent struct {
-	Provider  string
-	EventType string
-	EventID   string
-	Body      []byte
+	Provider      string
+	EventType     string
+	EventID       string
+	PayloadSHA256 string
+	Body          []byte
 }
 
 type InboundWebhookReceiver interface {
@@ -72,4 +71,16 @@ func InboundWebhookAAD(tenant shared.ID, publicID, ownerKind, ownerID string, ve
 		ownerKind, ownerID, strconv.Itoa(version),
 	})
 	return value
+}
+
+// WebhookScanTarget contains authenticated source metadata. The repository URL
+// is always read from the stored project, never from the webhook body.
+type WebhookScanTarget struct {
+	Provider           string
+	Ref                string
+	FetchRef           string
+	SHA                string
+	BaseRef            string
+	MergeRequestNumber int64
+	Fork               bool
 }

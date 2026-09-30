@@ -44,25 +44,6 @@ func (s *fakeHookStore) LookupInboundWebhook(_ context.Context, id string) (port
 	e, ok := s.records[id]
 	return e, ok, nil
 }
-func (s *fakeHookStore) ClaimInboundWebhookEvent(_ context.Context, id ports.InboundWebhookIdentity, provider, eventID string, _ time.Time) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.fail {
-		return false, errors.New("db unavailable")
-	}
-	key := id.TenantID.String() + ":" + id.PublicID + ":" + provider + ":" + eventID
-	if s.eventClaims[key] {
-		return false, nil
-	}
-	s.eventClaims[key] = true
-	return true, nil
-}
-func (s *fakeHookStore) ReleaseInboundWebhookEvent(_ context.Context, id ports.InboundWebhookIdentity, provider, eventID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.eventClaims, id.TenantID.String()+":"+id.PublicID+":"+provider+":"+eventID)
-	return nil
-}
 func (s *fakeHookStore) AdmitInboundWebhook(_ context.Context, id ports.InboundWebhookIdentity, version int, usedPrevious bool) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -447,8 +428,8 @@ func TestInboundGitLabSigningTokenWindowAndPrecedence(t *testing.T) {
 	if got := len(seen); got != 2 {
 		t.Fatalf("authenticated deliveries reaching receiver = %d, want 2", got)
 	}
-	if seen[0].eventID != eventID {
-		t.Fatalf("signed delivery replay id = %q, want event UUID %q", seen[0].eventID, eventID)
+	if seen[0].eventID != headers.Get(gitLabWebhookIDHeader) {
+		t.Fatalf("signed delivery replay id = %q, want signed message ID", seen[0].eventID)
 	}
 
 	stale := gitLabSignedHeaders(secret, body, time.Now().Add(-6*time.Minute), "another-message-id", "23792a34-cac6-4fda-95a8-c58e00a3954e")
@@ -498,7 +479,6 @@ func TestInboundGitLabLegacyTokenReceiverRetry(t *testing.T) {
 		t.Fatalf("legacy delivery replay id = %q, want event UUID %q", seen[0].eventID, legacyEventID)
 	}
 }
-
 
 func TestInboundGitLabInvalidPayloadIs400AndRetryable(t *testing.T) {
 	h, store, receiver, cipher := setupHook(t)

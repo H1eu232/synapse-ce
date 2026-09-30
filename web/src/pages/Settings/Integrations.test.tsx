@@ -18,6 +18,11 @@ vi.mock('../../lib/api', () => ({
   },
 }))
 
+// Radix Select uses browser pointer/scroll APIs absent from jsdom.
+for (const name of ['scrollIntoView', 'hasPointerCapture', 'releasePointerCapture'] as const) {
+  Object.defineProperty(HTMLElement.prototype, name, { configurable: true, value: vi.fn(() => false) })
+}
+
 const provider: IntegrationProviderDescriptor = {
   provider: 'jenkins', name: 'Jenkins', description: 'Read-only Jenkins integration',
   capabilities: ['test_connection', 'discover_pipelines', 'read_runs'], configFields: [],
@@ -152,7 +157,7 @@ describe('Integrations settings', () => {
   it('enables an inbound-only provider without credentials, tests, discovery or polling', async () => {
     vi.mocked(api.listIntegrationProviders).mockResolvedValue([provider, gitlabProvider])
     vi.mocked(api.listIntegrations).mockResolvedValue([gitlabIntegration])
-    vi.mocked(api.listProjects).mockResolvedValue([{ id: 'project-1', name: 'Platform' } as never])
+    vi.mocked(api.listProjects).mockResolvedValue([{ id: 'project-1', name: 'Platform', sourceBinding: { kind: 'git', value: 'https://gitlab.example.com/acme/app' } } as never])
     vi.mocked(api.getIntegration).mockResolvedValue(gitlabIntegration)
     vi.mocked(api.listIntegrationOperations).mockResolvedValue([])
     vi.mocked(api.setIntegrationEnabled).mockResolvedValue({ ...gitlabIntegration, enabled: true, version: 2 })
@@ -171,6 +176,21 @@ describe('Integrations settings', () => {
     expect(enable).toBeEnabled()
     fireEvent.click(enable)
     await waitFor(() => expect(api.setIntegrationEnabled).toHaveBeenCalledWith(gitlabIntegration, true))
+  })
+
+  it('offers only Git projects for the inbound GitLab binding', async () => {
+    vi.mocked(api.listIntegrationProviders).mockResolvedValue([gitlabProvider])
+    vi.mocked(api.listIntegrations).mockResolvedValue([gitlabIntegration])
+    vi.mocked(api.getIntegration).mockResolvedValue(gitlabIntegration)
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'git-project', name: 'Git app', sourceBinding: { kind: 'git', value: 'https://gitlab.example.com/org/app' } } as never,
+      { id: 'local-project', name: 'Local checkout', sourceBinding: { kind: 'local', value: '/repo' } } as never,
+    ])
+    render(<MemoryRouter><Integrations /></MemoryRouter>)
+    const user = userEvent.setup()
+    await user.click(await screen.findByLabelText('Synapse Project'))
+    expect(await screen.findByRole('option', { name: 'Git app' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Local checkout' })).not.toBeInTheDocument()
   })
 
   it('requires a successful test before enabling and never renders stored plaintext', async () => {

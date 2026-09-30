@@ -325,7 +325,8 @@ func (store *IntegrationStore) CreateIntegrationBinding(ctx context.Context, bin
 	}
 	return WithContextTenant(ctx, store.pool, func(tx pgx.Tx) error {
 		var archived bool
-		if err := tx.QueryRow(ctx, `SELECT archived FROM integrations WHERE id=$1 FOR UPDATE`, binding.IntegrationID.String()).Scan(&archived); errors.Is(err, pgx.ErrNoRows) {
+		var provider string
+		if err := tx.QueryRow(ctx, `SELECT archived,provider FROM integrations WHERE id=$1 FOR UPDATE`, binding.IntegrationID.String()).Scan(&archived, &provider); errors.Is(err, pgx.ErrNoRows) {
 			return shared.ErrNotFound
 		} else if err != nil {
 			return fmt.Errorf("lock integration for binding creation: %w", err)
@@ -336,6 +337,9 @@ func (store *IntegrationStore) CreateIntegrationBinding(ctx context.Context, bin
 		var bindingCount int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM integration_bindings WHERE integration_id=$1`, binding.IntegrationID.String()).Scan(&bindingCount); err != nil {
 			return fmt.Errorf("count integration bindings: %w", err)
+		}
+		if provider == "gitlab" && bindingCount > 0 {
+			return fmt.Errorf("%w: GitLab inbound integration supports one project binding", shared.ErrConflict)
 		}
 		if bindingCount >= integration.MaxBindingsPerPoll {
 			return fmt.Errorf("%w: an integration supports at most %d bindings", shared.ErrValidation, integration.MaxBindingsPerPoll)

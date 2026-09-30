@@ -551,11 +551,13 @@ func (a *Acquirer) acquireGit(ctx context.Context, url, ref, fetchRef, commit, b
 		// repository URL remains the stored project source. FetchRef is an optional
 		// server-owned ref used only to make an otherwise-hidden commit reachable;
 		// Ref remains user-facing source metadata. Always verify HEAD == Commit.
-		fetchTarget := commit
-		if fetchRef != "" {
-			fetchTarget = fetchRef
+		// Try the immutable SHA before the moving MR ref. Older queued deliveries
+		// must still acquire their own commit after another push advances the ref.
+		fetched := a.gitFetch(ctx, dir, url, gitEnv, roPaths, commit, "refs/synapse-webhook/head")
+		if !fetched && fetchRef != "" {
+			fetched = a.gitFetch(ctx, dir, url, gitEnv, roPaths, fetchRef, "refs/synapse-webhook/head")
 		}
-		if !a.gitFetch(ctx, dir, url, gitEnv, roPaths, fetchTarget, "refs/synapse-webhook/head") {
+		if !fetched {
 			_ = cleanup()
 			return nil, fmt.Errorf("git fetch pinned commit failed")
 		}
@@ -595,7 +597,11 @@ func (a *Acquirer) resolveComparison(ctx context.Context, dir, url string, gitEn
 	// A depth-one clone does not have the head's parents. Fetch the selected
 	// refs into private local names: a plain fetch updates only FETCH_HEAD, which
 	// cannot be resolved reliably after fetching another ref.
-	if headRef != "" && !a.gitFetch(ctx, dir, url, gitEnv, roPaths, headRef, "refs/synapse-comparison/head") {
+	headCandidate := headRef
+	if gitCommitRE.MatchString(head) {
+		headCandidate = head
+	}
+	if headCandidate != "" && !a.gitFetch(ctx, dir, url, gitEnv, roPaths, headCandidate, "refs/synapse-comparison/head") {
 		return "", ""
 	}
 	if baseRef != "" && !a.gitFetch(ctx, dir, url, gitEnv, roPaths, baseRef, "refs/synapse-comparison/base") {
