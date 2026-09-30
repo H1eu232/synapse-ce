@@ -1490,7 +1490,6 @@ type AcquireRequest struct {
 	BaseRef                   string // optional validated Git comparison base ref
 	BaseCommit                string // optional immutable base commit from a previous analysis
 	RequireCodeQualityHistory bool   // optional hint to clone bounded history for code-quality behavioral hotspots
-	DisableGitCredentials     bool   // force public/anonymous git access; used for untrusted fork pull requests
 }
 
 // Workspace is an isolated directory holding a target to analyze (never execute).
