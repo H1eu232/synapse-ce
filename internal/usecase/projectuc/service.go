@@ -343,6 +343,46 @@ func (s *Service) SetPullRequestDecoration(ctx context.Context, actor string, te
 	return p, nil
 }
 
+// StartWebhookAnalysis starts a server-owned project scan from authenticated SCM
+// metadata. The repository URL always comes from the persisted project binding;
+// callers may supply only a source-ref label, an optional server-owned fetch ref,
+// and an immutable commit SHA.
+func (s *Service) StartWebhookAnalysis(ctx context.Context, actor string, tenantID, projectID shared.ID, ref, fetchRef, commit string, fork bool) (ports.ScanJob, error) {
+	if err := requireActor(actor); err != nil {
+		return ports.ScanJob{}, err
+	}
+	if s.scanner == nil {
+		return ports.ScanJob{}, fmt.Errorf("%w: project analysis is not configured", shared.ErrValidation)
+	}
+	p, err := s.repo.GetByID(ctx, tenantID, projectID)
+	if err != nil {
+		return ports.ScanJob{}, fmt.Errorf("get webhook project: %w", err)
+	}
+	if p == nil || p.SourceBinding.Kind != project.SourceGit {
+		return ports.ScanJob{}, fmt.Errorf("%w: webhook project must use a git source", shared.ErrValidation)
+	}
+	e, err := s.engagements.GetByProjectID(ctx, tenantID, p.ID)
+	if err != nil {
+		return ports.ScanJob{}, fmt.Errorf("get webhook project analysis context: %w", err)
+	}
+	gate, err := s.resolveManagedGate(ctx, tenantID, p.GateID)
+	if err != nil {
+		return ports.ScanJob{}, err
+	}
+	request := ports.AcquireRequest{
+		Kind:                  project.SourceGit,
+		Value:                 p.SourceBinding.Value,
+		Ref:                   strings.TrimSpace(ref),
+		FetchRef:              strings.TrimSpace(fetchRef),
+		Commit:                strings.ToLower(strings.TrimSpace(commit)),
+		DisableGitCredentials: fork,
+	}
+	return s.scanner.StartScanWithOptions(ctx, actor, e.ID, request, scauc.ScanOptions{
+		Mode: scauc.ScanModeFull, CodeQuality: true, ProjectAnalysis: true,
+		NoBuildExecution: fork, Gate: gate,
+	})
+}
+
 func (s *Service) StartAnalysis(ctx context.Context, actor string, tenantID shared.ID, key string, coverage *measure.CoverageReport) (ports.ScanJob, error) {
 	if err := requireActor(actor); err != nil {
 		return ports.ScanJob{}, err

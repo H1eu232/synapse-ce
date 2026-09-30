@@ -281,6 +281,43 @@ func newSvcWithSources(repo ports.EngagementRepository, clk ports.Clock, acq por
 	return NewService(repo, nil, nil, nil, nil, nil, nil, nil, ports.Provenance{}, clk, audit, shared.SeverityHigh, 0, acq, det, fakeSBOM{}, sources, nil, fakeLic{}, nil)
 }
 
+type countingBuildResolver struct {
+	resolveCalls int
+	edgeCalls    int
+}
+
+func (r *countingBuildResolver) Ecosystem() string { return "test" }
+func (r *countingBuildResolver) Resolve(context.Context, string) ([]sbom.Component, error) {
+	r.resolveCalls++
+	return nil, nil
+}
+func (r *countingBuildResolver) ResolveEdges(context.Context, string, *sbom.SBOM) (int, error) {
+	r.edgeCalls++
+	return 0, nil
+}
+
+func TestNoBuildExecutionSkipsBuildSystemResolvers(t *testing.T) {
+	repo := &fakeEngRepo{eng: engagementWithScope(t, "myrepo")}
+	svc := newSvc(repo, fakeClock{t: time.Unix(0, 0).UTC()}, &fakeAcquirer{dir: "/tmp/ws"}, &fakeAudit{}, &fakeDetector{})
+	resolver := &countingBuildResolver{}
+	svc.SetMavenResolver(resolver)
+	svc.SetGradleResolver(resolver)
+	svc.SetNPMResolver(resolver)
+	svc.AddManifestResolver(resolver)
+	svc.SetGraphResolver(resolver)
+
+	if _, err := svc.ScanWithOptions(
+		context.Background(), "gitlab-webhook", "e1",
+		ports.AcquireRequest{Kind: "local", Value: "myrepo"},
+		ScanOptions{Mode: ScanModeFull, NoBuildExecution: true},
+	); err != nil {
+		t.Fatalf("fork-safe scan: %v", err)
+	}
+	if resolver.resolveCalls != 0 || resolver.edgeCalls != 0 {
+		t.Fatalf("build-system resolvers ran with NoBuildExecution: resolve=%d edges=%d", resolver.resolveCalls, resolver.edgeCalls)
+	}
+}
+
 func TestScanInScopeRunsAndAudits(t *testing.T) {
 	repo := &fakeEngRepo{eng: engagementWithScope(t, "myrepo")}
 	acq := &fakeAcquirer{dir: "/tmp/ws"}

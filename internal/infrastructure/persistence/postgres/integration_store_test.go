@@ -124,6 +124,21 @@ func TestPostgresIntegrationStoreAtomicityRLSCredentialsAndUpsert(t *testing.T) 
 	if err := store.CreateIntegration(actx, item, integrationMutationAudit("integration.created", item.ID, now)); err != nil {
 		t.Fatal(err)
 	}
+	inbound := integration.Integration{
+		ID: shared.ID("integration-gitlab-" + suffix), TenantID: tenantA, Provider: "gitlab",
+		Name: "GitLab inbound", Endpoint: "https://gitlab.example.com", Config: []byte(`{}`),
+		PollInterval: time.Minute, Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateIntegration(actx, inbound, integrationMutationAudit("integration.created", inbound.ID, now)); err != nil {
+		t.Fatal(err)
+	}
+	inboundEnabled, err := store.SetIntegrationEnabled(
+		actx, inbound.ID, true, inbound.Version, ports.IntegrationEnableRequirements{},
+		integrationMutationAudit("integration.enabled", inbound.ID, now),
+	)
+	if err != nil || !inboundEnabled.Enabled {
+		t.Fatalf("credentialless inbound enable=%+v err=%v", inboundEnabled, err)
+	}
 	secret := []byte(`{"username":"reader","api_token":"secret-token"}`)
 	if err := store.PutIntegrationCredential(actx, item.ID, "default", secret, item.Version, 1, integrationMutationAudit("integration.credential_replaced", item.ID, now)); err != nil {
 		t.Fatal(err)
@@ -269,7 +284,7 @@ func TestPostgresIntegrationStoreAtomicityRLSCredentialsAndUpsert(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	current, err = store.SetIntegrationEnabled(actx, item.ID, true, current.Version, integrationMutationAudit("integration.enabled", item.ID, now))
+	current, err = store.SetIntegrationEnabled(actx, item.ID, true, current.Version, ports.IntegrationEnableRequirements{RequireCredential: true, RequireSuccessfulTest: true}, integrationMutationAudit("integration.enabled", item.ID, now))
 	if err != nil {
 		t.Fatal(err)
 	}

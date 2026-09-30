@@ -295,13 +295,14 @@ function TestButton({
 const TERMINAL = new Set(['succeeded', 'partial', 'failed', 'cancelled'])
 
 /** Mirrors the health the CI/CD detail page shows for the same integration. */
-export function ciHealth(integration: Integration, operations: IntegrationOperation[], now = Date.now()): Health {
+export function ciHealth(integration: Integration, operations: IntegrationOperation[], now = Date.now(), supportsPoll = true): Health {
   const latest = operations[0]
   const active = operations.find((operation) => !TERMINAL.has(operation.state))
   if (active) return { label: 'Running', tone: 'neutral' }
   if (latest?.state === 'failed') return { label: 'Error', tone: 'danger' }
   if (latest?.state === 'partial') return { label: 'Partial', tone: 'warning' }
   if (!integration.enabled) return { label: 'Disabled', tone: 'neutral' }
+  if (!supportsPoll) return { label: 'Healthy', tone: 'good' }
   const poll = operations.find((operation) => operation.type === 'poll' && operation.state === 'succeeded')
   const staleAfter = Math.max(integration.pollIntervalSeconds * 2, 600) * 1000
   if (!poll || now - Date.parse(poll.finishedAt ?? poll.updatedAt) > staleAfter) return { label: 'Stale', tone: 'warning' }
@@ -384,7 +385,7 @@ function CiCdGroup({ canAdmin }: { canAdmin: boolean }) {
     <Group
       title="CI/CD"
       icon={Dataflow01}
-      info="Read-only pipeline integrations (Jenkins first). Synapse polls runs and links them to Project analyses."
+      info="CI/CD and inbound SCM integrations. Poll-capable providers link external runs to Project analyses; inbound-only providers receive authenticated events."
       status={unsupported ? 'off' : 'on'}
       manage={unsupported ? undefined : { to: '/settings/integrations/ci', label: 'Manage CI/CD' }}
     >
@@ -401,6 +402,7 @@ function CiCdGroup({ canAdmin }: { canAdmin: boolean }) {
           {items.map((item) => {
             const history = item.operations
             const supportsTest = item.provider?.capabilities.includes('test_connection') ?? false
+            const supportsPoll = item.provider?.capabilities.includes('read_runs') ?? true
             const running = history?.some((operation) => !TERMINAL.has(operation.state)) ?? false
             return (
               <IntegrationCard
@@ -408,7 +410,7 @@ function CiCdGroup({ canAdmin }: { canAdmin: boolean }) {
                 name={item.integration.name}
                 kind={item.provider?.name || item.integration.provider}
                 detail={item.integration.endpoint}
-                health={history ? ciHealth(item.integration, history) : 'unavailable'}
+                health={history ? ciHealth(item.integration, history, Date.now(), supportsPoll) : 'unavailable'}
                 lastSuccess={history ? ciLastSuccess(history) : 'unavailable'}
                 lastError={history ? ciLastError(history) : 'unavailable'}
                 test={

@@ -139,7 +139,7 @@ func (store *IntegrationStore) UpdateIntegration(ctx context.Context, item integ
 	return updated, err
 }
 
-func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id shared.ID, enabled bool, expectedVersion int, audit ports.AuditEntry) (updated integration.Integration, err error) {
+func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id shared.ID, enabled bool, expectedVersion int, requirements ports.IntegrationEnableRequirements, audit ports.AuditEntry) (updated integration.Integration, err error) {
 	err = WithContextTenant(ctx, store.pool, func(tx pgx.Tx) error {
 		if !enabled {
 			current, loadErr := scanIntegration(tx.QueryRow(ctx, integrationSelect+` WHERE id=$1 FOR UPDATE`, id.String()))
@@ -167,10 +167,10 @@ func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id sha
 		}
 		tag, updateErr := tx.Exec(ctx, `UPDATE integrations AS target SET enabled=$2,version=version+1,updated_at=now()
 			WHERE target.id=$1 AND target.version=$3 AND target.archived=FALSE AND (NOT $2 OR (
-				EXISTS(SELECT 1 FROM integration_credentials credential WHERE credential.integration_id=target.id AND credential.credential_id='default')
-				AND EXISTS(SELECT 1 FROM integration_operations operation WHERE operation.integration_id=target.id AND operation.operation_type='test'
-					AND operation.state='succeeded' AND operation.connection_revision=target.connection_revision AND operation.credential_revision=target.credential_revision)
-			))`, id.String(), enabled, expectedVersion)
+				(NOT $4 OR EXISTS(SELECT 1 FROM integration_credentials credential WHERE credential.integration_id=target.id AND credential.credential_id='default'))
+				AND (NOT $5 OR EXISTS(SELECT 1 FROM integration_operations operation WHERE operation.integration_id=target.id AND operation.operation_type='test'
+					AND operation.state='succeeded' AND operation.connection_revision=target.connection_revision AND operation.credential_revision=target.credential_revision))
+			))`, id.String(), enabled, expectedVersion, requirements.RequireCredential, requirements.RequireSuccessfulTest)
 		if updateErr != nil {
 			return fmt.Errorf("set integration enabled: %w", updateErr)
 		}

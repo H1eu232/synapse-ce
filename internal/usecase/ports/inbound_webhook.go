@@ -16,6 +16,7 @@ type InboundWebhookEndpoint struct {
 	TenantID          shared.ID
 	OwnerKind         string
 	OwnerID           string
+	Provider          string
 	CurrentVersion    int
 	CurrentSealed     string
 	PreviousSealed    string
@@ -35,6 +36,15 @@ type InboundWebhookStore interface {
 	AdmitInboundWebhook(context.Context, InboundWebhookIdentity, int, bool) (int, error)
 }
 
+type InboundWebhookEventDeduper interface {
+	// ClaimInboundWebhookEvent atomically records a provider event ID after
+	// authentication. false,nil is an exact replay.
+	ClaimInboundWebhookEvent(context.Context, InboundWebhookIdentity, string, string, time.Time) (bool, error)
+	// ReleaseInboundWebhookEvent removes a claim when provider processing failed
+	// before durable work was accepted, allowing a provider retry to run again.
+	ReleaseInboundWebhookEvent(context.Context, InboundWebhookIdentity, string, string) error
+}
+
 type InboundWebhookIdentity struct {
 	PublicID  string
 	TenantID  shared.ID
@@ -42,8 +52,15 @@ type InboundWebhookIdentity struct {
 	OwnerID   string
 }
 
+type InboundWebhookEvent struct {
+	Provider  string
+	EventType string
+	EventID   string
+	Body      []byte
+}
+
 type InboundWebhookReceiver interface {
-	ReceiveInboundWebhook(context.Context, InboundWebhookIdentity, []byte) error
+	ReceiveInboundWebhook(context.Context, InboundWebhookIdentity, InboundWebhookEvent) error
 }
 
 // InboundWebhookAAD binds each sealed key to its tenant, opaque endpoint,
