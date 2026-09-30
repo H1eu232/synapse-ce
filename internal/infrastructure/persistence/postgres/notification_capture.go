@@ -11,14 +11,14 @@ import (
 )
 
 func (s *NotificationSource) pollCaptured(ctx context.Context, tx pgx.Tx, tenant shared.ID, kind string, now time.Time, limit int) (int, error) {
-	rows, err := tx.Query(ctx, `SELECT source_id,event_type,engagement_id,severity,occurred_at,data FROM notification_source_records WHERE tenant_id=$1 AND source_kind=$2 AND processed_at IS NULL ORDER BY occurred_at,source_id LIMIT $3 FOR UPDATE SKIP LOCKED`, tenant, kind, limit)
+	rows, err := tx.Query(ctx, `SELECT source_id,event_type,engagement_id,severity,occurred_at,data,subject_kind,subject_id,context FROM notification_source_records WHERE tenant_id=$1 AND source_kind=$2 AND processed_at IS NULL ORDER BY occurred_at,source_id LIMIT $3 FOR UPDATE SKIP LOCKED`, tenant, kind, limit)
 	if err != nil {
 		return 0, err
 	}
 	var events []notification.Event
 	for rows.Next() {
 		e := notification.Event{TenantID: tenant, SourceKind: kind, SchemaVersion: 1}
-		if err := rows.Scan(&e.SourceID, &e.Type, &e.EngagementID, &e.Severity, &e.OccurredAt, &e.Data); err != nil {
+		if err := rows.Scan(&e.SourceID, &e.Type, &e.EngagementID, &e.Severity, &e.OccurredAt, &e.Data, &e.SubjectKind, &e.SubjectID, &e.Context); err != nil {
 			rows.Close()
 			return 0, err
 		}

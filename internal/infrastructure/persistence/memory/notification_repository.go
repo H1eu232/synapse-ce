@@ -27,8 +27,8 @@ import (
 //
 // It does not reproduce behaviour that reads stores it does not have, and callers must not rely
 // on it for these:
-//   - DeliveryStillRelevant always reports true: the scan job, SLA and fleet agent re-checks have
-//     no memory counterpart;
+//   - the relevance facts (ScanJobSucceeded, SLAReminderDue, FleetAgentLastSeen) always report
+//     true: the scan job, SLA and fleet agent rows they read have no memory counterpart;
 //   - the personal inbox projection, destination change notices and delivery audit intents,
 //     including the in-app notice of a channel pause.
 //
@@ -38,6 +38,9 @@ type NotificationRepository struct {
 	mu   sync.Mutex
 	now  func() time.Time
 	jobs *JobQueue
+	// projector names the subject and snapshots the template context of each new event, as the
+	// Postgres repository's does.
+	projector ports.NotificationEventProjector
 
 	channels   map[notificationKey]notification.Channel
 	versions   map[channelVersionKey]string
@@ -122,6 +125,13 @@ func NewNotificationRepository(jobs *JobQueue, now func() time.Time) *Notificati
 		channelAttemptAt: map[notificationKey]time.Time{}, tenantAttemptAt: map[shared.ID]time.Time{},
 		healthEvents: map[notificationKey][]notification.ChannelHealthEvent{},
 	}
+}
+
+// SetEventProjector installs the event builders (#1344).
+func (r *NotificationRepository) SetEventProjector(projector ports.NotificationEventProjector) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.projector = projector
 }
 
 // AddEngagement records an engagement of the tenant that rules may be scoped to. It stands in for

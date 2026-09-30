@@ -103,7 +103,7 @@ func TestNotificationPostgresRiskAndSLA(t *testing.T) {
 		}
 		if w.Event.Type == notification.EventSLAApproaching {
 			exec("UPDATE sla_lifecycles SET status='remediated' WHERE tenant_id='risk-tenant'")
-			if relevant, err := repo.DeliveryStillRelevant(ctx, w); err != nil || relevant {
+			if relevant, err := deliveryStillRelevant(repo, ctx, w); err != nil || relevant {
 				t.Fatalf("resolved SLA remains relevant: %v %v", relevant, err)
 			}
 		}
