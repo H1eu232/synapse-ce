@@ -1,4 +1,6 @@
 import { req } from './client'
+// One definition, shared with the template API client (#1373).
+import type { NotificationTemplateFamily } from './notification-templates'
 
 export type NotificationChannelType = 'webhook' | 'slack' | 'email'
 // The server's event catalog is the source of truth for event types, so the console accepts any
@@ -11,6 +13,41 @@ export type NotificationRuleFilter =
   | 'team_ids'
   | 'lead_time_seconds'
 export type NotificationDataClass = 'signal' | 'summary' | 'detail'
+export type NotificationLocale = 'en' | 'vi'
+/** A template a channel can bind: the head fields of the template API (#1370). */
+export interface NotificationTemplateOption {
+  id: string
+  name: string
+  event_type: string
+  family: NotificationTemplateFamily
+  locale: NotificationLocale | '*'
+  status: 'draft' | 'active' | 'archived'
+  active_version: number
+}
+export type NotificationResolutionTier =
+  | 'channel'
+  | 'tenant_event'
+  | 'tenant_wildcard'
+  | 'builtin'
+  | 'fallback'
+/** Which template a channel renders an event type with (#1371). Never carries template source. */
+export interface NotificationTemplateResolution {
+  tier: NotificationResolutionTier
+  event_type: string
+  family?: NotificationTemplateFamily
+  locale: NotificationLocale
+  locale_source: 'channel' | 'tenant' | 'default'
+  matched_locale?: NotificationLocale | '*'
+  template?: NotificationTemplateOption
+  version?: number
+  builtin_ref?: string
+  binding_skipped?:
+    | 'template_not_active'
+    | 'event_not_covered'
+    | 'locale_not_covered'
+    | 'family_mismatch'
+    | 'template_missing'
+}
 export interface NotificationEventVariable {
   name: string
   class: NotificationDataClass
@@ -76,6 +113,12 @@ export interface NotificationChannel {
   updated_at: string
   /** Absent only from a server that predates channel health. */
   health?: NotificationChannelHealth
+  /** The bound template of the channel family (#1371); absent when none is bound. */
+  template_id?: string
+  /** The channel locale; absent when the tenant default applies. */
+  locale?: NotificationLocale
+  /** A webhook channel sends its template body as a custom JSON body (#1376). */
+  custom_body?: boolean
 }
 export interface NotificationChannelInput {
   name: string
@@ -85,6 +128,12 @@ export interface NotificationChannelInput {
   secret?: string
   recipients?: string[]
   revision?: number
+  /** Omitted keeps the binding; an empty string unbinds. */
+  template_id?: string
+  /** Omitted keeps the locale; an empty string uses the tenant default. */
+  locale?: NotificationLocale | ''
+  /** Webhook only; needs a bound template. Omitted keeps the current value. */
+  custom_body?: boolean
 }
 export interface NotificationRule {
   id: string
@@ -211,6 +260,22 @@ export const notificationsApi = {
         `/notifications/channels/${encodeURIComponent(id)}/health-events`,
       )) as { items?: NotificationChannelHealthEvent[] }
     ).items ?? [],
+  // Active templates of one family, for the channel form's template select (#1371).
+  listBindableNotificationTemplates: async (
+    family: NotificationTemplateFamily,
+  ): Promise<NotificationTemplateOption[]> =>
+    (
+      (await req(
+        `/notifications/templates?family=${encodeURIComponent(family)}&status=active`,
+      )) as { items?: NotificationTemplateOption[] }
+    ).items ?? [],
+  previewNotificationTemplateResolution: (
+    channelId: string,
+    eventType: string,
+  ): Promise<NotificationTemplateResolution> =>
+    req(
+      `/notifications/channels/${encodeURIComponent(channelId)}/template-resolution?event_type=${encodeURIComponent(eventType)}`,
+    ),
   listNotificationRules: async (): Promise<NotificationRule[]> =>
     ((await req('/notifications/rules')) as { items?: NotificationRule[] })
       .items ?? [],

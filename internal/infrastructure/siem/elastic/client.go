@@ -66,7 +66,7 @@ func (c *Client) Deliver(ctx context.Context, req siem.Delivery) (siem.DeliveryR
 	if err != nil {
 		return siem.DeliveryResult{}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, err := readLimited(response.Body)
 	if err != nil {
 		return siem.DeliveryResult{}, err

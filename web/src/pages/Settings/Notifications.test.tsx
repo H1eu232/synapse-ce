@@ -169,6 +169,18 @@ describe('notification settings', () => {
     expect(await screen.findByText(/http_503/)).toBeInTheDocument()
     expect(screen.queryByText('Acknowledged')).not.toBeInTheDocument()
   })
+  it('lets an integration_admin inspect dead letters without offering redrive', async () => {
+    vi.mocked(api.me).mockResolvedValue({ role: 'integration_admin' } as never)
+    vi.mocked(api.notificationDeliveryPage).mockResolvedValue({ items: [{
+      id: 'dead-1', channel_id: 'c', channel_type: 'webhook',
+      event_id: 'e', state: 'dead_letter', attempts: 3,
+      redrive_fence: 9, created_at: '2026-09-10T00:00:00Z', updated_at: '',
+      matched_rule_ids: [], last_error: 'http_503',
+    }] })
+    render(<Alerting />)
+    expect(await screen.findByText(/http_503/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Redrive' })).not.toBeInTheDocument()
+  })
   it('confirms a single redrive with a reason and the displayed queue fence', async () => {
     const dead = {
       id: 'dead-1', channel_id: 'c', channel_type: 'webhook' as const,
@@ -300,6 +312,30 @@ describe('notification settings', () => {
     ).toBeInTheDocument()
     expect(api.listNotificationChannels).not.toHaveBeenCalled()
     expect(api.notificationDeliveryPage).not.toHaveBeenCalled()
+  })
+  // #1358: manage_integrations runs channels and rules; adding a channel and changing where one
+  // delivers stay with administrators, so the form never offers or sends a new destination.
+  it('lets an integration_admin rename a channel but not add one or change its destination', async () => {
+    vi.mocked(api.me).mockResolvedValue({ role: 'integration_admin' } as never)
+    vi.mocked(api.updateNotificationChannel).mockResolvedValue(channel)
+    render(<Alerting />)
+    expect(
+      await screen.findByText(/Only tenant administrators can add a channel/),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add channel' })).not.toBeInTheDocument()
+    // The rule form and the channel list load after the notice; wait for them rather than racing.
+    expect(await screen.findByRole('combobox', { name: 'Event' })).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit channel' }))
+    expect(await screen.findByLabelText('Webhook URL')).toBeDisabled()
+    expect(screen.getByLabelText(/HMAC secret/)).toBeDisabled()
+    fireEvent.change(screen.getAllByLabelText('Name')[0], { target: { value: 'Renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save channel' }))
+    await waitFor(() => expect(api.updateNotificationChannel).toHaveBeenCalled())
+    const [, input] = vi.mocked(api.updateNotificationChannel).mock.calls[0]
+    expect(input).toMatchObject({ name: 'Renamed', revision: 3 })
+    expect(input.url).toBeUndefined()
+    expect(input.secret).toBeUndefined()
   })
   it('requires explicit scope before subscribing to ownership changes', async () => {
     render(<Alerting />)

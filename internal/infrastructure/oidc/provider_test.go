@@ -51,6 +51,20 @@ func TestGroupRoleMappingRejectsMissingUnknownAndAmbiguousGroups(t *testing.T) {
 	}
 }
 
+// integration_admin (#1358) is a human role an identity provider group may map to; machine roles
+// are never mappable.
+func TestGroupRoleMappingAcceptsIntegrationAdminButNoMachineRole(t *testing.T) {
+	roles, err := parseGroupRoleMapping([]string{"synapse-integrations=integration_admin"})
+	if err != nil || roles["synapse-integrations"] != user.RoleIntegrationAdmin {
+		t.Fatalf("integration_admin mapping = %v, %v", roles, err)
+	}
+	for _, machine := range []string{"agent", "mcp", "service"} {
+		if _, err := parseGroupRoleMapping([]string{"synapse-bots=" + machine}); err == nil {
+			t.Fatalf("machine role %q was accepted", machine)
+		}
+	}
+}
+
 func TestGroupRoleMappingRejectsMemberAlias(t *testing.T) {
 	if _, err := parseGroupRoleMapping([]string{"synapse-members=member"}); err == nil {
 		t.Fatal("member alias must not be configured for OIDC")

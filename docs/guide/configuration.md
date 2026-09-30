@@ -56,7 +56,7 @@ Some entries carry more than a switch:
 | `SYNAPSE_OIDC_FRONTEND_URL` | (none) | Fixed absolute HTTPS dashboard URL for a successful callback redirect. Query strings, fragments, and credentials are rejected; request parameters never control this destination. |
 | `SYNAPSE_PUBLIC_BASE_URL` | `SYNAPSE_OIDC_FRONTEND_URL` if set; otherwise unset | Trusted HTTPS console URL (optionally including the deployment path prefix) for outgoing deep links. Works without OIDC. HTTP, relative URLs, credentials, query strings, fragments, invalid ports, control and Unicode format characters (including percent-encoded characters in hostnames), and double-encoded path segments are rejected at API and worker startup. Never put tokens or secrets in this value. Set explicitly if no OIDC frontend URL exists. |
 | `SYNAPSE_OIDC_TENANT_ID` | (none) | The one fixed Synapse tenant accepted by this BFF instance. |
-| `SYNAPSE_OIDC_GROUP_ROLE_MAPPING` | (none) | Comma-separated exact `provider-group=role` entries. Roles may only be `admin`, `consultant`, `reviewer`, or `readonly`; unmapped, duplicate, and multi-role group claims are rejected. |
+| `SYNAPSE_OIDC_GROUP_ROLE_MAPPING` | (none) | Comma-separated exact `provider-group=role` entries. Roles may only be `admin`, `consultant`, `reviewer`, `readonly`, or `integration_admin`; unmapped, duplicate, and multi-role group claims are rejected. |
 | `SYNAPSE_OIDC_TRANSACTION_TTL`, `SYNAPSE_OIDC_SESSION_TTL` | `10m`, `8h` | Maximum authorization-transaction and opaque browser-session lifetimes. |
 
 The console link builder routes to engagements, incidents, the Findings tab (`#finding-<id>`) and the Scan Runs tab (`#scan-<id>`). The latter opens scan history and preserves the scan ID in its fragment; the current UI does not yet auto-select a scan from that fragment. If neither public URL nor OIDC frontend is configured, link generation is unavailable until an HTTPS base is supplied.
@@ -535,6 +535,16 @@ when they are used only by a CLI, helper, or optional subsystem.
 | --- | --- | --- |
 | `SYNAPSE_SIEM_ENABLED` | `true` | Set `false` on every API and worker replica to stop incident capture and SIEM sends. Pausing one sink does not stop capture. Events written while capture is off are not in the live partition; a historical backfill can still copy identities that were never captured. |
 | `SYNAPSE_SIEM_PUBLIC_BASE_URL` | empty | Optional absolute `https` console origin, with no path, added to exported SIEM records as a deep link. Empty omits links. It does not fall back to `SYNAPSE_PUBLIC_BASE_URL`, because that console builder can include a deployment prefix and uses different routes. |
+
+Microsoft Sentinel credentials are configured per sink, not through a process
+environment variable. Store the Entra client credential as the sink's sealed
+one-line JSON secret with `tenant_id`, `client_id`, and `client_secret`.
+Use an Azure public-cloud Logs Ingestion endpoint under
+`*.ingest.monitor.azure.com` and a target of
+`dcr-<immutable-id>/Custom-<stream>`. The driver uses the public Azure
+Monitor audience and never serializes that credential back through the SIEM
+API. Private Link DCEs are intentionally unsupported because SIEM egress
+rejects private addresses.
 
 ### Database, project storage, and maintenance
 

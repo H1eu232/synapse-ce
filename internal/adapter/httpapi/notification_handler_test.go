@@ -35,7 +35,7 @@ func (r *redriveHandlerRepo) RedriveDelivery(_ context.Context, _, _ shared.ID, 
 	return r.delivery, r.channel, nil
 }
 
-func TestNotificationRoutesRequireAdministrator(t *testing.T) {
+func TestNotificationRoutesRefuseRolesWithoutManageIntegrations(t *testing.T) {
 	rt := &Router{log: discardLog()}
 	req := httptest.NewRequest("GET", "/api/v1/notifications/channels", nil)
 	response := httptest.NewRecorder()
@@ -51,7 +51,11 @@ func TestNotificationRoutesRequireAdministrator(t *testing.T) {
 		{"GET", "deliveries"}, {"GET", "deliveries/id"}, {"GET", "deliveries/id/attempts"}, {"POST", "deliveries/id/redrive"}, {"GET", "quarantined-sources"},
 	}
 	for _, route := range routes {
-		for _, role := range []string{"member", "readonly", "reviewer", "agent", "mcp", "integration_admin", ""} {
+		roles := []string{"member", "readonly", "reviewer", "agent", "mcp", ""}
+		if route.method == "POST" && (route.path == "channels" || route.path == "deliveries/id/redrive") {
+			roles = append(roles, "integration_admin")
+		}
+		for _, role := range roles {
 			req := httptest.NewRequest(route.method, "/api/v1/notifications/"+route.path, nil)
 			req = req.WithContext(context.WithValue(req.Context(), principalKey, Principal{ID: "caller", Role: role, TenantID: "tenant"}))
 			response := httptest.NewRecorder()

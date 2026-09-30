@@ -34,7 +34,7 @@ type fakeRepo struct {
 func (f *fakeRepo) LoadWork(context.Context, shared.ID, shared.ID) (ports.NotificationWork, error) {
 	return f.work, nil
 }
-func (f *fakeRepo) DeliveryStillRelevant(context.Context, ports.NotificationWork) (bool, error) {
+func (f *fakeRepo) ScanJobSucceeded(context.Context, shared.ID, string) (bool, error) {
 	return f.relevant, nil
 }
 func (f *fakeRepo) BeginAttempt(_ context.Context, _, _ shared.ID, _ string, _ int64, id shared.ID, at time.Time) (domain.Attempt, error) {
@@ -247,6 +247,10 @@ func (f *fakeRepo) ListChannels(_ context.Context, tenant shared.ID) ([]domain.C
 	return []domain.Channel{{TenantID: tenant, ID: "channel", Name: "Channel"}}, nil
 }
 
+func (f *fakeRepo) GetChannel(_ context.Context, tenant, id shared.ID) (domain.Channel, error) {
+	return domain.Channel{TenantID: tenant, ID: id, Name: "Channel", Type: domain.ChannelWebhook, Destination: "https://hooks.example.com/…"}, nil
+}
+
 func (f *fakeRepo) PublishToChannel(_ context.Context, event domain.Event, channel shared.ID) (shared.ID, error) {
 	f.publishedEvent = event
 	f.publishedChannel = channel
@@ -305,7 +309,9 @@ func TestHandleJobPersistsRetryWithoutSleeping(t *testing.T) {
 }
 
 func TestHandleJobCancelsRecoveredSource(t *testing.T) {
-	repo := &fakeRepo{relevant: false, work: ports.NotificationWork{Delivery: domain.Delivery{ID: "delivery", State: domain.DeliveryPending}, Channel: domain.Channel{ID: "channel", Type: domain.ChannelEmail, Enabled: true}}}
+	// A scan.completed delivery whose job no longer reads as succeeded, for example a rejected CI import.
+	scan := domain.Event{TenantID: "tenant", ID: "event", Type: domain.EventScanCompleted, SourceKind: "scan_job", SourceID: "scan-1", Data: json.RawMessage(`{}`)}
+	repo := &fakeRepo{relevant: false, work: ports.NotificationWork{Delivery: domain.Delivery{ID: "delivery", State: domain.DeliveryPending}, Event: scan, Channel: domain.Channel{ID: "channel", Type: domain.ChannelEmail, Enabled: true}}}
 	svc, _ := NewService(repo, fakeProtector{}, fakeSender{}, fakeAudit{}, fakeClock{time.Now()}, &fakeIDs{})
 	payload, _ := json.Marshal(map[string]string{"delivery_id": "delivery"})
 	if err := svc.HandleJob(context.Background(), ports.QueuedJob{ID: "job", TenantID: "tenant", Payload: payload}); err != nil {

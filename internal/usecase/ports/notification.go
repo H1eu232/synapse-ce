@@ -41,6 +41,11 @@ type NotificationWork struct {
 	Event    notification.Event
 	Channel  notification.Channel
 	Sealed   string
+	// CustomWebhookBody is a rendered custom JSON body for a webhook channel that opted into one
+	// (#1376). The send-time renderer (#1365) sets it with notification.RenderCustomWebhookBody;
+	// nothing sets it yet. When it is not empty the webhook driver sends exactly these bytes instead
+	// of the event envelope, signs them and sets X-Synapse-Body: custom.
+	CustomWebhookBody []byte
 }
 
 type NotificationSendResult struct {
@@ -96,7 +101,7 @@ type NotificationRepository interface {
 	ListSourceFailures(context.Context, NotificationSourceFailureFilter) (notification.SourceFailurePage, error)
 	ListAttempts(context.Context, shared.ID, shared.ID) ([]notification.Attempt, error)
 	LoadWork(context.Context, shared.ID, shared.ID) (NotificationWork, error)
-	DeliveryStillRelevant(context.Context, NotificationWork) (bool, error)
+	NotificationRelevance
 	BeginAttempt(context.Context, shared.ID, shared.ID, string, int64, shared.ID, time.Time) (notification.Attempt, error)
 	FinishAttempt(context.Context, shared.ID, shared.ID, string, int64, shared.ID, time.Time, string, int, string, *time.Time) error
 	CancelDelivery(context.Context, shared.ID, shared.ID, string, int64, string) error

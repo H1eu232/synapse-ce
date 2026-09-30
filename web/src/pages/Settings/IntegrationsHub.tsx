@@ -15,6 +15,7 @@ import { Button, EmptyState, ErrorState, InfoNote, Pill, Spinner, cn } from '../
 import { api, ApiError, type Connector, type NotificationChannel, type NotificationDelivery } from '../../lib/api'
 import { capabilityHint, disabledCapability, loadCapabilities, type CapabilityIndex } from '../../lib/capabilities'
 import type { Capability, Integration, IntegrationOperation, IntegrationProviderDescriptor } from '../../lib/types'
+import { canManageIntegrations } from '../../lib/roles'
 
 /**
  * Settings → Integrations: one place for every integration, grouped by capability (EPIC #1327 WS9,
@@ -44,9 +45,6 @@ type Fact = CardFact | 'unavailable'
 
 const UNAVAILABLE = 'Not reported by this integration'
 
-function isAdmin(role: string | undefined) {
-  return role === 'admin' || role === 'owner'
-}
 
 export function IntegrationsHub() {
   const [capabilities, setCapabilities] = useState<CapabilityIndex | undefined>(undefined)
@@ -75,7 +73,9 @@ export function IntegrationsHub() {
   if (meError) return <ErrorState message={`Could not load your permissions: ${meError}`} />
   if (capabilities === undefined || role === undefined) return <Spinner label="Loading integrations…" />
 
-  const canAdmin = isAdmin(role)
+  // Everything the hub reads or tests needs manage_integrations (#1358), which admin and
+  // integration_admin hold; adding or re-pointing a destination happens on the detail pages.
+  const canAdmin = canManageIntegrations(role)
 
   return (
     <div className="space-y-6">
@@ -90,7 +90,7 @@ export function IntegrationsHub() {
       </div>
       {!canAdmin && (
         <p className="rounded-lg border border-secondary bg-secondary/40 px-4 py-3 text-sm text-tertiary">
-          You can view CI/CD integrations. Source control, messaging and test actions need a tenant administrator.
+          You can view CI/CD integrations. Source control, messaging, SIEM and test actions need a tenant administrator or an integration administrator.
         </p>
       )}
       <CiCdGroup key={`ci-${generation}`} canAdmin={canAdmin} />
@@ -132,6 +132,7 @@ function Group({
   info,
   status,
   manage,
+  links = [],
   children,
 }: {
   title: string
@@ -139,6 +140,8 @@ function Group({
   info: string
   status: GroupStatus
   manage?: { to: string; label: string }
+  /** Further configuration pages of the group, shown beside `manage`. */
+  links?: Array<{ to: string; label: string }>
   children: ReactNode
 }) {
   const headingId = `integration-group-${title.toLowerCase().replace(/[^a-z]+/g, '-')}`
@@ -153,10 +156,14 @@ function Group({
           <InfoNote label={`About ${title}`}>{info}</InfoNote>
           <Pill className={GROUP_STATUS[status].className}>{GROUP_STATUS[status].label}</Pill>
         </div>
-        {manage && (
-          <Link to={manage.to} className="text-sm font-semibold text-brand-secondary hover:underline">
-            {manage.label}
-          </Link>
+        {(manage || links.length > 0) && (
+          <div className="flex flex-wrap items-center gap-4">
+            {[...(manage ? [manage] : []), ...links].map((link) => (
+              <Link key={link.to} to={link.to} className="text-sm font-semibold text-brand-secondary hover:underline">
+                {link.label}
+              </Link>
+            ))}
+          </div>
         )}
       </header>
       {children}
@@ -259,7 +266,7 @@ function TestButton({
   onTest: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
-  const reason = !canAdmin ? 'Only tenant administrators can run a test.' : disabledReason
+  const reason = !canAdmin ? 'Only tenant administrators and integration administrators can run a test.' : disabledReason
   return (
     <div className="space-y-1">
       <Button
@@ -455,7 +462,7 @@ function SourceControlGroup({ canAdmin }: { canAdmin: boolean }) {
       manage={canAdmin && connectors !== null ? { to: '/settings/connectors', label: 'Manage connectors' } : undefined}
     >
       {!canAdmin ? (
-        <EmptyState icon={Lock01} title="Administrator access required" hint="Only tenant administrators can see source-control connectors." />
+        <EmptyState icon={Lock01} title="Administrator access required" hint="Only tenant administrators and integration administrators can see source-control connectors." />
       ) : connectors === undefined ? (
         <Spinner label="Loading connectors…" />
       ) : connectors === null ? (
@@ -579,12 +586,13 @@ function MessagingGroup({ canAdmin, capabilities }: { canAdmin: boolean; capabil
       info={`Notification channels that deliver alerts to people.${channelTypes.length > 0 ? ` This build delivers to: ${channelTypes.join(', ')}.` : ''}`}
       status={status}
       manage={status === 'on' ? { to: '/settings/alerting', label: 'Manage channels' } : undefined}
+      links={status === 'on' ? [{ to: '/settings/templates', label: 'Message templates' }] : undefined}
     >
       {notice && <Notice tone="success">{notice}</Notice>}
       {off ? (
         <EmptyState icon={BellRinging01} title="Notifications are off" hint={capabilityHint(off)} />
       ) : !canAdmin ? (
-        <EmptyState icon={Lock01} title="Administrator access required" hint="Only tenant administrators can see notification channels and their deliveries." />
+        <EmptyState icon={Lock01} title="Administrator access required" hint="Only tenant administrators and integration administrators can see notification channels and their deliveries." />
       ) : items === undefined ? (
         <Spinner label="Loading notification channels…" />
       ) : (
@@ -642,12 +650,12 @@ function SIEMGroup({ canAdmin }: { canAdmin: boolean }) {
     <Group
       title="SIEM"
       icon={ShieldTick}
-      info="Export audit and incident events to Splunk HEC or Elasticsearch. Stream status and connection tests are on the SIEM settings page."
+      info="Export audit and incident events to Splunk HEC, Elasticsearch, or Microsoft Sentinel. Stream status and connection tests are on the SIEM settings page."
       status={!canAdmin ? 'restricted' : error || count === undefined ? 'unknown' : count === null ? 'off' : 'available'}
       manage={canAdmin && count !== null && count !== undefined ? { to: '/settings/siem', label: 'Manage SIEM streams' } : undefined}
     >
       {!canAdmin ? (
-        <EmptyState icon={Lock01} title="Administrator access required" hint="Only tenant administrators can see SIEM destinations and their status." />
+        <EmptyState icon={Lock01} title="Administrator access required" hint="Only tenant administrators and integration administrators can see SIEM destinations and their status." />
       ) : error ? (
         <ErrorState message={error} />
       ) : count === undefined ? (

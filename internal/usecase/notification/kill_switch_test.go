@@ -87,7 +87,7 @@ func TestUpdateChannelOfADisabledType(t *testing.T) {
 		refused bool
 	}{
 		{"switch on", false, ChannelInput{Name: "ops", Enabled: true, Revision: 1}, true},
-		{"new destination", false, ChannelInput{Name: "ops", URL: "https://hooks.slack.com/services/y", Revision: 1}, true},
+		{"new destination", false, ChannelInput{Name: "ops", URL: "https://hooks.slack.com/services/y", Revision: 1, AllowDestinationChange: true}, true},
 		{"rename while on", true, ChannelInput{Name: "renamed", Enabled: true, Revision: 1}, false},
 		{"switch off", true, ChannelInput{Name: "ops", Enabled: false, Revision: 1}, false},
 	} {

@@ -39,14 +39,15 @@ const (
 type Provider string
 
 const (
-	ProviderSplunk        Provider = "splunk_hec"
-	ProviderElasticsearch Provider = "elasticsearch"
-	ProviderSyslogTLS     Provider = "syslog_tls"
+	ProviderSplunk            Provider = "splunk_hec"
+	ProviderElasticsearch     Provider = "elasticsearch"
+	ProviderSyslogTLS         Provider = "syslog_tls"
+	ProviderMicrosoftSentinel Provider = "microsoft_sentinel"
 )
 
 // Valid reports whether p is a supported provider.
 func (p Provider) Valid() bool {
-	return p == ProviderSplunk || p == ProviderElasticsearch || p == ProviderSyslogTLS
+	return p == ProviderSplunk || p == ProviderElasticsearch || p == ProviderSyslogTLS || p == ProviderMicrosoftSentinel
 }
 
 // AckMode is the delivery guarantee the operator selected. It is never
@@ -54,10 +55,11 @@ func (p Provider) Valid() bool {
 type AckMode string
 
 const (
-	AckHECAcceptance  AckMode = "hec_acceptance"
-	AckIndexer        AckMode = "indexer_ack"
-	AckBulkItem       AckMode = "bulk_item"
-	AckTransportWrite AckMode = "transport_write"
+	AckHECAcceptance       AckMode = "hec_acceptance"
+	AckIndexer             AckMode = "indexer_ack"
+	AckBulkItem            AckMode = "bulk_item"
+	AckTransportWrite      AckMode = "transport_write"
+	AckIngestionAcceptance AckMode = "ingestion_acceptance"
 )
 
 // ValidFor reports whether the acknowledgement mode matches the provider and
@@ -73,6 +75,8 @@ func (m AckMode) ValidFor(p Provider, indexerAckSupported bool) bool {
 		return m == AckBulkItem
 	case ProviderSyslogTLS:
 		return m == AckTransportWrite
+	case ProviderMicrosoftSentinel:
+		return m == AckIngestionAcceptance
 	default:
 		return false
 	}

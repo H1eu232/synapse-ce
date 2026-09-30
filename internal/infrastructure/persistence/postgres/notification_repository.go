@@ -21,10 +21,19 @@ import (
 type NotificationRepository struct {
 	pool               *pgxpool.Pool
 	destinationNotices bool
+	// projector names the subject and snapshots the template context of each new event (#1344).
+	// Without one, events are stored with an empty subject and context.
+	projector ports.NotificationEventProjector
 }
 
 func NewNotificationRepository(pool *pgxpool.Pool) *NotificationRepository {
 	return &NotificationRepository{pool: pool}
+}
+
+// SetEventProjector installs the event builders. The composition root wires them in the API and the
+// worker, which both publish.
+func (r *NotificationRepository) SetEventProjector(projector ports.NotificationEventProjector) {
+	r.projector = projector
 }
 
 var _ ports.NotificationRepository = (*NotificationRepository)(nil)
@@ -42,7 +51,7 @@ func (r *NotificationRepository) CreateChannel(ctx context.Context, c notificati
 		}
 		recipients, _ := json.Marshal(c.Recipients)
 		c.Health = notification.ChannelHealth{State: notification.ChannelActive}
-		if _, err := tx.Exec(ctx, `INSERT INTO notification_channels(tenant_id,id,name,channel_type,enabled,destination,recipients,revision,secret_version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, c.TenantID, c.ID, c.Name, c.Type, c.Enabled, c.Destination, recipients, c.Revision, c.SecretVersion, c.CreatedAt, c.UpdatedAt); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO notification_channels(tenant_id,id,name,channel_type,enabled,destination,recipients,revision,secret_version,created_at,updated_at,template_id,locale,custom_body) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),$14)`, c.TenantID, c.ID, c.Name, c.Type, c.Enabled, c.Destination, recipients, c.Revision, c.SecretVersion, c.CreatedAt, c.UpdatedAt, c.TemplateID, c.Locale, c.CustomBody); err != nil {
 			return fmt.Errorf("insert notification channel: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO notification_channel_versions(tenant_id,channel_id,version,sealed_config,created_at) VALUES($1,$2,$3,$4,$5)`, c.TenantID, c.ID, c.SecretVersion, sealed, c.CreatedAt); err != nil {
@@ -81,9 +90,9 @@ func (r *NotificationRepository) UpdateChannel(ctx context.Context, c notificati
 		// Health is not configuration: an edit keeps a pause (only resume clears it). A new
 		// destination or secret does reset the failure count of an active channel, because the
 		// failures it counted were against the configuration being replaced.
-		err := scanChannelHealth(tx.QueryRow(ctx, `UPDATE notification_channels SET name=$3,channel_type=$4,enabled=$5,destination=$6,recipients=$7,revision=$8,secret_version=$9,updated_at=$10,
+		err := scanChannelHealth(tx.QueryRow(ctx, `UPDATE notification_channels SET name=$3,channel_type=$4,enabled=$5,destination=$6,recipients=$7,revision=$8,secret_version=$9,updated_at=$10,template_id=NULLIF($12,''),locale=NULLIF($13,''),custom_body=$14,
 			consecutive_permanent_failures=CASE WHEN $11 AND paused_at IS NULL THEN 0 ELSE consecutive_permanent_failures END
-			WHERE tenant_id=$1 AND id=$2 RETURNING `+channelHealthColumns, c.TenantID, c.ID, c.Name, c.Type, c.Enabled, c.Destination, recipients, c.Revision, c.SecretVersion, c.UpdatedAt, replace), &c.Health)
+			WHERE tenant_id=$1 AND id=$2 RETURNING `+channelHealthColumns, c.TenantID, c.ID, c.Name, c.Type, c.Enabled, c.Destination, recipients, c.Revision, c.SecretVersion, c.UpdatedAt, replace, c.TemplateID, c.Locale, c.CustomBody), &c.Health)
 		// channel_disabled takes priority: a delivery already cancelled for it needs no second,
 		// redundant UPDATE for a destination or secret change made in the same call.
 		//
@@ -159,7 +168,10 @@ func (r *NotificationRepository) ListChannels(ctx context.Context, tenant shared
 	return out, err
 }
 
-const channelSelect = `SELECT tenant_id,id,name,channel_type,enabled,destination,recipients,revision,secret_version,created_at,updated_at,deleted_at,` + channelHealthColumns + ` FROM notification_channels`
+const channelSelect = `SELECT tenant_id,id,name,channel_type,enabled,destination,recipients,revision,secret_version,created_at,updated_at,deleted_at,` + channelHealthColumns + `,` + channelBindingColumns + ` FROM notification_channels`
+
+// channelBindingColumns is the template binding projection (migrations 0200 and 0201).
+const channelBindingColumns = `COALESCE(template_id,''),COALESCE(locale,''),custom_body`
 
 // channelHealthColumns is the health projection scanned by scanChannelHealth (migration 0196).
 const channelHealthColumns = `consecutive_permanent_failures,last_failure_code,last_failure_at,paused_at,COALESCE(paused_reason,'')`
@@ -167,7 +179,7 @@ const channelHealthColumns = `consecutive_permanent_failures,last_failure_code,l
 func scanChannel(row scanner, c *notification.Channel) error {
 	var recipients []byte
 	var typ string
-	if err := row.Scan(&c.TenantID, &c.ID, &c.Name, &typ, &c.Enabled, &c.Destination, &recipients, &c.Revision, &c.SecretVersion, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt, &c.Health.ConsecutiveFailures, &c.Health.LastFailureCode, &c.Health.LastFailureAt, &c.Health.PausedAt, &c.Health.PausedReason); err != nil {
+	if err := row.Scan(&c.TenantID, &c.ID, &c.Name, &typ, &c.Enabled, &c.Destination, &recipients, &c.Revision, &c.SecretVersion, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt, &c.Health.ConsecutiveFailures, &c.Health.LastFailureCode, &c.Health.LastFailureAt, &c.Health.PausedAt, &c.Health.PausedReason, &c.TemplateID, &c.Locale, &c.CustomBody); err != nil {
 		return err
 	}
 	c.Type = notification.ChannelType(typ)
@@ -381,8 +393,18 @@ func (r *NotificationRepository) publishTx(ctx context.Context, tx pgx.Tx, e not
 	if err := e.Validate(); err != nil {
 		return nil, err
 	}
+	if r.projector != nil {
+		projected, err := r.projector.Project(ctx, e)
+		if err != nil {
+			return nil, fmt.Errorf("project notification event: %w", err)
+		}
+		if err := projected.Validate(); err != nil {
+			return nil, err
+		}
+		e = projected
+	}
 	data := []byte(e.Data)
-	tag, err := tx.Exec(ctx, `INSERT INTO notification_events(tenant_id,id,event_type,source_kind,source_id,engagement_id,severity,schema_version,occurred_at,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,source_kind,source_id) DO NOTHING`, e.TenantID, e.ID, e.Type, e.SourceKind, e.SourceID, e.EngagementID, e.Severity, e.SchemaVersion, e.OccurredAt, data)
+	tag, err := tx.Exec(ctx, `INSERT INTO notification_events(tenant_id,id,event_type,source_kind,source_id,engagement_id,severity,schema_version,occurred_at,data,subject_kind,subject_id,context) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(tenant_id,source_kind,source_id) DO NOTHING`, e.TenantID, e.ID, e.Type, e.SourceKind, e.SourceID, e.EngagementID, e.Severity, e.SchemaVersion, e.OccurredAt, data, e.SubjectKind, e.SubjectID, contextJSON(e.Context))
 	if err != nil {
 		return nil, err
 	}
@@ -671,10 +693,10 @@ func (r *NotificationRepository) ListAttempts(ctx context.Context, tenant, did s
 
 func (r *NotificationRepository) LoadWork(ctx context.Context, tenant, did shared.ID) (ports.NotificationWork, error) {
 	var w ports.NotificationWork
-	var rules, eventData, recipients []byte
+	var rules, eventData, eventContext, recipients []byte
 	var ctyp, state, etype string
 	err := WithTenant(ctx, r.pool, tenant.String(), func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT d.tenant_id,d.id,d.event_id,d.channel_id,d.channel_type,d.recipient,d.matched_rules,d.state,d.attempts,d.last_error,d.next_attempt_at,d.delivered_at,d.created_at,d.updated_at,e.event_type,e.source_kind,e.source_id,e.engagement_id,e.severity,e.schema_version,e.occurred_at,e.data,c.name,c.enabled,c.destination,c.recipients,c.revision,d.channel_version,c.created_at,c.updated_at,v.sealed_config,c.consecutive_permanent_failures,c.last_failure_code,c.last_failure_at,c.paused_at,COALESCE(c.paused_reason,'') FROM notification_deliveries d JOIN notification_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN notification_channels c ON c.tenant_id=d.tenant_id AND c.id=d.channel_id JOIN notification_channel_versions v ON v.tenant_id=d.tenant_id AND v.channel_id=d.channel_id AND v.version=d.channel_version WHERE d.tenant_id=$1 AND d.id=$2`, tenant, did).Scan(&w.Delivery.TenantID, &w.Delivery.ID, &w.Delivery.EventID, &w.Delivery.ChannelID, &ctyp, &w.Delivery.Recipient, &rules, &state, &w.Delivery.Attempts, &w.Delivery.LastError, &w.Delivery.NextAttemptAt, &w.Delivery.DeliveredAt, &w.Delivery.CreatedAt, &w.Delivery.UpdatedAt, &etype, &w.Event.SourceKind, &w.Event.SourceID, &w.Event.EngagementID, &w.Event.Severity, &w.Event.SchemaVersion, &w.Event.OccurredAt, &eventData, &w.Channel.Name, &w.Channel.Enabled, &w.Channel.Destination, &recipients, &w.Channel.Revision, &w.Channel.SecretVersion, &w.Channel.CreatedAt, &w.Channel.UpdatedAt, &w.Sealed, &w.Channel.Health.ConsecutiveFailures, &w.Channel.Health.LastFailureCode, &w.Channel.Health.LastFailureAt, &w.Channel.Health.PausedAt, &w.Channel.Health.PausedReason)
+		return tx.QueryRow(ctx, `SELECT d.tenant_id,d.id,d.event_id,d.channel_id,d.channel_type,d.recipient,d.matched_rules,d.state,d.attempts,d.last_error,d.next_attempt_at,d.delivered_at,d.created_at,d.updated_at,e.event_type,e.source_kind,e.source_id,e.engagement_id,e.severity,e.schema_version,e.occurred_at,e.data,e.subject_kind,e.subject_id,e.context,c.name,c.enabled,c.destination,c.recipients,c.revision,d.channel_version,c.created_at,c.updated_at,v.sealed_config,c.consecutive_permanent_failures,c.last_failure_code,c.last_failure_at,c.paused_at,COALESCE(c.paused_reason,''),COALESCE(c.template_id,''),COALESCE(c.locale,''),c.custom_body FROM notification_deliveries d JOIN notification_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN notification_channels c ON c.tenant_id=d.tenant_id AND c.id=d.channel_id JOIN notification_channel_versions v ON v.tenant_id=d.tenant_id AND v.channel_id=d.channel_id AND v.version=d.channel_version WHERE d.tenant_id=$1 AND d.id=$2`, tenant, did).Scan(&w.Delivery.TenantID, &w.Delivery.ID, &w.Delivery.EventID, &w.Delivery.ChannelID, &ctyp, &w.Delivery.Recipient, &rules, &state, &w.Delivery.Attempts, &w.Delivery.LastError, &w.Delivery.NextAttemptAt, &w.Delivery.DeliveredAt, &w.Delivery.CreatedAt, &w.Delivery.UpdatedAt, &etype, &w.Event.SourceKind, &w.Event.SourceID, &w.Event.EngagementID, &w.Event.Severity, &w.Event.SchemaVersion, &w.Event.OccurredAt, &eventData, &w.Event.SubjectKind, &w.Event.SubjectID, &eventContext, &w.Channel.Name, &w.Channel.Enabled, &w.Channel.Destination, &recipients, &w.Channel.Revision, &w.Channel.SecretVersion, &w.Channel.CreatedAt, &w.Channel.UpdatedAt, &w.Sealed, &w.Channel.Health.ConsecutiveFailures, &w.Channel.Health.LastFailureCode, &w.Channel.Health.LastFailureAt, &w.Channel.Health.PausedAt, &w.Channel.Health.PausedReason, &w.Channel.TemplateID, &w.Channel.Locale, &w.Channel.CustomBody)
 	})
 	w.Channel.Health.State = healthState(w.Channel.Health.PausedAt)
 	w.Delivery.ChannelType = notification.ChannelType(ctyp)
@@ -683,6 +705,7 @@ func (r *NotificationRepository) LoadWork(ctx context.Context, tenant, did share
 	w.Event.ID = w.Delivery.EventID
 	w.Event.Type = notification.EventType(etype)
 	w.Event.Data = eventData
+	w.Event.Context = eventContext
 	w.Channel.TenantID = tenant
 	w.Channel.ID = w.Delivery.ChannelID
 	w.Channel.Type = w.Delivery.ChannelType
@@ -692,57 +715,6 @@ func (r *NotificationRepository) LoadWork(ctx context.Context, tenant, did share
 		err = fmt.Errorf("notification delivery %s: %w", did, shared.ErrNotFound)
 	}
 	return w, err
-}
-
-func (r *NotificationRepository) DeliveryStillRelevant(ctx context.Context, work ports.NotificationWork) (bool, error) {
-	switch work.Event.Type {
-	case notification.EventScanCompleted:
-		// An event can remain queued after a job changes status. Check the
-		// authoritative job before sending, not just the captured event.
-		if work.Event.SourceKind != "scan_job" {
-			return true, nil
-		}
-		var relevant bool
-		err := WithTenant(ctx, r.pool, work.Event.TenantID.String(), func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `SELECT EXISTS(
-				SELECT 1 FROM scan_jobs j
-				JOIN engagements e ON e.id=j.engagement_id
-				WHERE e.tenant_id=$1 AND j.id=$2 AND j.status='succeeded'
-					AND j.finished_at IS NOT NULL
-			)`, work.Event.TenantID, work.Event.SourceID).Scan(&relevant)
-		})
-		return relevant, err
-	case notification.EventSLAApproaching:
-		var data struct {
-			AssessmentID string    `json:"assessment_id"`
-			EngagementID string    `json:"engagement_id"`
-			FindingID    string    `json:"finding_id"`
-			Deadline     time.Time `json:"deadline"`
-		}
-		if err := json.Unmarshal(work.Event.Data, &data); err != nil {
-			return false, fmt.Errorf("decode SLA notification event: %w", err)
-		}
-		var relevant bool
-		err := WithTenant(ctx, r.pool, work.Event.TenantID.String(), func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sla_current_assessments ca JOIN sla_assessments a ON a.tenant_id=ca.tenant_id AND a.id=ca.assessment_id JOIN sla_lifecycles l ON l.tenant_id=ca.tenant_id AND l.engagement_id=ca.engagement_id AND l.finding_id=ca.finding_id WHERE ca.tenant_id=$1 AND ca.engagement_id=$2 AND ca.finding_id=$3 AND ca.assessment_id=$4 AND a.remediate_by=$5 AND a.remediate_by>now() AND a.tier<>'exception' AND l.status IN ('open','mitigating'))`, work.Event.TenantID, data.EngagementID, data.FindingID, data.AssessmentID, data.Deadline).Scan(&relevant)
-		})
-		return relevant, err
-	case notification.EventFleetAgentOffline:
-		var data struct {
-			AgentID  string    `json:"agent_id"`
-			LastSeen time.Time `json:"last_seen_at"`
-		}
-		if err := json.Unmarshal(work.Event.Data, &data); err != nil {
-			return false, fmt.Errorf("decode fleet notification event: %w", err)
-		}
-		var relevant bool
-		err := WithTenant(ctx, r.pool, work.Event.TenantID.String(), func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM fleet_agents WHERE tenant_id=$1 AND id=$2 AND state IN ('active','stale') AND last_seen_at=$3)`, work.Event.TenantID, data.AgentID, data.LastSeen).Scan(&relevant)
-		})
-		return relevant, err
-	default:
-		return true, nil
-	}
 }
 
 func (r *NotificationRepository) BeginAttempt(ctx context.Context, tenant, did shared.ID, jobID string, fence int64, aid shared.ID, at time.Time) (notification.Attempt, error) {
@@ -1006,4 +978,13 @@ func sanitizeError(v string) string {
 		v = v[:160]
 	}
 	return v
+}
+
+// contextJSON is the value stored in the context column: the snapshot, or {} for an event
+// published without one.
+func contextJSON(raw json.RawMessage) []byte {
+	if len(raw) == 0 {
+		return []byte(`{}`)
+	}
+	return raw
 }

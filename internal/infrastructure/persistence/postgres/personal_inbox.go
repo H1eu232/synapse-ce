@@ -24,7 +24,7 @@ const (
 	personalMailKind = "personal.email"
 )
 
-var humanNotificationRoles = []string{"admin", "consultant", "reviewer", "member", "readonly"}
+var humanNotificationRoles = []string{"admin", "consultant", "reviewer", "member", "readonly", "integration_admin"}
 
 var _ ports.RecipientResolver = (*NotificationRepository)(nil)
 

@@ -198,7 +198,7 @@ func TestNotificationPostgresDurability(t *testing.T) {
 	// Rotating the channel after did is delivered must not retarget its pinned configuration: a
 	// historical delivery keeps the channel_version it was sent under. #1352 covers the opposite
 	// case, a delivery still pending or retrying when the channel rotates.
-	channel, err = svc.UpdateChannel(ctx, "admin", channel.ID, notificationuc.ChannelInput{Name: channel.Name, Type: channel.Type, Enabled: true, URL: "https://example.net/replacement", Secret: "replacement-secret", Revision: channel.Revision})
+	channel, err = svc.UpdateChannel(ctx, "admin", channel.ID, notificationuc.ChannelInput{Name: channel.Name, Type: channel.Type, Enabled: true, URL: "https://example.net/replacement", Secret: "replacement-secret", Revision: channel.Revision, AllowDestinationChange: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +569,7 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 		assertPublishedEventSchema(t, w.Event)
 		if w.Event.Type == notification.EventFleetAgentOffline {
 			exec("UPDATE fleet_agents SET last_seen_at=$1 WHERE id='agent'", now.Add(3*time.Minute))
-			if relevant, e := repo.DeliveryStillRelevant(ctx, w); e != nil || relevant {
+			if relevant, e := deliveryStillRelevant(repo, ctx, w); e != nil || relevant {
 				t.Fatalf("recovery not rechecked: %v %v", relevant, e)
 			}
 		}

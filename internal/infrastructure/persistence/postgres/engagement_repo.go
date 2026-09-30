@@ -365,7 +365,7 @@ func (r *EngagementRepository) ListTenantIDs(ctx context.Context) ([]shared.ID, 
 	// which RLS denies, and 0129 already backfilled the rows that used to carry it to 'default'. Left
 	// in the result it made every periodic reconciler log an error once a pass, forever, on a healthy
 	// install. Filter it here so no caller has to know.
-	rows, err := r.pool.Query(ctx, `SELECT id FROM tenants WHERE id <> '' ORDER BY id`)
+	rows, err := r.pool.Query(ctx, `SELECT id FROM tenants WHERE id <> '' ORDER BY id COLLATE "C"`)
 	if err != nil {
 		return nil, fmt.Errorf("list vulnerability reconciliation tenants: %w", err)
 	}

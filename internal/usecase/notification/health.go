@@ -79,12 +79,11 @@ func (s *Service) resumeChannel(ctx context.Context, actor string, id shared.ID,
 	if err != nil {
 		return domain.Channel{}, err
 	}
-	if err := s.record(ctx, actor, "notification.channel.resumed", id.String(), map[string]string{
-		"type":         string(resumed.Type),
+	if err := s.record(ctx, actor, "notification.channel.resumed", id.String(), channelAuditMetadata(resumed, map[string]string{
 		"reason":       previous.Health.PausedReason,
 		"failure_code": previous.Health.LastFailureCode,
 		"failures":     strconv.Itoa(previous.Health.ConsecutiveFailures),
-	}); err != nil {
+	})); err != nil {
 		return domain.Channel{}, err
 	}
 	return resumed, nil

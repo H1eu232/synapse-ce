@@ -8,6 +8,7 @@ import { Integrations } from './Integrations'
 
 vi.mock('../../lib/api', () => ({
   api: {
+    me: vi.fn(),
     listIntegrationProviders: vi.fn(), listIntegrations: vi.fn(), listProjects: vi.fn(), getIntegration: vi.fn(),
     createIntegration: vi.fn(), updateIntegration: vi.fn(), setIntegrationEnabled: vi.fn(), archiveIntegration: vi.fn(),
     setIntegrationCredential: vi.fn(), deleteIntegrationCredential: vi.fn(), startIntegrationOperation: vi.fn(),
@@ -64,11 +65,28 @@ const partialPoll: IntegrationOperation = {
 describe('Integrations settings', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    vi.mocked(api.me).mockResolvedValue({ id: 'u-admin', name: 'Admin', role: 'admin' } as never)
     vi.mocked(api.listIntegrationProviders).mockResolvedValue([provider])
     vi.mocked(api.listProjects).mockResolvedValue([])
     vi.mocked(api.listIntegrationOperations).mockResolvedValue([])
     vi.mocked(api.listIntegrationBindings).mockResolvedValue([])
     vi.mocked(api.listIntegrationExternalRuns).mockResolvedValue([])
+  })
+
+  // #1358: an integration_admin operates an integration but cannot create one, edit its endpoint or
+  // replace its credential; the server refuses those with 403 anyway.
+  it('offers an integration_admin the operations but not the destination changes', async () => {
+    vi.mocked(api.me).mockResolvedValue({ id: 'u-int', name: 'Integrator', role: 'integration_admin' } as never)
+    vi.mocked(api.listIntegrations).mockResolvedValue([integration])
+    vi.mocked(api.getIntegration).mockResolvedValue(integration)
+    vi.mocked(api.listIntegrationOperations).mockResolvedValue([successfulTest])
+    render(<MemoryRouter><Integrations /></MemoryRouter>)
+    expect(await screen.findByRole('button', { name: 'Test connection' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Enable' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add integration/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit configuration' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /credentials/ })).not.toBeInTheDocument()
   })
 
   it('creates an integration with descriptor-driven write-only credentials', async () => {

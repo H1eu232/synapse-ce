@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { Link } from 'react-router-dom'
 import { Button, Card, EmptyState, ErrorState, Field, Input, Pill, Select, Spinner, cn } from '../../components/ui'
 import { api } from '../../lib/api'
+import { useFetch } from '../../hooks'
+import { canManageIntegrations, isAdminRole } from '../../lib/roles'
 import type {
   Integration,
   IntegrationBinding,
@@ -36,6 +38,11 @@ export function Integrations() {
   const selectedIdRef = useRef(selectedId)
   const detailGeneration = useRef(0)
   selectedIdRef.current = selectedId
+  // Operating an integration needs manage_integrations; creating one, changing its endpoint and
+  // replacing its credential need administer (#1358). The server enforces both.
+  const { data: me } = useFetch(() => api.me(), { deps: [] })
+  const canAdmin = isAdminRole(me?.role)
+  const canManage = canManageIntegrations(me?.role)
 
   const selected = integrations.find((item) => item.id === selectedId) ?? null
   const provider = providers.find((item) => item.provider === selected?.provider) ?? null
@@ -203,7 +210,7 @@ export function Integrations() {
           <h2 className="text-lg font-semibold text-primary">CI/CD integrations</h2>
           <p className="mt-1 text-sm text-tertiary">Connect read-only providers, discover pipelines, and link external runs to Project analyses.</p>
         </div>
-        <Button onClick={() => setCreating(true)}><Plus className="size-4" />Add integration</Button>
+        {canAdmin && <Button onClick={() => setCreating(true)}><Plus className="size-4" />Add integration</Button>}
       </div>
 
       {error && <ErrorState message={error} />}
@@ -219,7 +226,7 @@ export function Integrations() {
       )}
 
       {integrations.length === 0 && !creating ? (
-        <EmptyState icon={Link01} title="No integrations configured" hint="Add a provider connection to start discovering external pipelines." action={<Button onClick={() => setCreating(true)}>Add integration</Button>} />
+        <EmptyState icon={Link01} title="No integrations configured" hint={canAdmin ? 'Add a provider connection to start discovering external pipelines.' : 'A tenant administrator can add a provider connection.'} action={canAdmin ? <Button onClick={() => setCreating(true)}>Add integration</Button> : undefined} />
       ) : integrations.length > 0 && (
         <div className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
           <Card title="Connections" bodyClass="p-2">
@@ -254,6 +261,8 @@ export function Integrations() {
                 busy={busy}
                 editing={editing}
                 credentialOpen={credentialOpen}
+                canAdmin={canAdmin}
+                canManage={canManage}
                 onEdit={() => setEditing(true)}
                 onCancelEdit={() => setEditing(false)}
                 onUpdate={saveUpdated}
@@ -265,9 +274,9 @@ export function Integrations() {
                 onToggle={toggleEnabled}
                 onArchive={archiveSelected}
               />
-              <BindingsCard integration={selected} projects={projects} operations={operations} bindings={bindings} busy={busy} operate={operate} onReload={() => loadDetail(selected.id, true)} />
+              <BindingsCard canManage={canManage} integration={selected} projects={projects} operations={operations} bindings={bindings} busy={busy} operate={operate} onReload={() => loadDetail(selected.id, true)} />
               <RunsCard runs={runs} />
-              <OperationsCard operations={operations} activeOperation={activeOperation} busy={busy} operate={operate} />
+              <OperationsCard canManage={canManage} operations={operations} activeOperation={activeOperation} busy={busy} operate={operate} />
             </div>
           )}
         </div>
@@ -276,7 +285,7 @@ export function Integrations() {
   )
 }
 
-function IntegrationOverview({ integration, provider, operations, activeOperation, busy, editing, credentialOpen, onEdit, onCancelEdit, onUpdate, onCredentialOpen, onCredentialClose, onCredentialSave, onCredentialDelete, onOperation, onToggle, onArchive }: {
+function IntegrationOverview({ integration, provider, operations, activeOperation, busy, editing, credentialOpen, canAdmin, canManage, onEdit, onCancelEdit, onUpdate, onCredentialOpen, onCredentialClose, onCredentialSave, onCredentialDelete, onOperation, onToggle, onArchive }: {
   integration: Integration
   provider: IntegrationProviderDescriptor
   operations: IntegrationOperation[]
@@ -284,6 +293,8 @@ function IntegrationOverview({ integration, provider, operations, activeOperatio
   busy: string
   editing: boolean
   credentialOpen: boolean
+  canAdmin: boolean
+  canManage: boolean
   onEdit: () => void
   onCancelEdit: () => void
   onUpdate: (input: IntegrationInput) => Promise<void>
@@ -319,14 +330,16 @@ function IntegrationOverview({ integration, provider, operations, activeOperatio
           </dl>
           {latest?.errors[0] && <ErrorState message={latest.errors[0]} />}
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={onEdit}>Edit configuration</Button>
-            <Button variant="secondary" onClick={onCredentialOpen}>{integration.credentialConfigured ? 'Replace credentials' : 'Add credentials'}</Button>
-            {integration.credentialConfigured && <Button variant="ghost" loading={busy === 'delete-credential'} onClick={onCredentialDelete}>Delete credentials</Button>}
+            {canAdmin && <Button variant="secondary" onClick={onEdit}>Edit configuration</Button>}
+            {canAdmin && <Button variant="secondary" onClick={onCredentialOpen}>{integration.credentialConfigured ? 'Replace credentials' : 'Add credentials'}</Button>}
+            {canAdmin && integration.credentialConfigured && <Button variant="ghost" loading={busy === 'delete-credential'} onClick={onCredentialDelete}>Delete credentials</Button>}
+            {canManage && <>
             <Button variant="secondary" disabled={!!activeOperation || !integration.credentialConfigured} loading={busy === 'operation:test'} onClick={() => onOperation('test')}>Test connection</Button>
             <Button variant="secondary" disabled={!!activeOperation || !integration.credentialConfigured} loading={busy === 'operation:discover'} onClick={() => onOperation('discover')}>Discover</Button>
             <Button variant="secondary" disabled={!!activeOperation || !integration.enabled} loading={busy === 'operation:poll'} onClick={() => onOperation('poll')}>Poll now</Button>
             <Button disabled={!!activeOperation || (!integration.enabled && !successfulTest)} loading={busy === 'toggle'} onClick={onToggle}>{integration.enabled ? 'Disable' : 'Enable'}</Button>
             <Button variant="ghost" loading={busy === 'archive'} onClick={onArchive}>Archive</Button>
+            </>}
           </div>
         </div>
       )}
@@ -429,7 +442,7 @@ function DynamicField({ field, value, onChange }: { field: IntegrationFieldDescr
   return <Field label={field.label} hint={field.description} htmlFor={`integration-field-${field.name}`}><Input id={`integration-field-${field.name}`} type={field.kind === 'password' ? 'password' : 'text'} autoComplete={field.kind === 'password' ? 'new-password' : 'off'} value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} required={field.required} /></Field>
 }
 
-function BindingsCard({ integration, projects, operations, bindings, busy, operate, onReload }: { integration: Integration; projects: Project[]; operations: IntegrationOperation[]; bindings: IntegrationBinding[]; busy: string; operate: (key: string, action: () => Promise<void>, success: string) => Promise<void>; onReload: () => Promise<void> }) {
+function BindingsCard({ canManage, integration, projects, operations, bindings, busy, operate, onReload }: { canManage: boolean; integration: Integration; projects: Project[]; operations: IntegrationOperation[]; bindings: IntegrationBinding[]; busy: string; operate: (key: string, action: () => Promise<void>, success: string) => Promise<void>; onReload: () => Promise<void> }) {
   const pipelines = useMemo(() => operations.find((operation) => operation.type === 'discover' && operation.pipelines.length > 0)?.pipelines ?? [], [operations])
   const available = pipelines.filter((pipeline) => !bindings.some((binding) => binding.externalKey === pipeline.externalKey))
   const [pipelineKey, setPipelineKey] = useState('')
@@ -450,7 +463,7 @@ function BindingsCard({ integration, projects, operations, bindings, busy, opera
   return (
     <Card title="Project bindings" actions={<Pill>{bindings.length}</Pill>}>
       <div className="space-y-4">
-        {pipelines.length === 0 ? <p className="text-sm text-tertiary">Run discovery to select a pipeline.</p> : (
+        {!canManage ? null : pipelines.length === 0 ? <p className="text-sm text-tertiary">Run discovery to select a pipeline.</p> : (
           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
             <Select value={pipelineKey} onValueChange={setPipelineKey} ariaLabel="Discovered pipeline" placeholder="Select pipeline" options={available.map((pipeline) => ({ value: pipeline.externalKey, label: `${pipeline.fullName || pipeline.name} (${pipeline.kind})` }))} />
             <Select value={projectId} onValueChange={setProjectId} ariaLabel="Synapse Project" placeholder="Select Project" options={projects.map((project) => ({ value: project.id, label: project.name }))} />
@@ -462,7 +475,7 @@ function BindingsCard({ integration, projects, operations, bindings, busy, opera
             {bindings.map((binding) => (
               <div key={binding.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
                 <div className="min-w-0"><p className="truncate font-medium text-primary">{binding.externalName}</p><p className="truncate text-xs text-tertiary">{projectNames.get(binding.projectId) ?? binding.projectId} · {binding.externalKey}</p></div>
-                <Button variant="ghost" loading={busy === `unbind:${binding.id}`} onClick={() => operate(`unbind:${binding.id}`, async () => { await api.deleteIntegrationBinding(integration.id, binding.id); await onReload() }, 'Binding removed.')}>Remove</Button>
+                {canManage && <Button variant="ghost" loading={busy === `unbind:${binding.id}`} onClick={() => operate(`unbind:${binding.id}`, async () => { await api.deleteIntegrationBinding(integration.id, binding.id); await onReload() }, 'Binding removed.')}>Remove</Button>}
               </div>
             ))}
           </div>
@@ -482,9 +495,9 @@ function RunsCard({ runs }: { runs: IntegrationExternalRun[] }) {
   )
 }
 
-function OperationsCard({ operations, activeOperation, busy, operate }: { operations: IntegrationOperation[]; activeOperation?: IntegrationOperation; busy: string; operate: (key: string, action: () => Promise<void>, success: string) => Promise<void> }) {
+function OperationsCard({ canManage, operations, activeOperation, busy, operate }: { canManage: boolean; operations: IntegrationOperation[]; activeOperation?: IntegrationOperation; busy: string; operate: (key: string, action: () => Promise<void>, success: string) => Promise<void> }) {
   return (
-    <Card title="Operation history" actions={activeOperation ? <Button variant="ghost" loading={busy === 'cancel'} onClick={() => operate('cancel', async () => { await api.cancelIntegrationOperation(activeOperation.id) }, 'Operation cancelled.')}>Cancel active</Button> : <RefreshCw01 className="size-4 text-tertiary" />} bodyClass="p-0">
+    <Card title="Operation history" actions={activeOperation && canManage ? <Button variant="ghost" loading={busy === 'cancel'} onClick={() => operate('cancel', async () => { await api.cancelIntegrationOperation(activeOperation.id) }, 'Operation cancelled.')}>Cancel active</Button> : <RefreshCw01 className="size-4 text-tertiary" />} bodyClass="p-0">
       {operations.length === 0 ? <p className="p-6 text-sm text-tertiary">No operations have run yet.</p> : <div className="divide-y divide-secondary">{operations.map((operation) => <div key={operation.id} className="grid gap-2 px-5 py-4 text-sm sm:grid-cols-[120px_110px_minmax(0,1fr)_auto]"><span className="font-medium capitalize text-primary">{operationLabel(operation.type)}</span><StatusPill value={operation.state} /><span className="text-tertiary">{operation.type === 'discover' ? `${operation.counts.pipelines} pipelines` : operation.type === 'poll' ? `${operation.counts.runs} runs · ${operation.counts.linked} linked` : operation.errors[0] ?? 'Connection check'}</span><span className="text-xs text-tertiary">{formatDate(operation.finishedAt ?? operation.createdAt)}</span></div>)}</div>}
     </Card>
   )

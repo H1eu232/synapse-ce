@@ -5,6 +5,7 @@ import { Connectors } from './Connectors'
 
 vi.mock('../../lib/api', () => ({
   api: {
+    me: vi.fn(),
     listConnectors: vi.fn(),
     createConnector: vi.fn(),
     deleteConnector: vi.fn(),
@@ -25,7 +26,22 @@ const CONNECTORS = [
 ]
 
 describe('Connectors', () => {
-  beforeEach(() => vi.resetAllMocks())
+  beforeEach(() => {
+    vi.resetAllMocks()
+    vi.mocked(api.me).mockResolvedValue({ id: 'u-admin', name: 'Admin', role: 'admin' } as never)
+  })
+
+  // #1358: an integration_admin sees the connectors but cannot add or remove one; the server
+  // refuses both with 403 anyway.
+  it('lets an integration_admin list connectors without offering add or remove', async () => {
+    vi.mocked(api.me).mockResolvedValue({ id: 'u-int', name: 'Integrator', role: 'integration_admin' } as never)
+    vi.mocked(api.listConnectors).mockResolvedValue(CONNECTORS as never)
+    render(<Connectors />)
+    expect(await screen.findByText('Production GitHub')).toBeInTheDocument()
+    expect(await screen.findByText('Only tenant administrators can add or remove a connector.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add connector/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Remove connector/ })).not.toBeInTheDocument()
+  })
 
   it('stops the loading spinner when the list cannot be loaded', async () => {
     vi.mocked(api.listConnectors).mockRejectedValue(new Error('insufficient permissions: this action requires the administer capability'))

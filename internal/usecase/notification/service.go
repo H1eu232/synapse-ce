@@ -15,6 +15,7 @@ import (
 	domain "github.com/KKloudTarus/synapse-ce/internal/domain/notification"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/privacy"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/tenancy"
 	"github.com/KKloudTarus/synapse-ce/internal/platform/redact"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
@@ -39,6 +40,15 @@ type Service struct {
 	disabled map[domain.ChannelType]bool
 	// pauseThreshold is the number of consecutive permanent failures that pauses a channel (#1464).
 	pauseThreshold int
+	// templates stores tenant message templates (#1370); nil disables the template API.
+	templates ports.NotificationTemplateStore
+	// builtins is the built-in template catalog (#1366); NoBuiltinTemplates until it ships.
+	builtins ports.BuiltinTemplates
+	// events holds the per-type event builders; the worker asks them whether a delivery is still
+	// relevant (#1344).
+	events *EventBuilders
+	// tenantSettings supplies the tenant default_locale to template resolution (#1371).
+	tenantSettings ports.TenantSettingsStore
 }
 
 // SetDisabledChannelTypes installs the operator kill switch (SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED),
@@ -64,7 +74,7 @@ func NewService(repo ports.NotificationRepository, protector ports.NotificationS
 	if repo == nil || protector == nil || audit == nil || clock == nil || ids == nil {
 		return nil, fmt.Errorf("%w: notification dependencies are required", shared.ErrValidation)
 	}
-	return &Service{repo: repo, protector: protector, sender: sender, audit: audit, clock: clock, ids: ids, pauseThreshold: domain.DefaultPauseThreshold}, nil
+	return &Service{repo: repo, protector: protector, sender: sender, audit: audit, clock: clock, ids: ids, pauseThreshold: domain.DefaultPauseThreshold, builtins: ports.NoBuiltinTemplates{}, events: NewEventBuilders()}, nil
 }
 
 // SetPauseThreshold sets how many consecutive permanent failures pause a channel; zero keeps
@@ -102,6 +112,20 @@ type ChannelInput struct {
 	Secret     string             `json:"secret,omitempty"`
 	Recipients []string           `json:"recipients,omitempty"`
 	Revision   int                `json:"revision,omitempty"`
+	// AllowDestinationChange is set by the caller, never decoded from a request: true only when the
+	// principal holds PermAdminister. Without it an update that changes the URL, the secret or the
+	// email recipients is refused with shared.ErrForbidden (#1358), so an integration_admin can
+	// rename, enable or disable a channel but cannot point it somewhere else.
+	AllowDestinationChange bool `json:"-"`
+	// TemplateID binds a template of the channel's family (#1371); "" unbinds and an absent field
+	// keeps the current binding. Binding is not a destination change.
+	TemplateID *shared.ID `json:"template_id,omitempty"`
+	// Locale is the channel's locale, en or vi; "" uses the tenant default and an absent field keeps
+	// the current value.
+	Locale *tenancy.Locale `json:"locale,omitempty"`
+	// CustomBody opts a webhook channel into sending its template's body as a custom JSON body
+	// (#1376); it needs a bound template. An absent field keeps the current value.
+	CustomBody *bool `json:"custom_body,omitempty"`
 }
 
 func (s *Service) createChannel(ctx context.Context, actor string, in ChannelInput) (domain.Channel, error) {
@@ -129,11 +153,15 @@ func (s *Service) createChannel(ctx context.Context, actor string, in ChannelInp
 		return domain.Channel{}, err
 	}
 	c := domain.Channel{TenantID: tenant, ID: id, Name: strings.TrimSpace(in.Name), Type: in.Type, Enabled: in.Enabled, Destination: destination, Recipients: recipients, Revision: 1, SecretVersion: 1, CreatedAt: now, UpdatedAt: now}
+	c.TemplateBinding = applyBinding(domain.TemplateBinding{}, in)
+	if err := s.validateBinding(ctx, tenant, c, nil); err != nil {
+		return domain.Channel{}, err
+	}
 	created, err := s.repo.CreateChannel(domain.WithActor(ctx, actor), c, sealed)
 	if err != nil {
 		return domain.Channel{}, fmt.Errorf("create notification channel: %w", err)
 	}
-	if err := s.record(ctx, actor, "notification.channel.created", id.String(), map[string]string{"type": string(c.Type)}); err != nil {
+	if err := s.record(ctx, actor, "notification.channel.created", id.String(), channelAuditMetadata(created, bindingAuditMetadata(domain.TemplateBinding{}, created.TemplateBinding, nil))); err != nil {
 		return domain.Channel{}, err
 	}
 	return created, nil
@@ -158,6 +186,9 @@ func (s *Service) updateChannel(ctx context.Context, actor string, id shared.ID,
 		return domain.Channel{}, fmt.Errorf("%w: channel type is immutable", shared.ErrValidation)
 	}
 	replace := strings.TrimSpace(in.URL) != "" || strings.TrimSpace(in.Secret) != "" || in.Type != current.Type
+	if replace && !in.AllowDestinationChange {
+		return domain.Channel{}, errDestinationChange
+	}
 	// A channel of a disabled type can still be renamed, switched off or deleted, but not switched
 	// on or pointed at a new destination.
 	if replace || (in.Enabled && !current.Enabled) {
@@ -185,6 +216,11 @@ func (s *Service) updateChannel(ctx context.Context, actor string, id shared.ID,
 			if e != nil {
 				return domain.Channel{}, e
 			}
+			// Recipients are an email channel's destination. Sending the same list back (the
+			// console does on every save) is not a change.
+			if !in.AllowDestinationChange && !sameRecipients(recips, current.Recipients) {
+				return domain.Channel{}, errDestinationChange
+			}
 			recipients = recips
 		}
 		if in.Type == domain.ChannelEmail {
@@ -196,11 +232,28 @@ func (s *Service) updateChannel(ctx context.Context, actor string, id shared.ID,
 	if updated.Name == "" {
 		return domain.Channel{}, fmt.Errorf("%w: notification channel name is required", shared.ErrValidation)
 	}
+	updated.TemplateBinding = applyBinding(current.TemplateBinding, in)
+	// An unchanged binding is not revalidated, so a channel whose template was archived can still
+	// be renamed or switched off; resolution already skips that binding.
+	if updated.TemplateBinding != current.TemplateBinding {
+		rules, e := s.repo.ListRules(ctx, tenant)
+		if e != nil {
+			return domain.Channel{}, e
+		}
+		if e = s.validateBinding(ctx, tenant, updated, rules); e != nil {
+			return domain.Channel{}, e
+		}
+	}
 	updated, err = s.repo.UpdateChannel(domain.WithActor(ctx, actor), updated, sealed, replace)
 	if err != nil {
 		return domain.Channel{}, err
 	}
-	if err := s.record(ctx, actor, "notification.channel.updated", id.String(), map[string]string{"type": string(updated.Type)}); err != nil {
+	extra := bindingAuditMetadata(current.TemplateBinding, updated.TemplateBinding, map[string]string{"destination_changed": "false"})
+	if previous := auditDestination(current); replace || !sameRecipients(current.Recipients, updated.Recipients) {
+		extra["destination_changed"] = "true"
+		extra["previous_destination"] = previous
+	}
+	if err := s.record(ctx, actor, "notification.channel.updated", id.String(), channelAuditMetadata(updated, extra)); err != nil {
 		return domain.Channel{}, err
 	}
 	return updated, nil
@@ -211,10 +264,14 @@ func (s *Service) deleteChannel(ctx context.Context, actor string, id shared.ID,
 	if err != nil {
 		return err
 	}
+	current, err := s.repo.GetChannel(ctx, tenant, id)
+	if err != nil {
+		return err
+	}
 	if err = s.repo.DeleteChannel(ctx, tenant, id, revision, s.clock.Now().UTC()); err != nil {
 		return err
 	}
-	return s.record(ctx, actor, "notification.channel.deleted", id.String(), nil)
+	return s.record(ctx, actor, "notification.channel.deleted", id.String(), channelAuditMetadata(current, nil))
 }
 func (s *Service) GetChannel(ctx context.Context, id shared.ID) (domain.Channel, error) {
 	tenant, err := tenantFrom(ctx)
@@ -262,6 +319,9 @@ func (s *Service) createRule(ctx context.Context, actor string, in RuleInput) (d
 	if err = r.Normalize(); err != nil {
 		return domain.Rule{}, err
 	}
+	if err = s.checkRuleBindings(ctx, tenant, r); err != nil {
+		return domain.Rule{}, err
+	}
 	r, err = s.repo.CreateRule(ctx, r)
 	if err != nil {
 		return domain.Rule{}, err
@@ -285,6 +345,9 @@ func (s *Service) updateRule(ctx context.Context, actor string, id shared.ID, in
 	}
 	r := domain.Rule{TenantID: tenant, ID: id, Name: in.Name, Enabled: in.Enabled, EventType: in.EventType, MinSeverity: in.MinSeverity, ActionTypes: in.ActionTypes, EngagementIDs: in.EngagementIDs, TeamIDs: in.TeamIDs, AllTeams: in.AllTeams, ChannelIDs: in.ChannelIDs, LeadTimeSecs: in.LeadTimeSeconds, Revision: current.Revision + 1, CreatedAt: current.CreatedAt, UpdatedAt: s.clock.Now().UTC()}
 	if err = r.Normalize(); err != nil {
+		return domain.Rule{}, err
+	}
+	if err = s.checkRuleBindings(ctx, tenant, r); err != nil {
 		return domain.Rule{}, err
 	}
 	r, err = s.repo.UpdateRule(ctx, r)
@@ -326,14 +389,12 @@ func (s *Service) testChannel(ctx context.Context, actor string, cid shared.ID) 
 	if err != nil {
 		return "", err
 	}
-	if len(s.disabled) > 0 {
-		channel, getErr := s.repo.GetChannel(ctx, tenant, cid)
-		if getErr != nil {
-			return "", getErr
-		}
-		if err = s.refuseDisabled(channel.Type); err != nil {
-			return "", err
-		}
+	channel, err := s.repo.GetChannel(ctx, tenant, cid)
+	if err != nil {
+		return "", err
+	}
+	if err = s.refuseDisabled(channel.Type); err != nil {
+		return "", err
 	}
 	now := s.clock.Now().UTC()
 	data, _ := json.Marshal(map[string]any{"title": "Synapse notification test"})
@@ -342,7 +403,7 @@ func (s *Service) testChannel(ctx context.Context, actor string, cid shared.ID) 
 	if err != nil {
 		return "", err
 	}
-	if err = s.record(ctx, actor, "notification.channel.test_queued", cid.String(), map[string]string{"delivery_id": id.String()}); err != nil {
+	if err = s.record(ctx, actor, "notification.channel.test_queued", cid.String(), channelAuditMetadata(channel, map[string]string{"delivery_id": id.String()})); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -560,7 +621,7 @@ func (s *Service) HandleJob(ctx context.Context, job ports.QueuedJob) error {
 		// No new sends to a paused channel: its queued work is cancelled like a disabled channel's.
 		return s.repo.CancelDelivery(ctx, job.TenantID, payload.DeliveryID, job.ID, job.Fence, "channel_paused")
 	}
-	relevant, err := s.repo.DeliveryStillRelevant(ctx, work)
+	relevant, err := s.events.StillRelevant(ctx, s.repo, work)
 	if err != nil {
 		return err
 	}
