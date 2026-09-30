@@ -55,6 +55,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/egressbroker"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/fleetca"
 	azurepipelinesintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/azurepipelines"
+	githubintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/github"
 	gitlabintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/gitlab"
 	jenkinsintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/jenkins"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/llm/openai"
@@ -218,7 +219,7 @@ import (
 	scauc "github.com/KKloudTarus/synapse-ce/internal/usecase/sca"
 	scanrunuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scanrun"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/scmconnectoruc"
-	"github.com/KKloudTarus/synapse-ce/internal/usecase/scmwebhook"
+	scmwebhookuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scmwebhook"
 	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/slauc"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/srcreach"
@@ -969,6 +970,10 @@ func main() {
 		log.Error("integration provider registry init failed", "err", err)
 		os.Exit(1)
 	}
+	if err := githubintegration.Register(integrationRegistry); err != nil {
+		log.Error("integration provider registry init failed", "err", err)
+		os.Exit(1)
+	}
 	if err := gitlabintegration.Register(integrationRegistry); err != nil {
 		log.Error("integration provider registry init failed", "err", err)
 		os.Exit(1)
@@ -1489,13 +1494,27 @@ func main() {
 				scauc.ScanJobKind: scaJobHandler{svc: scaService},
 			}, worker.Config{Visibility: cfg.ScanTimeout + time.Minute, MaxAttempts: 3}, log)
 		}
-		inboundWebhookStore := postgres.NewInboundWebhookRepository(databasePool)
-		scmReceiver, receiverErr := scmwebhook.NewReceiver(integrationStore, projectService, inboundWebhookStore, clock)
-		if receiverErr != nil {
-			log.Error("inbound SCM webhook receiver init failed", "err", receiverErr)
+		webhookRepository := postgres.NewInboundWebhookRepository(databasePool)
+		githubWebhookReceiver := scmwebhookuc.NewService(integrationService, projectService)
+		if err := githubWebhookReceiver.SetAdmin(
+			webhookRepository, vaultCipher, auditLog, clock,
+			postgres.NewTenantTransactionRunner(databasePool),
+		); err != nil {
+			log.Error("GitHub inbound webhook administration init failed", "err", err)
 			os.Exit(1)
 		}
-		router.SetInboundWebhookPlane(inboundWebhookStore, vaultCipher, scmReceiver)
+		gitlabWebhookReceiver, err := scmwebhookuc.NewReceiver(integrationStore, projectService, webhookRepository, clock)
+		if err != nil {
+			log.Error("GitLab inbound webhook receiver init failed", "err", err)
+			os.Exit(1)
+		}
+		providerReceiver, err := scmwebhookuc.NewProviderReceiver(githubWebhookReceiver, gitlabWebhookReceiver)
+		if err != nil {
+			log.Error("SCM inbound webhook receiver init failed", "err", err)
+			os.Exit(1)
+		}
+		router.SetInboundWebhookPlane(webhookRepository, vaultCipher, providerReceiver)
+		router.SetInboundWebhookAdmin(githubWebhookReceiver)
 	}
 	if cfg.OwnershipMode != "off" && cfg.OwnershipMode != "observe" && cfg.OwnershipMode != "enforce" {
 		log.Error("SYNAPSE_OWNERSHIP_MODE must be off, observe or enforce")

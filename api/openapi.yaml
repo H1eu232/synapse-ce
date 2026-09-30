@@ -5439,6 +5439,38 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /api/v1/integrations/{id}/inbound-webhook:
+    parameters: [{$ref: '#/components/parameters/IntegrationId'}]
+    post:
+      tags: [integrations]
+      operationId: configureGitHubInboundWebhook
+      summary: Provision or rotate a GitHub inbound webhook secret
+      description: >
+        Requires the administer capability and is registered only when inbound webhooks are enabled.
+        The integration must be an unarchived GitHub integration with exactly one Project binding.
+        The caller supplies the same secret that will be configured in GitHub. Synapse seals it immediately
+        and never returns plaintext credential material. The first call creates an opaque hook path; later
+        calls keep that path and rotate the sealed secret.
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GitHubInboundWebhookSecretRequest'}
+      responses:
+        '200':
+          description: Webhook endpoint provisioned or rotated; no credential material is returned
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GitHubInboundWebhookConfiguration'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/InternalServerError'}
+
   /api/v1/integrations/{id}/external-runs:
     parameters: [{$ref: '#/components/parameters/IntegrationId'}]
     get:
@@ -7841,6 +7873,34 @@ components:
         version: {type: integer, minimum: 1}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+
+    GitHubInboundWebhookSecretRequest:
+      type: object
+      additionalProperties: false
+      required: [secret]
+      properties:
+        secret:
+          type: string
+          minLength: 32
+          maxLength: 128
+          writeOnly: true
+          description: Caller-supplied GitHub webhook secret. Synapse seals it and never echoes it.
+
+    GitHubInboundWebhookConfiguration:
+      type: object
+      additionalProperties: false
+      required: [path, version, rotated]
+      properties:
+        path:
+          type: string
+          pattern: '^/api/v1/hooks/[A-Za-z0-9_-]{32,64}$'
+          description: Opaque relative webhook path; combine with the deployment's public HTTPS origin.
+        version: {type: integer, minimum: 1}
+        rotated: {type: boolean}
+        previous_secret_expires_at:
+          type: string
+          format: date-time
+          description: Present after rotation; previous signatures are accepted only until this time.
 
     IntegrationExternalRun:
       type: object

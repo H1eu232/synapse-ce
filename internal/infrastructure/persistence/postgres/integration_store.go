@@ -165,6 +165,10 @@ func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id sha
 			}
 			return appendTenantAudit(ctx, tx, updated.TenantID.String(), audit)
 		}
+		// GitHub is inbound-only: its authentication credential belongs to the
+		// webhook endpoint, not integration_credentials, and the provider exposes
+		// no outbound test operation. Other providers retain the exact tested-
+		// credential invariant before enablement.
 		tag, updateErr := tx.Exec(ctx, `UPDATE integrations AS target SET enabled=$2,version=version+1,updated_at=now()
 			WHERE target.id=$1 AND target.version=$3 AND target.archived=FALSE AND (NOT $2 OR (
 				(NOT $4 OR EXISTS(SELECT 1 FROM integration_credentials credential WHERE credential.integration_id=target.id AND credential.credential_id='default'))

@@ -26,7 +26,7 @@ type BindingReader interface {
 }
 
 type ProjectScanner interface {
-	StartWebhookAnalysis(context.Context, string, shared.ID, shared.ID, ports.WebhookScanTarget) (ports.ScanJob, error)
+	StartGitLabWebhookAnalysis(context.Context, string, shared.ID, shared.ID, ports.WebhookScanTarget) (ports.ScanJob, error)
 }
 
 // Receiver dispatches authenticated SCM webhook events without accepting a
@@ -72,7 +72,7 @@ func (r *Receiver) ReceiveInboundWebhook(ctx context.Context, identity ports.Inb
 			return err
 		}
 		target.Provider = gitLabProvider
-		if _, err := r.projects.StartWebhookAnalysis(txCtx, "gitlab-webhook", identity.TenantID, projectID, target); err != nil {
+		if _, err := r.projects.StartGitLabWebhookAnalysis(txCtx, "gitlab-webhook", identity.TenantID, projectID, target); err != nil {
 			return fmt.Errorf("start GitLab webhook analysis: %w", err)
 		}
 		return nil

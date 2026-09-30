@@ -344,11 +344,11 @@ func (s *Service) SetPullRequestDecoration(ctx context.Context, actor string, te
 	return p, nil
 }
 
-// StartWebhookAnalysis starts a server-owned project scan from authenticated SCM
+// StartGitLabWebhookAnalysis starts a server-owned project scan from authenticated SCM
 // metadata. The repository URL always comes from the persisted project binding;
 // callers may supply only a source-ref label, an optional server-owned fetch ref,
 // and an immutable commit SHA.
-func (s *Service) StartWebhookAnalysis(ctx context.Context, actor string, tenantID, projectID shared.ID, target ports.WebhookScanTarget) (ports.ScanJob, error) {
+func (s *Service) StartGitLabWebhookAnalysis(ctx context.Context, actor string, tenantID, projectID shared.ID, target ports.WebhookScanTarget) (ports.ScanJob, error) {
 	if err := requireActor(actor); err != nil {
 		return ports.ScanJob{}, err
 	}
@@ -421,6 +421,59 @@ func (s *Service) StartAnalysis(ctx context.Context, actor string, tenantID shar
 		return ports.ScanJob{}, err
 	}
 	return s.scanner.StartScanWithOptions(ctx, actor, e.ID, request, scauc.ScanOptions{Mode: scauc.ScanModeFull, CodeQuality: true, ProjectAnalysis: true, LineCoverage: coverage, Gate: gate})
+}
+
+type WebhookAnalysisInput struct {
+	Ref                   string
+	Commit                string
+	PullRequest           bool
+	DisableGitCredentials bool
+	NoBuildExecution      bool
+}
+
+// StartWebhookAnalysis queues an analysis for an already-stored Project from an
+// authenticated SCM webhook. The repository URL is always the Project's source
+// binding; provider payloads may select only the ref and immutable commit.
+func (s *Service) StartWebhookAnalysis(ctx context.Context, actor string, tenantID, projectID shared.ID, in WebhookAnalysisInput) (ports.ScanJob, error) {
+	if err := requireActor(actor); err != nil {
+		return ports.ScanJob{}, err
+	}
+	if s.scanner == nil {
+		return ports.ScanJob{}, fmt.Errorf("%w: project analysis is not configured", shared.ErrValidation)
+	}
+	p, err := s.repo.GetByID(ctx, tenantID, projectID)
+	if err != nil {
+		return ports.ScanJob{}, fmt.Errorf("get webhook project: %w", err)
+	}
+	if p == nil || p.SourceBinding.Kind != project.SourceGit {
+		return ports.ScanJob{}, fmt.Errorf("%w: webhook project must use a git source", shared.ErrValidation)
+	}
+	e, err := s.engagements.GetByProjectID(ctx, tenantID, p.ID)
+	if err != nil {
+		return ports.ScanJob{}, fmt.Errorf("get project analysis context: %w", err)
+	}
+	gate, err := s.resolveManagedGate(ctx, tenantID, p.GateID)
+	if err != nil {
+		return ports.ScanJob{}, err
+	}
+	ref := strings.TrimSpace(in.Ref)
+	request := ports.AcquireRequest{
+		Kind: p.SourceBinding.Kind, Value: p.SourceBinding.Value,
+		Ref: ref, Commit: strings.TrimSpace(in.Commit),
+		DisableGitCredentials: in.DisableGitCredentials,
+	}
+	if in.PullRequest {
+		request.BaseRef = p.SourceBinding.DefaultBranch
+		if request.BaseRef == "" {
+			request.BaseRef = p.SourceBinding.Ref
+		}
+	} else {
+		request.BaseRef = p.SourceBinding.BaseRef
+	}
+	return s.scanner.StartScanWithOptions(ctx, actor, e.ID, request, scauc.ScanOptions{
+		Mode: scauc.ScanModeFull, CodeQuality: true, ProjectAnalysis: true,
+		NoBuildExecution: in.NoBuildExecution, Gate: gate,
+	})
 }
 
 func (s *Service) projectAcquireRequest(ctx context.Context, p *project.Project) (ports.AcquireRequest, error) {

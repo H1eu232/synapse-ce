@@ -527,6 +527,8 @@ func GrantRuntimePrivileges(ctx context.Context, adminDSN, runtimeDSN string, ha
 			"GRANT EXECUTE ON FUNCTION synapse_lookup_inbound_webhook(TEXT) TO "+quotedRole,
 			"GRANT EXECUTE ON FUNCTION synapse_admit_inbound_webhook(TEXT,TEXT,TEXT,TEXT,INT,BOOLEAN) TO "+quotedRole,
 			"GRANT EXECUTE ON FUNCTION synapse_lock_inbound_webhook_event(TEXT,TEXT,TEXT,TEXT,TEXT) TO "+quotedRole,
+			"GRANT EXECUTE ON FUNCTION synapse_provision_github_inbound_webhook(TEXT,TEXT,TEXT,TEXT,INT) TO "+quotedRole,
+			"GRANT EXECUTE ON FUNCTION synapse_rotate_github_inbound_webhook(TEXT,TEXT,TEXT,INT,TEXT,TIMESTAMPTZ) TO "+quotedRole,
 		)
 	}
 	for _, statement := range statements {

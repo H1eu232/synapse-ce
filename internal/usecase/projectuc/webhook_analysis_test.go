@@ -33,12 +33,12 @@ func TestWebhookMRQueuesStoredRepoActualBaseAndTrustedContext(t *testing.T) {
 	scanner := scauc.NewService(engagements, nil, nil, nil, jobs, nil, nil, &sequentialIDs{}, ports.Provenance{}, svc.clock, &captureAudit{}, shared.SeverityHigh, 0, nil, nil, nil, nil, nil, nil, nil)
 	svc.SetScanner(scanner)
 	in := ports.WebhookScanTarget{Provider: "gitlab", Ref: "contributor/fix", SHA: strings.Repeat("a", 40), BaseRef: "release/1.0", MergeRequestNumber: 42, Fork: true, FetchRef: "refs/merge-requests/42/head"}
-	if _, err = svc.StartWebhookAnalysis(ctx, "hook", "tenant", p.ID, in); !errors.Is(err, shared.ErrValidation) {
+	if _, err = svc.StartGitLabWebhookAnalysis(ctx, "hook", "tenant", p.ID, in); !errors.Is(err, shared.ErrValidation) {
 		t.Fatalf("inline webhook accepted: %v", err)
 	}
 	queue := &webhookQueueCapture{}
 	scanner.SetQueue(queue)
-	job, err := svc.StartWebhookAnalysis(ctx, "hook", "tenant", p.ID, in)
+	job, err := svc.StartGitLabWebhookAnalysis(ctx, "hook", "tenant", p.ID, in)
 	if err != nil {
 		t.Fatal(err)
 	}

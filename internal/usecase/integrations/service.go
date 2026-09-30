@@ -287,15 +287,15 @@ func (service *Service) CreateBinding(ctx context.Context, tenantID, integration
 	if err != nil {
 		return integration.Binding{}, err
 	}
-	if item.Provider == "gitlab" && (boundProject == nil || boundProject.SourceBinding.Kind != project.SourceGit) {
-		return integration.Binding{}, fmt.Errorf("%w: GitLab webhook binding requires a git project", shared.ErrValidation)
+	if (item.Provider == "gitlab" || item.Provider == "github") && (boundProject == nil || boundProject.SourceBinding.Kind != project.SourceGit) {
+		return integration.Binding{}, fmt.Errorf("%w: inbound SCM webhook binding requires a git project", shared.ErrValidation)
 	}
 	bindings, err := service.store.ListIntegrationBindings(tenantCtx, integrationID)
 	if err != nil {
 		return integration.Binding{}, err
 	}
-	if item.Provider == "gitlab" && len(bindings) > 0 {
-		return integration.Binding{}, fmt.Errorf("%w: GitLab inbound integration supports one project binding", shared.ErrConflict)
+	if (item.Provider == "gitlab" || item.Provider == "github") && len(bindings) > 0 {
+		return integration.Binding{}, fmt.Errorf("%w: inbound SCM integration supports one project binding", shared.ErrConflict)
 	}
 	if len(bindings) >= integration.MaxBindingsPerPoll {
 		return integration.Binding{}, fmt.Errorf("%w: an integration supports at most %d bindings", shared.ErrValidation, integration.MaxBindingsPerPoll)

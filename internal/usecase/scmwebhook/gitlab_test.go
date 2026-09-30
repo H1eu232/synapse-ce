@@ -85,7 +85,7 @@ type fakeProjectScanner struct {
 	err   error
 }
 
-func (f *fakeProjectScanner) StartWebhookAnalysis(_ context.Context, actor string, tenant, project shared.ID, target ports.WebhookScanTarget) (ports.ScanJob, error) {
+func (f *fakeProjectScanner) StartGitLabWebhookAnalysis(_ context.Context, actor string, tenant, project shared.ID, target ports.WebhookScanTarget) (ports.ScanJob, error) {
 	f.calls = append(f.calls, webhookScanCall{target: target, actor: actor, tenant: tenant, project: project, ref: target.Ref, fetchRef: target.FetchRef, sha: target.SHA, fork: target.Fork})
 	return ports.ScanJob{}, f.err
 }

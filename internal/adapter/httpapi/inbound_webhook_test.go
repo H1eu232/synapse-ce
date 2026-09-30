@@ -27,12 +27,12 @@ const (
 )
 
 type fakeHookStore struct {
-	mu          sync.Mutex
-	records     map[string]ports.InboundWebhookEndpoint
-	admitted    map[string]int
-	eventClaims map[string]bool
-	fail        bool
-	decision    *int
+	mu       sync.Mutex
+	records  map[string]ports.InboundWebhookEndpoint
+	admitted map[string]int
+	events   map[string]bool
+	fail     bool
+	decision *int
 }
 
 func (s *fakeHookStore) LookupInboundWebhook(_ context.Context, id string) (ports.InboundWebhookEndpoint, bool, error) {
@@ -67,13 +67,38 @@ func (s *fakeHookStore) AdmitInboundWebhook(_ context.Context, id ports.InboundW
 	s.admitted[id.PublicID]++
 	return 1, nil
 }
+func (s *fakeHookStore) ClaimInboundWebhookEvent(_ context.Context, id ports.InboundWebhookIdentity, provider, eventID string, _ time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail {
+		return false, errors.New("db unavailable: do not echo")
+	}
+	key := id.TenantID.String() + "|" + id.PublicID + "|" + provider + "|" + eventID
+	if s.events[key] {
+		return false, nil
+	}
+	s.events[key] = true
+	return true, nil
+}
+
+func (s *fakeHookStore) ReleaseInboundWebhookEvent(_ context.Context, id ports.InboundWebhookIdentity, provider, eventID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := id.TenantID.String() + "|" + id.PublicID + "|" + provider + "|" + eventID
+	delete(s.events, key)
+	return nil
+}
 
 type verifiedHook struct {
 	tenant    shared.ID
 	id        string
-	body      string
+	provider  string
 	eventType string
 	eventID   string
+	ref       string
+	sha       string
+	fork      bool
+	body      string
 }
 type captureHookReceiver struct {
 	mu   sync.Mutex
@@ -88,7 +113,7 @@ func (c *captureHookReceiver) ReceiveInboundWebhook(ctx context.Context, id port
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.seen = append(c.seen, verifiedHook{tenant: tenant, id: id.PublicID, body: string(event.Body), eventType: event.EventType, eventID: event.EventID})
+	c.seen = append(c.seen, verifiedHook{tenant: tenant, id: id.PublicID, provider: event.Provider, eventType: event.EventType, eventID: event.EventID, ref: event.Ref, sha: event.SHA, fork: event.Fork, body: string(event.Body)})
 	return c.err
 }
 func (c *captureHookReceiver) snapshot() []verifiedHook {
@@ -126,7 +151,7 @@ func setupHookWithObserver(t *testing.T, observer HTTPObserver) (http.Handler, *
 	store := &fakeHookStore{records: map[string]ports.InboundWebhookEndpoint{
 		hookIDA: mk("tenant-A", hookIDA, "integration-A", hookSecret('a')),
 		hookIDB: mk("tenant-B", hookIDB, "integration-B", hookSecret('b')),
-	}, admitted: map[string]int{}, eventClaims: map[string]bool{}}
+	}, admitted: map[string]int{}, events: map[string]bool{}}
 	receiver := &captureHookReceiver{}
 	// Route through the real root Handler, not only the isolated hook function.
 	// The human resolver deliberately rejects every bearer credential.
@@ -156,6 +181,90 @@ func assertHookNoStore(t *testing.T, got *httptest.ResponseRecorder) {
 	t.Helper()
 	if got.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("hook response Cache-Control = %q, want no-store", got.Header().Get("Cache-Control"))
+	}
+}
+
+func TestInboundWebhookGitHubSignatureMetadataAndReplay(t *testing.T) {
+	h, store, receiver, _ := setupHook(t)
+	body := []byte(`{"ref":"refs/heads/main","after":"0123456789abcdef0123456789abcdef01234567"}`)
+	store.mu.Lock()
+	e := store.records[hookIDA]
+	e.Provider = "github"
+	store.records[hookIDA] = e
+	store.mu.Unlock()
+	path := "/api/v1/hooks/" + hookIDA
+	request := func(delivery string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set(githubSignatureHeader, webhookSig(hookSecret('a'), body))
+		req.Header.Set(githubEventHeader, "push")
+		req.Header.Set(githubDeliveryHeader, delivery)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	assertHookCode(t, request("delivery-1"), http.StatusAccepted)
+	assertHookCode(t, request("delivery-1"), http.StatusAccepted)
+	seen := receiver.snapshot()
+	if len(seen) != 1 || seen[0].provider != "github" || seen[0].eventType != "push" ||
+		seen[0].eventID != "delivery-1" || seen[0].ref != "main" ||
+		seen[0].sha != "0123456789abcdef0123456789abcdef01234567" || seen[0].fork || seen[0].body != "" {
+		t.Fatalf("github receiver = %#v", seen)
+	}
+	// The legacy Synapse signature must not authenticate a GitHub endpoint.
+	assertHookCode(t, requestHook(h, http.MethodPost, path, body, webhookSig(hookSecret('a'), body)), http.StatusUnauthorized)
+}
+
+func TestInboundWebhookGitHubForkPullRequest(t *testing.T) {
+	h, store, receiver, _ := setupHook(t)
+	store.mu.Lock()
+	e := store.records[hookIDA]
+	e.Provider = "github"
+	store.records[hookIDA] = e
+	store.mu.Unlock()
+
+	sha := strings.Repeat("b", 40)
+	body := []byte(`{"repository":{"clone_url":"https://attacker.invalid/ignored.git"},"pull_request":{"head":{"ref":"contrib/fix","sha":"` + sha + `","repo":{"id":22}},"base":{"repo":{"id":11}}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/"+hookIDA, bytes.NewReader(body))
+	req.Header.Set(githubSignatureHeader, webhookSig(hookSecret('a'), body))
+	req.Header.Set(githubEventHeader, "pull_request")
+	req.Header.Set(githubDeliveryHeader, "fork-delivery")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assertHookCode(t, rec, http.StatusAccepted)
+
+	seen := receiver.snapshot()
+	if len(seen) != 1 || !seen[0].fork || seen[0].ref != "contrib/fix" || seen[0].sha != sha || seen[0].body != "" {
+		t.Fatalf("github fork receiver = %#v", seen)
+	}
+}
+
+func TestInboundWebhookGitHubReceiverFailureIsRetryable(t *testing.T) {
+	h, store, receiver, _ := setupHook(t)
+	store.mu.Lock()
+	e := store.records[hookIDA]
+	e.Provider = "github"
+	store.records[hookIDA] = e
+	store.mu.Unlock()
+	receiver.err = errors.New("queue unavailable")
+
+	sha := strings.Repeat("c", 40)
+	body := []byte(`{"ref":"refs/heads/main","after":"` + sha + `"}`)
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/"+hookIDA, bytes.NewReader(body))
+		req.Header.Set(githubSignatureHeader, webhookSig(hookSecret('a'), body))
+		req.Header.Set(githubEventHeader, "push")
+		req.Header.Set(githubDeliveryHeader, "retry-delivery")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	assertHookCode(t, request(), http.StatusServiceUnavailable)
+	receiver.mu.Lock()
+	receiver.err = nil
+	receiver.mu.Unlock()
+	assertHookCode(t, request(), http.StatusAccepted)
+	if len(receiver.snapshot()) != 2 {
+		t.Fatal("failed receiver delivery remained permanently claimed")
 	}
 }
 

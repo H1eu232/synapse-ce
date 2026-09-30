@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +31,17 @@ const (
 	gitLabTimestampHeader  = "webhook-timestamp"
 	gitLabSignatureHeader  = "webhook-signature"
 	gitLabSignatureWindow  = 5 * time.Minute
+)
+
+const (
+	githubSignatureHeader = "X-Hub-Signature-256"
+	githubEventHeader     = "X-GitHub-Event"
+	githubDeliveryHeader  = "X-GitHub-Delivery"
+)
+
+var (
+	githubWebhookSHA = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+	githubWebhookRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$`)
 )
 
 // The hook plane is mounted on a method-aware top-level mux outside the human
@@ -150,7 +163,18 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	event := ports.InboundWebhookEvent{Provider: endpoint.Provider, Body: body}
-	if endpoint.Provider == "gitlab" {
+	if endpoint.Provider == "github" {
+		var supported, eventOK bool
+		event, supported, eventOK = githubEventMetadata(r.Header, body)
+		if !eventOK {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_webhook_event"})
+			return
+		}
+		if !supported {
+			writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+			return
+		}
+	} else if endpoint.Provider == "gitlab" {
 		var eventOK bool
 		event.EventType, event.EventID, eventOK = gitLabEventMetadata(r.Header)
 		if !eventOK {
@@ -160,10 +184,24 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Bind ONLY the authenticated record's tenant; do not use TenantOrDefault.
-	// Provider-specific replay/deduplication belongs to the receiver, not this
-	// transport plane, so future providers can define their own event identity.
+	// GitLab commits replay receipts with durable enqueue in its receiver.
+	// GitHub retains the existing transport-level delivery claim.
 	ctx := shared.WithTenant(r.Context(), endpoint.TenantID)
+	if event.Provider == "github" && event.EventID != "" {
+		claimed, err := p.store.ClaimInboundWebhookEvent(ctx, identity, event.Provider, event.EventID, time.Now())
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "webhook_unavailable"})
+			return
+		}
+		if !claimed {
+			writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+			return
+		}
+	}
 	if err := p.receiver.ReceiveInboundWebhook(ctx, identity, event); err != nil {
+		if event.Provider == "github" && event.EventID != "" {
+			_ = p.store.ReleaseInboundWebhookEvent(ctx, identity, event.Provider, event.EventID)
+		}
 		if errors.Is(err, shared.ErrValidation) {
 			writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_webhook_event"})
 			return
@@ -205,17 +243,21 @@ func (p *inboundWebhookPlane) verifyRequest(e ports.InboundWebhookEndpoint, publ
 	if e.Provider == "gitlab" {
 		return p.verifyGitLab(e, publicID, body, header, now)
 	}
-	presented, signatureOK := inboundSignature(header.Values(inboundWebhookSignature))
+	signatureHeader := inboundWebhookSignature
+	if e.Provider == "github" {
+		signatureHeader = githubSignatureHeader
+	}
+	presented, signatureOK := inboundSignature(header.Values(signatureHeader))
 	valid, usedPrevious := p.verify(e, publicID, body, presented, now)
 	return valid && signatureOK, usedPrevious
 }
 
 func gitLabEventMetadata(header http.Header) (string, string, bool) {
-	eventType, typeOK := singleWebhookHeader(header, gitLabEventHeader)
-	eventID, idOK := singleWebhookHeader(header, gitLabEventUUIDHeader)
+	eventType, typeOK := singleInboundWebhookHeader(header, gitLabEventHeader)
+	eventID, idOK := singleInboundWebhookHeader(header, gitLabEventUUIDHeader)
 	if len(header.Values(gitLabSignatureHeader)) > 0 {
 		// Prefer the authenticated message ID; event UUID is an unsigned header.
-		eventID, idOK = singleWebhookHeader(header, gitLabWebhookIDHeader)
+		eventID, idOK = singleInboundWebhookHeader(header, gitLabWebhookIDHeader)
 		idOK = idOK && len(eventID) <= 128 && strings.TrimSpace(eventID) == eventID
 		for _, c := range eventID {
 			if c < 0x21 || c > 0x7e {
@@ -230,7 +272,122 @@ func gitLabEventMetadata(header http.Header) (string, string, bool) {
 	return eventType, eventID, typeOK && idOK && eventType != "" && len(eventType) <= 64
 }
 
-func singleWebhookHeader(header http.Header, name string) (string, bool) {
+func githubEventMetadata(header http.Header, body []byte) (ports.InboundWebhookEvent, bool, bool) {
+	eventType, typeOK := singleInboundWebhookHeader(header, githubEventHeader)
+	eventID, idOK := singleInboundWebhookHeader(header, githubDeliveryHeader)
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	eventID = strings.TrimSpace(eventID)
+	event := ports.InboundWebhookEvent{Provider: "github", EventType: eventType, EventID: eventID}
+	if !typeOK || !idOK || len(eventType) < 1 || len(eventType) > 64 || !validGitHubDelivery(eventID) {
+		return event, false, false
+	}
+	for _, r := range eventType {
+		if !((r >= 'a' && r <= 'z') || r == '_') {
+			return event, false, false
+		}
+	}
+
+	switch eventType {
+	case "push":
+		var payload struct {
+			Ref     string `json:"ref"`
+			After   string `json:"after"`
+			Deleted bool   `json:"deleted"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return event, true, false
+		}
+		if payload.Deleted || allZeroGitHubWebhookSHA(payload.After) {
+			return event, false, true
+		}
+		ref, ok := normalizeGitHubWebhookRef(payload.Ref)
+		sha := strings.TrimSpace(payload.After)
+		if !ok || !githubWebhookSHA.MatchString(sha) {
+			return event, true, false
+		}
+		event.Ref, event.SHA, event.Body = ref, sha, nil
+		return event, true, true
+
+	case "pull_request":
+		var payload struct {
+			Action      string `json:"action"`
+			PullRequest struct {
+				Head struct {
+					Ref  string `json:"ref"`
+					SHA  string `json:"sha"`
+					Repo *struct {
+						ID int64 `json:"id"`
+					} `json:"repo"`
+				} `json:"head"`
+				Base struct {
+					Repo *struct {
+						ID int64 `json:"id"`
+					} `json:"repo"`
+				} `json:"base"`
+			} `json:"pull_request"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return event, true, false
+		}
+		switch strings.ToLower(strings.TrimSpace(payload.Action)) {
+		case "", "opened", "reopened", "synchronize", "ready_for_review":
+			// GitHub test fixtures and older deliveries may omit action; a valid
+			// PR head still represents a scan-worthy state.
+		default:
+			return event, false, true
+		}
+		ref, ok := normalizeGitHubWebhookRef(payload.PullRequest.Head.Ref)
+		sha := strings.TrimSpace(payload.PullRequest.Head.SHA)
+		if !ok || !githubWebhookSHA.MatchString(sha) {
+			return event, true, false
+		}
+		headRepo, baseRepo := payload.PullRequest.Head.Repo, payload.PullRequest.Base.Repo
+		event.Ref, event.SHA, event.Body = ref, sha, nil
+		// Repository identity is used only to decide whether credentials/build
+		// execution must be suppressed. It is never used as an acquisition URL.
+		event.Fork = headRepo == nil || baseRepo == nil || headRepo.ID == 0 || baseRepo.ID == 0 || headRepo.ID != baseRepo.ID
+		return event, true, true
+
+	default:
+		return event, false, true
+	}
+}
+
+func validGitHubDelivery(value string) bool {
+	if len(value) < 1 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeGitHubWebhookRef(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "refs/heads/")
+	if !githubWebhookRef.MatchString(value) {
+		return "", false
+	}
+	return value, true
+}
+
+func allZeroGitHubWebhookSHA(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if r != '0' {
+			return false
+		}
+	}
+	return true
+}
+
+func singleInboundWebhookHeader(header http.Header, name string) (string, bool) {
 	values := header.Values(name)
 	if len(values) != 1 || values[0] == "" {
 		return "", false
@@ -259,8 +416,8 @@ func validWebhookUUID(value string) bool {
 func (p *inboundWebhookPlane) verifyGitLab(e ports.InboundWebhookEndpoint, publicID string, body []byte, header http.Header, now time.Time) (valid, usedPrevious bool) {
 	signatures := header.Values(gitLabSignatureHeader)
 	if len(signatures) > 0 {
-		messageID, idOK := singleWebhookHeader(header, gitLabWebhookIDHeader)
-		timestampRaw, timestampOK := singleWebhookHeader(header, gitLabTimestampHeader)
+		messageID, idOK := singleInboundWebhookHeader(header, gitLabWebhookIDHeader)
+		timestampRaw, timestampOK := singleInboundWebhookHeader(header, gitLabTimestampHeader)
 		headerOK := len(signatures) == 1 && idOK && timestampOK
 		unixSeconds, parseErr := strconv.ParseInt(strings.TrimSpace(timestampRaw), 10, 64)
 		at := time.Unix(unixSeconds, 0)
@@ -270,7 +427,7 @@ func (p *inboundWebhookPlane) verifyGitLab(e ports.InboundWebhookEndpoint, publi
 		return p.verifyGitLabSigningToken(e, publicID, body, messageID, timestampRaw, signatures[0], headerOK, now)
 	}
 
-	presented, tokenOK := singleWebhookHeader(header, gitLabLegacyAuthHeader)
+	presented, tokenOK := singleInboundWebhookHeader(header, gitLabLegacyAuthHeader)
 	return p.verifyGitLabSecretToken(e, publicID, presented, tokenOK, now)
 }
 
