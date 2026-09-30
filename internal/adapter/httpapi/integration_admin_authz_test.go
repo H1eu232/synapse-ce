@@ -53,6 +53,7 @@ var integrationRoutePermissions = map[string]string{
 	"GET /api/v1/integrations/{id}/bindings":                       "PermView",
 	"DELETE /api/v1/integrations/{id}/bindings/{bindingID}":        "PermManageIntegrations",
 	"GET /api/v1/integrations/{id}/external-runs":                  "PermView",
+	"POST /api/v1/integrations/{id}/inbound-webhook":               "PermAdminister",
 	"POST /api/v1/alerts/test":                                     "PermManageIntegrations",
 	"GET /api/v1/notifications/event-types":                        "PermView",
 	"GET /api/v1/notifications/channels":                           "PermManageIntegrations",
