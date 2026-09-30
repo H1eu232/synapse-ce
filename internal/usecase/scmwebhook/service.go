@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -218,44 +217,14 @@ func (s *Service) ReceiveInboundWebhook(ctx context.Context, identity ports.Inbo
 }
 
 func githubScanTarget(event ports.InboundWebhookEvent) (ref, commit string, fork, scan bool, err error) {
+	if event.Provider != "github" {
+		return "", "", false, false, fmt.Errorf("%w: unsupported SCM webhook provider", shared.ErrValidation)
+	}
 	switch event.EventType {
-	case "push":
-		var payload struct {
-			Ref     string `json:"ref"`
-			After   string `json:"after"`
-			Deleted bool   `json:"deleted"`
-		}
-		if err := json.Unmarshal(event.Body, &payload); err != nil {
-			return "", "", false, false, fmt.Errorf("%w: invalid GitHub push payload", shared.ErrValidation)
-		}
-		if payload.Deleted || allZeroGitHubSHA(payload.After) {
-			return "", "", false, false, nil
-		}
-		ref, commit = strings.TrimSpace(payload.Ref), strings.TrimSpace(payload.After)
-	case "pull_request":
-		var payload struct {
-			Action      string `json:"action"`
-			PullRequest struct {
-				Head struct {
-					Ref  string `json:"ref"`
-					SHA  string `json:"sha"`
-					Repo struct {
-						Fork bool `json:"fork"`
-					} `json:"repo"`
-				} `json:"head"`
-			} `json:"pull_request"`
-		}
-		if err := json.Unmarshal(event.Body, &payload); err != nil {
-			return "", "", false, false, fmt.Errorf("%w: invalid GitHub pull request payload", shared.ErrValidation)
-		}
-		switch payload.Action {
-		case "opened", "reopened", "synchronize", "ready_for_review":
-		default:
-			return "", "", false, false, nil
-		}
-		ref = strings.TrimSpace(payload.PullRequest.Head.Ref)
-		commit = strings.TrimSpace(payload.PullRequest.Head.SHA)
-		fork = payload.PullRequest.Head.Repo.Fork
+	case "push", "pull_request":
+		ref = strings.TrimSpace(event.Ref)
+		commit = strings.TrimSpace(event.SHA)
+		fork = event.EventType == "pull_request" && event.Fork
 	default:
 		return "", "", false, false, nil
 	}
@@ -265,15 +234,4 @@ func githubScanTarget(event ports.InboundWebhookEvent) (ref, commit string, fork
 	return ref, commit, fork, true, nil
 }
 
-func allZeroGitHubSHA(value string) bool {
-	value = strings.TrimSpace(value)
-	if len(value) != 40 && len(value) != 64 {
-		return false
-	}
-	for _, c := range value {
-		if c != '0' {
-			return false
-		}
-	}
-	return true
-}
+
