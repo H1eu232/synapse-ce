@@ -97,7 +97,7 @@ func (s *Service) ConfigureGitHubWebhook(ctx context.Context, tenantID, integrat
 		return GitHubWebhookCredentials{}, err
 	}
 	if item.Provider != integration.Provider("github") || item.Archived {
-		return GitHubWebhookCredentials{}, fmt.Errorf("%w: integration is not an active GitHub integration", shared.ErrValidation)
+		return GitHubWebhookCredentials{}, fmt.Errorf("%w: integration is not an eligible GitHub integration", shared.ErrValidation)
 	}
 	bindings, err := s.integrations.ListBindings(ctx, tenantID, integrationID)
 	if err != nil {
