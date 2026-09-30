@@ -191,8 +191,6 @@ func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id sha
 			return integration.Integration{}, err
 		}
 	}
-		return integration.Integration{}, err
-	}
 	if err := store.recordAuditLocked(ctx, audit); err != nil {
 		return integration.Integration{}, err
 	}
