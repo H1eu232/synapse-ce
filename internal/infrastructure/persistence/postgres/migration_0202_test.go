@@ -57,14 +57,14 @@ func TestInboundWebhookEventDedupeHostileTenant(t *testing.T) {
 	})
 	for _, row := range []struct {
 		tenant shared.ID
-		public, owner string
+		public, owner, endpoint string
 	}{
-		{rls817TenantA, publicA, ownerA},
-		{rls817TenantB, publicB, ownerB},
+		{rls817TenantA, publicA, ownerA, "https://github.com/tenant-a"},
+		{rls817TenantB, publicB, ownerB, "https://github.com/tenant-b"},
 	} {
 		if _, err := fixture.owner.Exec(ctx,
 			"INSERT INTO integrations(id,tenant_id,provider,display_name,endpoint,enabled,created_at,updated_at) VALUES($1,$2,'github',$1,$3,true,now(),now())",
-			row.owner, row.tenant, "https://github.com"); err != nil {
+			row.owner, row.tenant, row.endpoint); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := fixture.owner.Exec(ctx,
@@ -97,7 +97,7 @@ func TestInboundWebhookEventDedupeHostileTenant(t *testing.T) {
 	const publicC = "provisionbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	if _, err := fixture.owner.Exec(ctx,
 		"INSERT INTO integrations(id,tenant_id,provider,display_name,endpoint,enabled,created_at,updated_at) VALUES($1,$2,'github',$1,$3,true,now(),now())",
-		ownerC, rls817TenantB, "https://github.com"); err != nil {
+		ownerC, rls817TenantB, "https://github.com/provision-b"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
