@@ -169,7 +169,7 @@ func (fakeWebhookTx) Run(ctx context.Context, tenant shared.ID, fn func(context.
 	return fn(shared.WithTenant(ctx, tenant))
 }
 
-func TestConfigureGitHubWebhookProvisionsThenRotatesOneTimeSecret(t *testing.T) {
+func TestConfigureGitHubWebhookProvisionsThenRotatesCallerSuppliedSecret(t *testing.T) {
 	svc, _, _ := webhookFixture()
 	admin := &fakeWebhookAdmin{}
 	sealer := &fakeWebhookSealer{}
@@ -179,40 +179,57 @@ func TestConfigureGitHubWebhookProvisionsThenRotatesOneTimeSecret(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	first, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1")
+	firstSecret := "github-webhook-secret-000000000001"
+	first, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1", firstSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Version != 1 || first.Rotated || !strings.HasPrefix(first.Path, "/api/v1/hooks/") || len(first.Secret) < 32 {
-		t.Fatalf("first credentials=%+v", first)
+	if first.Version != 1 || first.Rotated || !strings.HasPrefix(first.Path, "/api/v1/hooks/") {
+		t.Fatalf("first configuration=%+v", first)
 	}
 	if admin.endpoint == nil || admin.endpoint.PublicID != strings.TrimPrefix(first.Path, "/api/v1/hooks/") ||
 		admin.endpoint.CurrentVersion != 1 || admin.endpoint.Provider != "github" {
 		t.Fatalf("provisioned endpoint=%+v", admin.endpoint)
 	}
-	if string(sealer.plaintext) != first.Secret {
-		t.Fatal("sealer did not receive the one-time secret")
+	if string(sealer.plaintext) != firstSecret {
+		t.Fatal("sealer did not receive the caller-supplied secret")
 	}
 	if len(audit.entries) != 1 || audit.entries[0].Action != "integration.github_webhook_provisioned" {
 		t.Fatalf("provision audit=%+v", audit.entries)
 	}
 	for _, value := range audit.entries[0].Metadata {
-		if strings.Contains(value, first.Secret) || strings.Contains(value, admin.endpoint.PublicID) {
+		if strings.Contains(value, firstSecret) || strings.Contains(value, admin.endpoint.PublicID) {
 			t.Fatal("audit metadata contains webhook credential material")
 		}
 	}
 
-	second, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1")
+	secondSecret := "github-webhook-secret-000000000002"
+	second, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1", secondSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Version != 2 || !second.Rotated || second.Path != first.Path || second.Secret == first.Secret ||
+	if second.Version != 2 || !second.Rotated || second.Path != first.Path ||
 		second.PreviousSecretExpiresAt == nil || !second.PreviousSecretExpiresAt.After(now) {
-		t.Fatalf("rotated credentials=%+v", second)
+		t.Fatalf("rotated configuration=%+v", second)
+	}
+	if string(sealer.plaintext) != secondSecret {
+		t.Fatal("sealer did not receive the rotated caller-supplied secret")
 	}
 	if admin.endpoint.CurrentVersion != 2 || len(audit.entries) != 2 ||
 		audit.entries[1].Action != "integration.github_webhook_rotated" {
 		t.Fatalf("rotation endpoint=%+v audit=%+v", admin.endpoint, audit.entries)
+	}
+}
+
+func TestConfigureGitHubWebhookRejectsInvalidSecretWithoutPersisting(t *testing.T) {
+	svc, _, _ := webhookFixture()
+	admin := &fakeWebhookAdmin{}
+	if err := svc.SetAdmin(admin, &fakeWebhookSealer{}, &fakeWebhookAudit{}, fakeWebhookClock{now: time.Now()}, fakeWebhookTx{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1", "too-short")
+	if !errors.Is(err, shared.ErrValidation) || admin.endpoint != nil {
+		t.Fatalf("invalid secret err=%v endpoint=%+v", err, admin.endpoint)
 	}
 }
 
@@ -224,14 +241,14 @@ func TestConfigureGitHubWebhookRequiresSingleBoundGitHubProject(t *testing.T) {
 	if err := svc.SetAdmin(admin, &fakeWebhookSealer{}, &fakeWebhookAudit{}, fakeWebhookClock{now: time.Now()}, fakeWebhookTx{}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1")
+	_, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1", "github-webhook-secret-000000000001")
 	if !errors.Is(err, shared.ErrConflict) || admin.endpoint != nil {
 		t.Fatalf("unbound configure err=%v endpoint=%+v", err, admin.endpoint)
 	}
 
 	fi.bindings = []integration.Binding{{ProjectID: "project-1"}}
 	fi.item.Provider = "jenkins"
-	_, err = svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1")
+	_, err = svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1", "github-webhook-secret-000000000001")
 	if !errors.Is(err, shared.ErrValidation) || admin.endpoint != nil {
 		t.Fatalf("wrong-provider configure err=%v endpoint=%+v", err, admin.endpoint)
 	}
