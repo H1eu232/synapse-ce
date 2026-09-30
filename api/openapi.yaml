@@ -6362,7 +6362,7 @@ paths:
     post:
       tags: [siem]
       operationId: createSIEMSink
-      summary: Create a Splunk or Elasticsearch sink
+      summary: Create a Splunk, Elasticsearch, or Microsoft Sentinel sink
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/SIEMSinkInput"}}}}
       responses:
         "201": {description: Created sink, content: {application/json: {schema: {$ref: "#/components/schemas/SIEMSink"}}}}
@@ -6670,11 +6670,11 @@ components:
         id: {type: string}
         tenant_id: {type: string}
         name: {type: string}
-        provider: {type: string, enum: [splunk_hec, elasticsearch, syslog_tls]}
-        origin: {type: string}
-        target: {type: string}
+        provider: {type: string, enum: [splunk_hec, elasticsearch, syslog_tls, microsoft_sentinel]}
+        origin: {type: string, description: "HTTPS sink origin. Microsoft Sentinel requires an Azure public-cloud Logs Ingestion endpoint under *.ingest.monitor.azure.com on port 443."}
+        target: {type: string, description: "Provider-specific destination. Microsoft Sentinel uses dcr-<immutable-id>/Custom-<stream>."}
         data_class: {type: string, enum: [signal, summary, detail]}
-        ack_mode: {type: string, enum: [hec_acceptance, indexer_ack, bulk_item, transport_write]}
+        ack_mode: {type: string, enum: [hec_acceptance, indexer_ack, bulk_item, transport_write, ingestion_acceptance], description: "Microsoft Sentinel uses ingestion_acceptance and advances only after HTTP 204."}
         indexer_ack_supported: {type: boolean}
         paused: {type: boolean}
         enabled: {type: boolean}
@@ -6690,14 +6690,14 @@ components:
       required: [name, provider, origin, secret]
       properties:
         name: {type: string}
-        provider: {type: string, enum: [splunk_hec, elasticsearch, syslog_tls]}
-        origin: {type: string}
-        target: {type: string}
+        provider: {type: string, enum: [splunk_hec, elasticsearch, syslog_tls, microsoft_sentinel]}
+        origin: {type: string, description: "HTTPS sink origin. Microsoft Sentinel requires an Azure public-cloud Logs Ingestion endpoint under *.ingest.monitor.azure.com on port 443."}
+        target: {type: string, description: "Provider-specific destination. Microsoft Sentinel uses dcr-<immutable-id>/Custom-<stream>."}
         data_class: {type: string, enum: [signal, summary, detail]}
-        ack_mode: {type: string}
+        ack_mode: {type: string, enum: [hec_acceptance, indexer_ack, bulk_item, ingestion_acceptance], description: "Microsoft Sentinel defaults to ingestion_acceptance."}
         indexer_ack_supported: {type: boolean}
         allow_hosts: {type: array, items: {type: string}}
-        secret: {type: string, writeOnly: true}
+        secret: {type: string, writeOnly: true, description: "Write-only provider credential. Microsoft Sentinel expects one-line JSON with tenant_id, client_id, and client_secret."}
         version: {type: integer}
     SIEMStatus:
       type: object

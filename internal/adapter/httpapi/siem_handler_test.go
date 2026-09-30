@@ -101,6 +101,62 @@ func TestSIEMRoutesAreAdminOnlyAndHideSecrets(t *testing.T) {
 	}
 }
 
+func TestSIEMSentinelCreateValidatesTargetAndHidesCredential(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	cipher, err := vault.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := siemuc.NewMemory()
+	svc, err := siemuc.NewService(store, store, store, vaultSealer{cipher}, nil, nil, siemClock{now: time.Unix(1_700_000_000, 0).UTC()}, &siemIDs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &Router{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	rt.SetSIEM(svc)
+	mux := rt.routes()
+
+	const credential = `{"tenant_id":"11111111-1111-4111-8111-111111111111","client_id":"22222222-2222-4222-8222-222222222222","client_secret":"sentinel-client-secret"}`
+	validBody, err := json.Marshal(map[string]any{
+		"name": "Sentinel",
+		"provider": "microsoft_sentinel",
+		"origin": "https://example.eastus-1.ingest.monitor.azure.com",
+		"target": "dcr-0123456789abcdef0123456789abcdef/Custom-SynapseSIEM",
+		"secret": credential,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := siemAs(mux, http.MethodPost, "/api/v1/siem/sinks", string(validBody), "tenant-a")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	if bytes.Contains(created.Body.Bytes(), []byte("sentinel-client-secret")) || bytes.Contains(created.Body.Bytes(), []byte("client_secret")) {
+		t.Fatalf("response leaked Sentinel credential material: %s", created.Body.String())
+	}
+
+	invalidBody, err := json.Marshal(map[string]any{
+		"name": "Bad Sentinel",
+		"provider": "microsoft_sentinel",
+		"origin": "https://example.eastus-1.ingest.monitor.azure.com",
+		"target": "dcr-0123456789abcdef0123456789abcdef/SynapseSIEM",
+		"secret": credential,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected := siemAs(mux, http.MethodPost, "/api/v1/siem/sinks", string(invalidBody), "tenant-a")
+	if rejected.Code != http.StatusBadRequest {
+		t.Fatalf("non-Custom stream status %d %s", rejected.Code, rejected.Body.String())
+	}
+	if bytes.Contains(rejected.Body.Bytes(), []byte("sentinel-client-secret")) {
+		t.Fatalf("validation response leaked Sentinel credential: %s", rejected.Body.String())
+	}
+}
+
 func TestSIEMRoutesHideOtherTenants(t *testing.T) {
 	key := make([]byte, 32)
 	for i := range key {

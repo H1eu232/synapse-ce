@@ -53,6 +53,17 @@ type delayedAckDriver struct {
 	polls int
 }
 
+type secretValidatingDriver struct {
+	scriptDriver
+}
+
+func (d *secretValidatingDriver) ValidateSecret(secret string) error {
+	if secret != "valid-provider-secret" {
+		return invalid("provider secret")
+	}
+	return nil
+}
+
 type captureSIEMMetrics struct {
 	items   map[siem.ItemDisposition]int
 	backlog map[string]int
@@ -281,18 +292,11 @@ func ackAll(req siem.Delivery) siem.DeliveryResult {
 
 func testService(t *testing.T) (*Service, *Memory, *scriptDriver, *memAudit, fakeClock) {
 	t.Helper()
-	cipher, err := vault.NewCipher(make([]byte, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range [32]byte{} {
-		_ = i
-	}
 	key := make([]byte, 32)
 	for i := range key {
 		key[i] = byte(i + 1)
 	}
-	cipher, err = vault.NewCipher(key)
+	cipher, err := vault.NewCipher(key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +309,43 @@ func testService(t *testing.T) (*Service, *Memory, *scriptDriver, *memAudit, fak
 		t.Fatal(err)
 	}
 	return svc, store, driver, auditLog, clock
+}
+
+func TestProviderSecretValidatorRunsOnCreateRotateAndOriginChange(t *testing.T) {
+	svc, _, _, _, _ := testService(t)
+	ctx := shared.WithTenant(context.Background(), "tenant-a")
+	driver := &secretValidatingDriver{scriptDriver: scriptDriver{fn: func(_ int, req siem.Delivery) (siem.DeliveryResult, error) {
+		return ackAll(req), nil
+	}}}
+	svc.drivers[siem.ProviderMicrosoftSentinel] = driver
+
+	base := SinkInput{
+		Name: "Sentinel", Provider: siem.ProviderMicrosoftSentinel,
+		Origin: "https://example.eastus-1.ingest.monitor.azure.com",
+		Target: "dcr-0123456789abcdef0123456789abcdef/Custom-SynapseSIEM",
+	}
+	if _, err := svc.Create(ctx, "ada", SinkInput{
+		Name: base.Name, Provider: base.Provider, Origin: base.Origin, Target: base.Target,
+		Secret: "invalid-provider-secret",
+	}); err == nil {
+		t.Fatal("create accepted provider-invalid secret")
+	}
+	sink, err := svc.Create(ctx, "ada", SinkInput{
+		Name: base.Name, Provider: base.Provider, Origin: base.Origin, Target: base.Target,
+		Secret: "valid-provider-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RotateSecret(ctx, "ada", sink.ID, "invalid-provider-secret", sink.Version); err == nil {
+		t.Fatal("rotate accepted provider-invalid secret")
+	}
+	if _, err := svc.ChangeOrigin(ctx, "ada", sink.ID, OriginInput{
+		Origin: "https://other.eastus-1.ingest.monitor.azure.com",
+		Secret: "invalid-provider-secret", Replay: siem.ReplayCursor, Version: sink.Version,
+	}); err == nil {
+		t.Fatal("origin change accepted provider-invalid secret")
+	}
 }
 
 func TestUpdateMergesOnlyPresentFields(t *testing.T) {

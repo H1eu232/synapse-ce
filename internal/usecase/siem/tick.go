@@ -2,6 +2,7 @@ package siemuc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -446,6 +447,7 @@ func (s *Service) prepareAudit(ctx context.Context, sink siem.Sink, cp siem.Chec
 	if err != nil {
 		return nil, siem.Problem{Kind: "blocked", Message: "credential unavailable"}, nil
 	}
+	known := redactionSecrets(sink.Provider, secret)
 	var out []built
 	var bytes int
 	for _, row := range accepted {
@@ -453,7 +455,7 @@ func (s *Service) prepareAudit(ctx context.Context, sink siem.Sink, cp siem.Chec
 		if err != nil {
 			return nil, siem.Problem{Kind: "blocked", Message: "data class is invalid"}, nil
 		}
-		exported := siem.ExportAudit(sink.TenantID.String(), row, class, []string{secret}, s.publicBase)
+		exported := siem.ExportAudit(sink.TenantID.String(), row, class, known, s.publicBase)
 		item := siem.BatchItem{
 			Ordinal: len(out), RecordID: exported.RecordID, DataClass: class, EngagementID: row.EngagementID,
 			Disposition: exported.Disposition, PayloadDigest: exported.Digest, Mapping: exported.Format,
@@ -489,6 +491,7 @@ func (s *Service) prepareIncident(ctx context.Context, sink siem.Sink, cp siem.C
 	if err != nil {
 		return nil, siem.Problem{Kind: "blocked", Message: "credential unavailable"}, nil
 	}
+	known := redactionSecrets(sink.Provider, secret)
 	source := siem.SourceIncidentLive
 	if phase == siem.PhaseHistorical {
 		source = siem.SourceIncidentHistorical
@@ -500,7 +503,7 @@ func (s *Service) prepareIncident(ctx context.Context, sink siem.Sink, cp siem.C
 		if err != nil {
 			return nil, siem.Problem{Kind: "blocked", Message: "data class is invalid"}, nil
 		}
-		exported := siem.ExportIncident(sink.TenantID.String(), row, class, []string{secret}, s.publicBase)
+		exported := siem.ExportIncident(sink.TenantID.String(), row, class, known, s.publicBase)
 		item := siem.BatchItem{
 			Ordinal: len(out), RecordID: exported.RecordID, DataClass: class, EngagementID: row.EngagementID,
 			Disposition: exported.Disposition, PayloadDigest: exported.Digest, Mapping: exported.Format,
@@ -609,6 +612,20 @@ func (s *Service) outbound(ctx context.Context, sink siem.Sink, batch siem.Batch
 		records = append(records, siem.DeliveryRecord{ID: item.RecordID, Body: plain})
 	}
 	return records, nil
+}
+
+func redactionSecrets(provider siem.Provider, secret string) []string {
+	known := []string{secret}
+	if provider != siem.ProviderMicrosoftSentinel {
+		return known
+	}
+	var credential struct {
+		ClientSecret string `json:"client_secret"`
+	}
+	if json.Unmarshal([]byte(secret), &credential) == nil && credential.ClientSecret != "" && credential.ClientSecret != secret {
+		known = append(known, credential.ClientSecret)
+	}
+	return known
 }
 
 func payloadAAD(sink siem.Sink, recordID string) []byte {
