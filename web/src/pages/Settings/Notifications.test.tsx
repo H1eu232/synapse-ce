@@ -203,10 +203,11 @@ describe('notification settings', () => {
       await screen.findByText(/Only tenant administrators can add a channel/),
     ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add channel' })).not.toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: 'Event' })).toBeInTheDocument()
+    // The rule form and the channel list load after the notice; wait for them rather than racing.
+    expect(await screen.findByRole('combobox', { name: 'Event' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit channel' }))
-    expect(screen.getByLabelText('Webhook URL')).toBeDisabled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit channel' }))
+    expect(await screen.findByLabelText('Webhook URL')).toBeDisabled()
     expect(screen.getByLabelText(/HMAC secret/)).toBeDisabled()
     fireEvent.change(screen.getAllByLabelText('Name')[0], { target: { value: 'Renamed' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save channel' }))
