@@ -70,13 +70,13 @@ type GitHubWebhookConfiguration struct {
 	PreviousSecretExpiresAt *time.Time `json:"previous_secret_expires_at,omitempty"`
 }
 
-func randomWebhookToken(bytes int) (string, error) {
+func randomWebhookPublicID(bytes int) (string, error) {
 	if bytes < 32 {
-		return "", fmt.Errorf("%w: webhook random token size is too small", shared.ErrValidation)
+		return "", fmt.Errorf("%w: webhook public ID random size is too small", shared.ErrValidation)
 	}
 	raw := make([]byte, bytes)
 	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate webhook credential: %w", err)
+		return "", fmt.Errorf("generate webhook public ID: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
@@ -118,7 +118,7 @@ func (s *Service) ConfigureGitHubWebhook(ctx context.Context, tenantID, integrat
 		now := s.clock.Now().UTC()
 		action := "integration.github_webhook_provisioned"
 		if !found {
-			publicID, err := randomWebhookToken(32)
+			publicID, err := randomWebhookPublicID(32)
 			if err != nil {
 				return err
 			}
