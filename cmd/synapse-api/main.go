@@ -1481,8 +1481,17 @@ func main() {
 			log.Error("inbound webhook runtime DB role cannot enforce tenant isolation", "err", err)
 			os.Exit(1)
 		}
+		webhookRepository := postgres.NewInboundWebhookRepository(databasePool)
 		githubWebhookReceiver := scmwebhookuc.NewService(integrationService, projectService)
-		router.SetInboundWebhookPlane(postgres.NewInboundWebhookRepository(databasePool), vaultCipher, githubWebhookReceiver)
+		if err := githubWebhookReceiver.SetAdmin(
+			webhookRepository, vaultCipher, auditLog, clock,
+			postgres.NewTenantTransactionRunner(databasePool),
+		); err != nil {
+			log.Error("GitHub inbound webhook administration init failed", "err", err)
+			os.Exit(1)
+		}
+		router.SetInboundWebhookPlane(webhookRepository, vaultCipher, githubWebhookReceiver)
+		router.SetInboundWebhookAdmin(githubWebhookReceiver)
 	}
 	if cfg.OwnershipMode != "off" && cfg.OwnershipMode != "observe" && cfg.OwnershipMode != "enforce" {
 		log.Error("SYNAPSE_OWNERSHIP_MODE must be off, observe or enforce")
