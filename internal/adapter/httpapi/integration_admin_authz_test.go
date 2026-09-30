@@ -14,6 +14,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/persistence/memory"
 	integrationuc "github.com/KKloudTarus/synapse-ce/internal/usecase/integrations"
 	notificationuc "github.com/KKloudTarus/synapse-ce/internal/usecase/notification"
+	scmwebhookuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scmwebhook"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 )
@@ -53,6 +54,7 @@ var integrationRoutePermissions = map[string]string{
 	"GET /api/v1/integrations/{id}/bindings":                       "PermView",
 	"DELETE /api/v1/integrations/{id}/bindings/{bindingID}":        "PermManageIntegrations",
 	"GET /api/v1/integrations/{id}/external-runs":                  "PermView",
+	"POST /api/v1/integrations/{id}/inbound-webhook":               "PermAdminister",
 	"POST /api/v1/alerts/test":                                     "PermManageIntegrations",
 	"GET /api/v1/notifications/event-types":                        "PermView",
 	"GET /api/v1/notifications/channels":                           "PermManageIntegrations",
@@ -143,6 +145,7 @@ func integrationSurfaceRouter() *Router {
 	notifications.SetTemplateStore(memory.NewNotificationTemplateStore())
 	rt.SetNotifications(notifications)
 	rt.SetIntegrations(&integrationuc.Service{})
+	rt.SetInboundWebhookAdmin(&scmwebhookuc.Service{})
 	rt.SetSIEM(&siemuc.Service{})
 	rt.SetConnectors(&fakeConnectors{})
 	rt.SetAlerts(&fakeAlerts{})

@@ -172,7 +172,7 @@ func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id sha
 	if item.Archived || item.Version != expectedVersion {
 		return integration.Integration{}, shared.ErrConflict
 	}
-	if enabled {
+	if enabled && item.Provider != integration.Provider("github") {
 		if _, configured := store.credentials[credentialKey(tenantID, id, "default")]; !configured {
 			return integration.Integration{}, shared.ErrConflict
 		}
@@ -186,8 +186,10 @@ func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id sha
 		if !tested {
 			return integration.Integration{}, shared.ErrConflict
 		}
-	} else if err := store.invalidateActiveOperationsLocked(ctx, tenantID, id, store.clock.Now().UTC()); err != nil {
-		return integration.Integration{}, err
+	} else if !enabled {
+		if err := store.invalidateActiveOperationsLocked(ctx, tenantID, id, store.clock.Now().UTC()); err != nil {
+			return integration.Integration{}, err
+		}
 	}
 	if err := store.recordAuditLocked(ctx, audit); err != nil {
 		return integration.Integration{}, err

@@ -147,7 +147,7 @@ func (a *Acquirer) Acquire(ctx context.Context, req ports.AcquireRequest) (*port
 	case "", ports.TargetLocal:
 		return acquireLocal(req.Value, a.maxWorkspaceBytes)
 	case ports.TargetGit:
-		return a.acquireGit(ctx, req.Value, req.Ref, req.BaseRef, req.BaseCommit, req.RequireCodeQualityHistory)
+		return a.acquireGit(ctx, req.Value, req.Ref, req.Commit, req.BaseRef, req.BaseCommit, req.RequireCodeQualityHistory, req.DisableGitCredentials)
 	case ports.TargetArchive:
 		return acquireArchive(req.Value, a.maxWorkspaceBytes)
 	case ports.TargetImage:
@@ -419,7 +419,7 @@ func (a *Acquirer) gitAuth(ctx context.Context, rawURL string) (cloneURL string,
 	return u.String(), authEnv, []string{credDir}, cleanup, nil
 }
 
-func (a *Acquirer) acquireGit(ctx context.Context, url, ref, baseRef, baseCommit string, cqHistory bool) (*ports.Workspace, error) {
+func (a *Acquirer) acquireGit(ctx context.Context, url, ref, commit, baseRef, baseCommit string, cqHistory, disableCredentials bool) (*ports.Workspace, error) {
 	if err := validateGitURL(url); err != nil {
 		return nil, err
 	}
@@ -427,6 +427,9 @@ func (a *Acquirer) acquireGit(ctx context.Context, url, ref, baseRef, baseCommit
 		if err := validateGitRef(candidate); err != nil {
 			return nil, err
 		}
+	}
+	if commit != "" && !gitCommitRE.MatchString(commit) {
+		return nil, fmt.Errorf("%w: invalid git commit", shared.ErrValidation)
 	}
 	if baseCommit != "" && !gitCommitRE.MatchString(baseCommit) {
 		return nil, fmt.Errorf("%w: invalid git base commit", shared.ErrValidation)
@@ -442,11 +445,17 @@ func (a *Acquirer) acquireGit(ctx context.Context, url, ref, baseRef, baseCommit
 	} else if herr := a.rejectInternalHost(host); herr != nil {
 		return nil, herr
 	}
-	// Resolve a private-repo credential for this host (a no-op that returns the original url when
-	// no connector matches). The token is supplied to git via GIT_ASKPASS, never argv or the URL.
-	cloneURL, authEnv, roPaths, authCleanup, err := a.gitAuth(ctx, url)
-	if err != nil {
-		return nil, err
+	// Resolve a private-repo credential for this host unless the caller explicitly
+	// suppresses credentials. Fork PR webhooks use the suppression path so untrusted
+	// fork code can never cause a tenant SCM token to be presented to git.
+	cloneURL, authEnv, roPaths := url, []string(nil), []string(nil)
+	authCleanup := func() {}
+	if !disableCredentials {
+		var err error
+		cloneURL, authEnv, roPaths, authCleanup, err = a.gitAuth(ctx, url)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer authCleanup()
 
@@ -477,7 +486,7 @@ func (a *Acquirer) acquireGit(ctx context.Context, url, ref, baseRef, baseCommit
 		"-c", "http.followRedirects=false",
 		"clone", "--depth", cloneDepth, "--no-tags", "--single-branch",
 	}
-	if ref != "" {
+	if ref != "" && commit == "" {
 		args = append(args, "--branch", ref) // validated: no option injection
 	}
 	args = append(args, "--", cloneURL, dir)
@@ -535,18 +544,32 @@ func (a *Acquirer) acquireGit(ctx context.Context, url, ref, baseRef, baseCommit
 		}
 	}
 
-	commit, err := a.gitCommit(ctx, dir, url, gitEnv)
+	// Webhook-triggered scans pin the exact provider commit instead of trusting a
+	// mutable branch head. Fetching by object ID also keeps the repository URL
+	// server-owned: no clone URL from the provider payload is ever consumed.
+	if commit != "" {
+		if !a.gitFetchPinnedCommit(ctx, dir, url, gitEnv, roPaths, commit) ||
+			!a.gitCheckoutPinnedCommit(ctx, dir, url, gitEnv) {
+			_ = cleanup()
+			return nil, fmt.Errorf("git fetch pinned commit failed")
+		}
+	}
+	resolvedCommit, err := a.gitCommit(ctx, dir, url, gitEnv)
 	if err != nil {
 		_ = cleanup()
 		return nil, err
 	}
-	base, mergeBase := a.resolveComparison(ctx, dir, url, gitEnv, roPaths, commit, ref, baseRef, baseCommit)
+	if commit != "" && !strings.EqualFold(resolvedCommit, commit) {
+		_ = cleanup()
+		return nil, fmt.Errorf("git resolved commit does not match requested pin")
+	}
+	base, mergeBase := a.resolveComparison(ctx, dir, url, gitEnv, roPaths, resolvedCommit, ref, baseRef, baseCommit)
 	lockfiles, localModules, unresolved, err := inspectWorkspace(dir, a.maxWorkspaceBytes)
 	if err != nil {
 		_ = cleanup()
 		return nil, err
 	}
-	return &ports.Workspace{Dir: dir, Commit: commit, BaseCommit: base, MergeBase: mergeBase, Lockfiles: lockfiles, LocalModules: localModules, UnresolvedEcosystems: unresolved, Cleanup: cleanup}, nil
+	return &ports.Workspace{Dir: dir, Commit: resolvedCommit, BaseCommit: base, MergeBase: mergeBase, Lockfiles: lockfiles, LocalModules: localModules, UnresolvedEcosystems: unresolved, Cleanup: cleanup}, nil
 }
 
 // resolveComparison is deliberately best-effort: an unavailable base never turns a
@@ -580,6 +603,34 @@ func (a *Acquirer) resolveComparison(ctx context.Context, dir, url string, gitEn
 		return "", ""
 	}
 	return base, mergeBase
+}
+
+func (a *Acquirer) gitFetchPinnedCommit(ctx context.Context, dir, url string, gitEnv, roPaths []string, commit string) bool {
+	args := []string{"-c", "credential.helper=", "-c", "http.followRedirects=false",
+		"fetch", "--depth", "1", "--no-tags", "origin", commit}
+	if a.sandbox != nil {
+		host, err := gitHost(url)
+		if err != nil {
+			return false
+		}
+		egress, hostNet := a.sandboxNet([]string{host})
+		res, err := a.sandbox.Run(ctx, ports.ToolSpec{Name: "git", Args: args, Env: gitEnv, Workdir: dir, ReadOnlyPaths: roPaths, EgressPolicy: egress, HostNetwork: hostNet})
+		return err == nil && res.ExitCode == 0
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir, cmd.Env = dir, append(os.Environ(), gitEnv...)
+	return cmd.Run() == nil
+}
+
+func (a *Acquirer) gitCheckoutPinnedCommit(ctx context.Context, dir, url string, gitEnv []string) bool {
+	args := []string{"checkout", "--detach", "FETCH_HEAD"}
+	if a.sandbox != nil {
+		res, err := a.sandbox.Run(ctx, ports.ToolSpec{Name: "git", Args: args, Env: gitEnv, Workdir: dir})
+		return err == nil && res.ExitCode == 0
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir, cmd.Env = dir, append(os.Environ(), gitEnv...)
+	return cmd.Run() == nil
 }
 
 func (a *Acquirer) gitFetch(ctx context.Context, dir, url string, gitEnv, roPaths []string, ref, destination string) bool {
