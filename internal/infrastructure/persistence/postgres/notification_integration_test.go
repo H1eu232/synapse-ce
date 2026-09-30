@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -479,6 +480,7 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 	}
 	exec("INSERT INTO engagements(id,tenant_id,name) VALUES('eng','notify-a','E')")
 	repo := NewNotificationRepository(pool)
+	repo.SetEventProjector(notificationuc.NewEventBuilders())
 	channel := notification.Channel{TenantID: tenant, ID: "channel", Name: "Hook", Type: notification.ChannelWebhook, Enabled: true, Revision: 1, SecretVersion: 1, CreatedAt: now, UpdatedAt: now}
 	if _, err := repo.CreateChannel(ctx, channel, "sealed"); err != nil {
 		t.Fatal(err)
@@ -567,6 +569,7 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertPublishedEventSchema(t, w.Event)
+		assertComposedFromSource(t, w.Event)
 		if w.Event.Type == notification.EventFleetAgentOffline {
 			exec("UPDATE fleet_agents SET last_seen_at=$1 WHERE id='agent'", now.Add(3*time.Minute))
 			if relevant, e := deliveryStillRelevant(repo, ctx, w); e != nil || relevant {
@@ -594,5 +597,51 @@ func TestNotificationPostgresCapturedSources(t *testing.T) {
 		return tx.QueryRow(ctx, `SELECT count(*) FROM notification_deliveries d JOIN notification_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id WHERE e.source_kind='incident'`).Scan(&count)
 	}); err != nil || count != 2 {
 		t.Fatalf("incident deliveries=%d, want 2: %v", count, err)
+	}
+}
+
+// assertComposedFromSource checks that a captured event carries the data the migration 0163
+// trigger writes, whether the trigger wrote it or the builder composed it from an identity-only
+// record, and that its snapshot carries the names read from the source rows.
+func assertComposedFromSource(t *testing.T, e notification.Event) {
+	t.Helper()
+	want := map[notification.EventType]struct {
+		data string
+		vars map[string]string
+	}{
+		notification.EventScanCompleted: {
+			`{"scan_id": "scan", "summary": "A scan completed successfully.", "title": "Scan completed", "scan_kind": "git"}`,
+			map[string]string{"engagement_name": "E", "target": "ignored", "scan_kind": "git"},
+		},
+		notification.EventQualityGateFailed: {
+			`{"title": "Quality gate failed", "summary": "A finalized project analysis failed its quality gate.", "project_id": "project", "analysis_id": "analysis"}`,
+			map[string]string{"project_name": "P", "failed_conditions": "0"},
+		},
+		notification.EventIncidentCreated: {
+			`{"title": "Detected", "summary": "Fleet correlation created an incident.", "asset_id": "", "incident_id": "incident"}`,
+			map[string]string{"severity": "high", "title": "Detected"},
+		},
+	}[e.Type]
+	if want.data == "" {
+		return
+	}
+	var got, expected map[string]any
+	if err := json.Unmarshal(e.Data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(want.data), &expected); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, expected) {
+		t.Errorf("%s data = %s, want %s", e.Type, e.Data, want.data)
+	}
+	snapshot, err := notification.DecodeTemplateContext(e.Context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range want.vars {
+		if snapshot.Vars[name] != value {
+			t.Errorf("%s variable %s = %q, want %q", e.Type, name, snapshot.Vars[name], value)
+		}
 	}
 }

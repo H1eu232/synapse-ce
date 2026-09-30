@@ -24,8 +24,11 @@ type EventBuilders struct {
 type eventBuilder struct {
 	// subjectKey names the data key that holds the subject ID.
 	subjectKey string
+	// data composes the event's data from the source facts when a captured record carries only its
+	// identity (#1344). The result is the webhook body's data object, a public contract (#1411).
+	data func(e domain.Event, facts sourceFacts) map[string]any
 	// vars returns the type's own variables; the common ones are added by Project.
-	vars func(e domain.Event, data eventData) map[string]string
+	vars func(e domain.Event, data eventData, facts sourceFacts) map[string]string
 	// relevant re-checks a queued delivery against the source; nil means always relevant.
 	relevant func(ctx context.Context, facts ports.NotificationRelevance, work ports.NotificationWork, data eventData) (bool, error)
 }
@@ -37,23 +40,31 @@ func NewEventBuilders() *EventBuilders {
 	return &EventBuilders{builders: eventBuilders()}
 }
 
-// Project names the event's subject and takes its template context snapshot. Variables a producer
-// already put in e.Context (values only it could read at capture) are kept over derived ones; the
-// catalog then decides which survive (domain.EventSpec.Snapshot).
+// Project names the event's subject and takes its template context snapshot. A producer passes what
+// it read from the source row as the variables of e.Context: the builder composes the data from
+// them when the capture recorded identity only, keeps them over derived variables, and the catalog
+// then decides which survive (domain.EventSpec.Snapshot).
 func (b *EventBuilders) Project(_ context.Context, e domain.Event) (domain.Event, error) {
 	spec, ok := domain.LookupEvent(e.Type)
 	if !ok {
 		return e, fmt.Errorf("%w: unknown notification event type", shared.ErrValidation)
 	}
-	data := decodeEventData(e.Data)
 	seed, err := domain.DecodeTemplateContext(e.Context)
 	if err != nil {
 		return e, err
 	}
+	facts := sourceFacts(seed.Vars)
 	builder := b.builders[e.Type]
+	data := decodeEventData(e.Data)
+	if builder.data != nil && len(data) == 0 {
+		if e.Data, err = json.Marshal(builder.data(e, facts)); err != nil {
+			return e, err
+		}
+		data = decodeEventData(e.Data)
+	}
 	vars := commonVars(spec, e, data)
 	if builder.vars != nil {
-		for name, value := range builder.vars(e, data) {
+		for name, value := range builder.vars(e, data, facts) {
 			vars[name] = value
 		}
 	}
@@ -124,6 +135,13 @@ func (d eventData) time(key string) (time.Time, bool) {
 	t, err := time.Parse(time.RFC3339Nano, d.text(key))
 	return t, err == nil
 }
+
+// sourceFacts are the values a producer read from the source row, passed as context variables.
+// Names that are not catalog variables (identifiers, raw values a builder cleans) never reach the
+// snapshot.
+type sourceFacts map[string]string
+
+func (f sourceFacts) get(name string) string { return strings.TrimSpace(f[name]) }
 
 // formatTime is the stored form of every time variable: RFC 3339 in UTC, so the send-time render
 // can present it in the tenant's zone (#1365).
