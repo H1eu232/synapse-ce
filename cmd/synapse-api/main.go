@@ -1557,6 +1557,9 @@ func main() {
 		notificationService.SetTransactionRunner(postgres.NewTenantTransactionRunner(databasePool))
 		notificationService.SetDisabledChannelTypes(disabledNotificationTypes)
 		notificationService.SetTemplateStore(postgres.NewNotificationTemplateStore(databasePool))
+		// Template resolution (#1371) reads the tenant default_locale; the built-in tier stays the
+		// empty catalog until #1366 ships built-in templates.
+		notificationService.SetTenantSettings(tenantSettingsStore)
 		router.SetNotifications(notificationService)
 		// The API still needs SMTP for contact verification and personal inbox mail.
 		userContactService, notificationErr = usercontacts.NewService(postgres.NewUserContactStore(databasePool), userRepo, vaultCipher, notificationSender, ids, clock, usercontacts.DeriveVerifierKey(cfg.VaultMasterKey), cfg.NotificationSMTPHost != "" && cfg.NotificationSMTPFrom != "")

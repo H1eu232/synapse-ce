@@ -186,3 +186,21 @@ func (rt *Router) archiveNotificationTemplate(w http.ResponseWriter, r *http.Req
 		return s.ArchiveTemplate(r.Context(), actor, id, in)
 	})(w, r)
 }
+
+// previewNotificationTemplateResolution answers which template a channel renders an event type
+// with (#1371), so the rule form can show it per selected channel. It resolves on the server,
+// through the same code the send-time renderer (#1365) will call, instead of re-implementing the
+// tiers in the console. The body names the tier, template and version, never template source.
+func (rt *Router) previewNotificationTemplateResolution(w http.ResponseWriter, r *http.Request) {
+	id, err := notificationID(r)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	resolution, err := rt.notifications.PreviewTemplateResolution(r.Context(), id, domain.EventType(r.URL.Query().Get("event_type")))
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resolution)
+}

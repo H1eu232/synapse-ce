@@ -535,6 +535,7 @@ func (rt *Router) routes() *http.ServeMux {
 			mux.HandleFunc("POST /api/v1/notifications/templates/{nid}/activate", rt.authz(userdom.PermManageIntegrations, rt.activateNotificationTemplate))
 			mux.HandleFunc("POST /api/v1/notifications/templates/{nid}/rollback", rt.authz(userdom.PermManageIntegrations, rt.rollbackNotificationTemplate))
 			mux.HandleFunc("POST /api/v1/notifications/templates/{nid}/archive", rt.authz(userdom.PermManageIntegrations, rt.archiveNotificationTemplate))
+			mux.HandleFunc("GET /api/v1/notifications/channels/{nid}/template-resolution", rt.authz(userdom.PermManageIntegrations, rt.previewNotificationTemplateResolution))
 		}
 	}
 	if rt.siem != nil {

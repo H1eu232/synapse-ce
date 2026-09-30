@@ -81,6 +81,8 @@ type Channel struct {
 	DeletedAt     *time.Time  `json:"deleted_at,omitempty"`
 	// Health is maintained by the delivery worker (#1464); administrators change it only by resuming.
 	Health ChannelHealth `json:"health"`
+	// TemplateBinding is the channel's template and locale (#1371).
+	TemplateBinding
 }
 
 func (c Channel) Validate() error {
@@ -90,7 +92,7 @@ func (c Channel) Validate() error {
 	if c.Type == ChannelEmail && len(c.Recipients) == 0 {
 		return fmt.Errorf("%w: email channel requires recipients", shared.ErrValidation)
 	}
-	return nil
+	return c.TemplateBinding.Validate(c.Type)
 }
 
 type Rule struct {
