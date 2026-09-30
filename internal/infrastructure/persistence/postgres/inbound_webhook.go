@@ -47,7 +47,7 @@ func (s *InboundWebhookRepository) LookupInboundWebhook(ctx context.Context, pub
 	var previousExpiresAt *time.Time
 	err = requireTenant(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
-            SELECT e.owner_kind, e.owner_id,
+            SELECT e.owner_kind, e.owner_id, i.provider,
                 e.enabled AND i.enabled AND NOT i.archived,
                 e.current_version, e.current_sealed, e.previous_sealed,
                 e.previous_expires_at, e.revoked_at, e.rate_per_minute
@@ -55,7 +55,7 @@ func (s *InboundWebhookRepository) LookupInboundWebhook(ctx context.Context, pub
             JOIN integrations i ON i.tenant_id=e.tenant_id AND i.id=e.owner_id
             WHERE e.public_id=$1 AND e.tenant_id=$2
         `, publicID, tenantID).Scan(
-			&e.OwnerKind, &e.OwnerID, &e.Enabled, &e.CurrentVersion,
+			&e.OwnerKind, &e.OwnerID, &e.Provider, &e.Enabled, &e.CurrentVersion,
 			&e.CurrentSealed, &e.PreviousSealed, &previousExpiresAt,
 			&e.RevokedAt, &e.RatePerMinute,
 		)
@@ -106,4 +106,27 @@ func (s *InboundWebhookRepository) AdmitInboundWebhook(ctx context.Context, iden
 		).Scan(&decision)
 	})
 	return decision, err
+}
+
+
+func (s *InboundWebhookRepository) ClaimInboundWebhookEvent(ctx context.Context, identity ports.InboundWebhookIdentity, provider, eventID string, at time.Time) (bool, error) {
+	if s == nil || s.pool == nil || identity.PublicID == "" || identity.TenantID.IsZero() ||
+		identity.OwnerKind != "integration" || identity.OwnerID == "" || provider == "" ||
+		eventID == "" || len(provider) > 64 || len(eventID) > 128 {
+		return false, nil
+	}
+	claimed := false
+	err := requireTenant(ctx, s.pool, identity.TenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO inbound_webhook_events(tenant_id,public_id,provider,event_id,received_at)
+			VALUES($1,$2,$3,$4,$5)
+			ON CONFLICT (tenant_id,public_id,provider,event_id) DO NOTHING
+		`, identity.TenantID, identity.PublicID, provider, eventID, at.UTC())
+		if err != nil {
+			return err
+		}
+		claimed = tag.RowsAffected() == 1
+		return nil
+	})
+	return claimed, err
 }
