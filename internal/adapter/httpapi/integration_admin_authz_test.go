@@ -14,6 +14,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/persistence/memory"
 	integrationuc "github.com/KKloudTarus/synapse-ce/internal/usecase/integrations"
 	notificationuc "github.com/KKloudTarus/synapse-ce/internal/usecase/notification"
+	scmwebhookuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scmwebhook"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 )
@@ -144,6 +145,7 @@ func integrationSurfaceRouter() *Router {
 	notifications.SetTemplateStore(memory.NewNotificationTemplateStore())
 	rt.SetNotifications(notifications)
 	rt.SetIntegrations(&integrationuc.Service{})
+	rt.SetInboundWebhookAdmin(&scmwebhookuc.Service{})
 	rt.SetSIEM(&siemuc.Service{})
 	rt.SetConnectors(&fakeConnectors{})
 	rt.SetAlerts(&fakeAlerts{})
