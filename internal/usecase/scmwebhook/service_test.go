@@ -96,6 +96,13 @@ func TestGitHubWebhookRejectsInvalidSHAAndAmbiguousBinding(t *testing.T) {
 	if !errors.Is(err, shared.ErrValidation) || len(scans.calls) != 0 {
 		t.Fatalf("invalid sha err=%v calls=%d", err, len(scans.calls))
 	}
+	upperSHA := strings.Repeat("A", 40)
+	err = svc.ReceiveInboundWebhook(context.Background(), identity, ports.InboundWebhookEvent{
+		Provider: "github", EventType: "push", EventID: "d3-upper", Ref: "main", SHA: upperSHA,
+	})
+	if !errors.Is(err, shared.ErrValidation) || len(scans.calls) != 0 {
+		t.Fatalf("uppercase sha err=%v calls=%d", err, len(scans.calls))
+	}
 	f := svc.integrations.(*fakeIntegrations)
 	f.bindings = append(f.bindings, integration.Binding{ID: "binding-2", TenantID: "tenant-1", IntegrationID: "integration-1", ProjectID: "project-2"})
 	err = svc.ReceiveInboundWebhook(context.Background(), identity, ports.InboundWebhookEvent{
