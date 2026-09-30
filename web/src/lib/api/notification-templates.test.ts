@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from './client'
 import { notificationTemplatesApi, templateValidationError } from './notification-templates'
+import { formatValidation } from '../../pages/Settings/Templates/TemplateEditor'
 
 describe('notification template API', () => {
   beforeEach(() => {
@@ -44,5 +45,13 @@ describe('notification template API', () => {
       error: 'plain', field: undefined, event_type: undefined, code: undefined, line: undefined,
     })
     expect(templateValidationError(new ApiError(409, 'stale'))).toBeNull()
+  })
+
+  it('keeps the JSON path of a custom webhook body rejection (#1376)', () => {
+    const error = new ApiError(400, 'bad', {
+      error: 'template expressions are allowed only inside string values', field: 'body', code: 'expression_outside_string', path: '$.a["k"]',
+    })
+    expect(templateValidationError(error)?.path).toBe('$.a["k"]')
+    expect(formatValidation({ error: 'x', code: 'expression_outside_string', path: '$.a["k"]' })).toBe('$.a["k"] · expression_outside_string: x')
   })
 })

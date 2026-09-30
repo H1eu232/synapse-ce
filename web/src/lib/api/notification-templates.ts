@@ -87,6 +87,8 @@ export interface NotificationTemplateValidationError {
   event_type?: string
   code?: string
   line?: number
+  /** JSON location of a custom webhook body error (#1376), e.g. `$.a["k"]`. */
+  path?: string
 }
 
 /**
@@ -110,6 +112,7 @@ export function templateValidationError(error: unknown): NotificationTemplateVal
     event_type: typeof body?.event_type === 'string' && body.event_type !== '' ? body.event_type : undefined,
     code: typeof body?.code === 'string' && body.code !== '' ? body.code : undefined,
     line: typeof body?.line === 'number' && body.line > 0 ? body.line : undefined,
+    path: typeof body?.path === 'string' && body.path !== '' ? body.path : undefined,
   }
 }
 

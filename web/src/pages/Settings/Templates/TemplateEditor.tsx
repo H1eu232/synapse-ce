@@ -75,9 +75,12 @@ function byteLength(value: string): number {
   return new TextEncoder().encode(value).length
 }
 
-/** The inline text of an engine rejection: the line first, then the stable code, then the message. */
-export function formatValidation(error: { error: string; code?: string; line?: number }): string {
-  const prefix = [error.line ? `Line ${error.line}` : '', error.code ?? ''].filter(Boolean).join(' · ')
+/**
+ * The inline text of an engine rejection: the line or the JSON path of a custom webhook body (#1376)
+ * first, then the stable code, then the message.
+ */
+export function formatValidation(error: { error: string; code?: string; line?: number; path?: string }): string {
+  const prefix = [error.line ? `Line ${error.line}` : '', error.path ?? '', error.code ?? ''].filter(Boolean).join(' · ')
   return prefix ? `${prefix}: ${error.error}` : error.error
 }
 
