@@ -3,7 +3,9 @@ package scmwebhook
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/KKloudTarus/synapse-ce/internal/domain/integration"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
@@ -115,3 +117,125 @@ func TestGitHubWebhookIgnoresNonScanningEvents(t *testing.T) {
 		t.Fatalf("unexpected scans=%d", len(scans.calls))
 	}
 }
+
+type fakeWebhookAdmin struct {
+	endpoint *ports.InboundWebhookEndpoint
+}
+
+func (f *fakeWebhookAdmin) GetInboundWebhookForOwner(_ context.Context, tenant shared.ID, ownerKind, ownerID string) (ports.InboundWebhookEndpoint, bool, error) {
+	if f.endpoint == nil || f.endpoint.TenantID != tenant || f.endpoint.OwnerKind != ownerKind || f.endpoint.OwnerID != ownerID {
+		return ports.InboundWebhookEndpoint{}, false, nil
+	}
+	return *f.endpoint, true, nil
+}
+func (f *fakeWebhookAdmin) ProvisionInboundWebhook(_ context.Context, endpoint ports.InboundWebhookEndpoint) (bool, error) {
+	if f.endpoint != nil {
+		return false, nil
+	}
+	copy := endpoint
+	f.endpoint = &copy
+	return true, nil
+}
+func (f *fakeWebhookAdmin) RotateInboundWebhook(_ context.Context, id ports.InboundWebhookIdentity, expected int, sealed string, expires time.Time) (bool, error) {
+	if f.endpoint == nil || f.endpoint.PublicID != id.PublicID || f.endpoint.CurrentVersion != expected {
+		return false, nil
+	}
+	f.endpoint.PreviousSealed = f.endpoint.CurrentSealed
+	f.endpoint.PreviousExpiresAt = expires
+	f.endpoint.CurrentSealed = sealed
+	f.endpoint.CurrentVersion++
+	return true, nil
+}
+
+type fakeWebhookSealer struct {
+	plaintext []byte
+	aad       []byte
+}
+func (f *fakeWebhookSealer) Seal(plaintext, aad []byte) (string, error) {
+	f.plaintext = append([]byte(nil), plaintext...)
+	f.aad = append([]byte(nil), aad...)
+	return "sealed-" + string(plaintext), nil
+}
+
+type fakeWebhookAudit struct{ entries []ports.AuditEntry }
+func (f *fakeWebhookAudit) Record(_ context.Context, entry ports.AuditEntry) error {
+	f.entries = append(f.entries, entry)
+	return nil
+}
+
+type fakeWebhookClock struct{ now time.Time }
+func (f fakeWebhookClock) Now() time.Time { return f.now }
+
+type fakeWebhookTx struct{}
+func (fakeWebhookTx) Run(ctx context.Context, tenant shared.ID, fn func(context.Context) error) error {
+	return fn(shared.WithTenant(ctx, tenant))
+}
+
+func TestConfigureGitHubWebhookProvisionsThenRotatesOneTimeSecret(t *testing.T) {
+	svc, _, _ := webhookFixture()
+	admin := &fakeWebhookAdmin{}
+	sealer := &fakeWebhookSealer{}
+	audit := &fakeWebhookAudit{}
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	if err := svc.SetAdmin(admin, sealer, audit, fakeWebhookClock{now: now}, fakeWebhookTx{}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Version != 1 || first.Rotated || !strings.HasPrefix(first.Path, "/api/v1/hooks/") || len(first.Secret) < 32 {
+		t.Fatalf("first credentials=%+v", first)
+	}
+	if admin.endpoint == nil || admin.endpoint.PublicID != strings.TrimPrefix(first.Path, "/api/v1/hooks/") ||
+		admin.endpoint.CurrentVersion != 1 || admin.endpoint.Provider != "github" {
+		t.Fatalf("provisioned endpoint=%+v", admin.endpoint)
+	}
+	if string(sealer.plaintext) != first.Secret {
+		t.Fatal("sealer did not receive the one-time secret")
+	}
+	if len(audit.entries) != 1 || audit.entries[0].Action != "integration.github_webhook_provisioned" {
+		t.Fatalf("provision audit=%+v", audit.entries)
+	}
+	for _, value := range audit.entries[0].Metadata {
+		if strings.Contains(value, first.Secret) || strings.Contains(value, admin.endpoint.PublicID) {
+			t.Fatal("audit metadata contains webhook credential material")
+		}
+	}
+
+	second, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Version != 2 || !second.Rotated || second.Path != first.Path || second.Secret == first.Secret ||
+		second.PreviousSecretExpiresAt == nil || !second.PreviousSecretExpiresAt.After(now) {
+		t.Fatalf("rotated credentials=%+v", second)
+	}
+	if admin.endpoint.CurrentVersion != 2 || len(audit.entries) != 2 ||
+		audit.entries[1].Action != "integration.github_webhook_rotated" {
+		t.Fatalf("rotation endpoint=%+v audit=%+v", admin.endpoint, audit.entries)
+	}
+}
+
+func TestConfigureGitHubWebhookRequiresSingleBoundGitHubProject(t *testing.T) {
+	svc, _, _ := webhookFixture()
+	fi := svc.integrations.(*fakeIntegrations)
+	fi.bindings = nil
+	admin := &fakeWebhookAdmin{}
+	if err := svc.SetAdmin(admin, &fakeWebhookSealer{}, &fakeWebhookAudit{}, fakeWebhookClock{now: time.Now()}, fakeWebhookTx{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1")
+	if !errors.Is(err, shared.ErrConflict) || admin.endpoint != nil {
+		t.Fatalf("unbound configure err=%v endpoint=%+v", err, admin.endpoint)
+	}
+
+	fi.bindings = []integration.Binding{{ProjectID: "project-1"}}
+	fi.item.Provider = "jenkins"
+	_, err = svc.ConfigureGitHubWebhook(context.Background(), "tenant-1", "integration-1", "admin-1")
+	if !errors.Is(err, shared.ErrValidation) || admin.endpoint != nil {
+		t.Fatalf("wrong-provider configure err=%v endpoint=%+v", err, admin.endpoint)
+	}
+}
+
