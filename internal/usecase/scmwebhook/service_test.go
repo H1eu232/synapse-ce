@@ -66,8 +66,8 @@ func TestGitHubPushUsesOnlyStoredProjectBindingAndPinsCommit(t *testing.T) {
 	if got.tenant != "tenant-1" || got.project != "project-1" || got.input.Ref != "main" || got.input.Commit != sha {
 		t.Fatalf("scan target=%+v", got)
 	}
-	if got.input.DisableGitCredentials || got.input.NoBuildExecution {
-		t.Fatal("ordinary push unexpectedly used fork restrictions")
+	if got.input.PullRequest || got.input.DisableGitCredentials || got.input.NoBuildExecution {
+		t.Fatal("ordinary push unexpectedly used pull-request/fork restrictions")
 	}
 }
 
@@ -83,7 +83,7 @@ func TestGitHubForkPullRequestDisablesCredentialsAndBuildExecution(t *testing.T)
 		t.Fatalf("scan calls=%d, want 1", len(scans.calls))
 	}
 	got := scans.calls[0].input
-	if got.Ref != "contrib/fix" || got.Commit != sha || !got.DisableGitCredentials || !got.NoBuildExecution {
+	if got.Ref != "contrib/fix" || got.Commit != sha || !got.PullRequest || !got.DisableGitCredentials || !got.NoBuildExecution {
 		t.Fatalf("fork scan=%+v", got)
 	}
 }
