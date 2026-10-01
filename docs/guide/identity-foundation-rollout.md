@@ -37,7 +37,8 @@ results, and how to back out.
 
 ## Running the command
 
-`synapse-identity-backfill` ships in the API image at `/opt/synapse/synapse-identity-backfill`. It reads
+`synapse-identity-backfill` ships in the `production` image target at `/opt/synapse/synapse-identity-backfill`,
+alongside the other backfill commands; the Compose `full` and distroless `api` targets do not include it. It reads
 `SYNAPSE_DB_DSN`, uses the runtime role, and refuses to start when that role can bypass row level
 security.
 
