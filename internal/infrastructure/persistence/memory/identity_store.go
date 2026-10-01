@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -55,7 +56,96 @@ func (s *IdentityStore) CreateExternalIdentity(ctx context.Context, external ide
 		return fmt.Errorf("identity issuer/subject already exists: %w", shared.ErrConflict)
 	}
 	s.identitiesByKey[key] = external
+	// Inside a tenant transaction the link is undone if the enclosing unit (its audit record
+	// included) fails, matching the PostgreSQL store.
+	registerTenantRollback(ctx, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.identitiesByKey, key)
+	})
 	return nil
+}
+
+// DeleteExternalIdentity removes one approved link of a user. Inside a tenant transaction the link
+// is restored if the enclosing unit fails, matching the PostgreSQL store.
+func (s *IdentityStore) DeleteExternalIdentity(ctx context.Context, tenantID, userID, linkID shared.ID) (identity.ExternalIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return identity.ExternalIdentity{}, err
+	}
+	if tenantID.IsZero() || userID.IsZero() || linkID.IsZero() {
+		return identity.ExternalIdentity{}, fmt.Errorf("%w: identity link tenant, user and id are required", shared.ErrValidation)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, external := range s.identitiesByKey {
+		if external.ID != linkID || external.TenantID != tenantID || external.UserID != userID {
+			continue
+		}
+		delete(s.identitiesByKey, key)
+		registerTenantRollback(ctx, func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.identitiesByKey[key] = external
+		})
+		return external, nil
+	}
+	return identity.ExternalIdentity{}, fmt.Errorf("identity link %s: %w", linkID, shared.ErrNotFound)
+}
+
+// ListExternalIdentities returns one user's approved issuer/subject links, oldest first.
+func (s *IdentityStore) ListExternalIdentities(ctx context.Context, tenantID, userID shared.ID) ([]identity.ExternalIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if tenantID.IsZero() || userID.IsZero() {
+		return nil, fmt.Errorf("%w: identity link tenant and user are required", shared.ErrValidation)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []identity.ExternalIdentity
+	for _, external := range s.identitiesByKey {
+		if external.TenantID == tenantID && external.UserID == userID {
+			out = append(out, external)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+// RevokeUserSessions terminally revokes every unrevoked session of one user.
+func (s *IdentityStore) RevokeUserSessions(ctx context.Context, tenantID, userID shared.ID, now time.Time) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if tenantID.IsZero() || userID.IsZero() {
+		return 0, fmt.Errorf("%w: session revocation tenant and user are required", shared.ErrValidation)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var previous []identity.Session
+	for id, session := range s.sessionsByID {
+		if session.TenantID != tenantID || session.UserID != userID || session.RevokedAt != nil {
+			continue
+		}
+		previous = append(previous, session)
+		session.Revoke(now)
+		s.sessionsByID[id] = session
+	}
+	if len(previous) > 0 {
+		registerTenantRollback(ctx, func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			for _, session := range previous {
+				s.sessionsByID[session.ID] = session
+			}
+		})
+	}
+	return len(previous), nil
 }
 
 func (s *IdentityStore) GetExternalIdentity(ctx context.Context, issuer, subject string) (identity.ExternalIdentity, error) {

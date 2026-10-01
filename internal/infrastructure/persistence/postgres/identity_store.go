@@ -65,6 +65,52 @@ func (s *IdentityStore) GetExternalIdentity(ctx context.Context, issuer, subject
 	return external, err
 }
 
+// DeleteExternalIdentity removes one approved link of a user, joining the tenant transaction bound
+// to ctx. The tenant and user predicates confine it on top of RLS.
+func (s *IdentityStore) DeleteExternalIdentity(ctx context.Context, tenantID, userID, linkID shared.ID) (external identity.ExternalIdentity, err error) {
+	if tenantID.IsZero() || userID.IsZero() || linkID.IsZero() {
+		return identity.ExternalIdentity{}, fmt.Errorf("%w: identity link tenant, user and id are required", shared.ErrValidation)
+	}
+	err = WithTenant(ctx, s.pool, tenantID.String(), func(tx pgx.Tx) error {
+		external, err = scanExternalIdentity(tx.QueryRow(ctx, `DELETE FROM oidc_external_identities
+			WHERE id=$1 AND tenant_id=$2 AND user_id=$3
+			RETURNING id, tenant_id, user_id, issuer, subject, created_at, updated_at`, linkID.String(), tenantID.String(), userID.String()))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("OIDC external identity %s: %w", linkID, shared.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("delete OIDC external identity: %w", err)
+		}
+		return nil
+	})
+	return external, err
+}
+
+// ListExternalIdentities returns one user's approved issuer/subject links, oldest first.
+func (s *IdentityStore) ListExternalIdentities(ctx context.Context, tenantID, userID shared.ID) ([]identity.ExternalIdentity, error) {
+	if tenantID.IsZero() || userID.IsZero() {
+		return nil, fmt.Errorf("%w: identity link tenant and user are required", shared.ErrValidation)
+	}
+	var out []identity.ExternalIdentity
+	err := WithTenant(ctx, s.pool, tenantID.String(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT id, tenant_id, user_id, issuer, subject, created_at, updated_at
+			FROM oidc_external_identities WHERE tenant_id=$1 AND user_id=$2 ORDER BY created_at, id`, tenantID.String(), userID.String())
+		if err != nil {
+			return fmt.Errorf("list OIDC external identities: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			external, scanErr := scanExternalIdentity(rows)
+			if scanErr != nil {
+				return fmt.Errorf("scan OIDC external identity: %w", scanErr)
+			}
+			out = append(out, external)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 func (s *IdentityStore) CreateAuthorizationTransaction(ctx context.Context, transaction identity.AuthorizationTransaction) error {
 	return WithTenant(ctx, s.pool, transaction.TenantID.String(), func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO oidc_authorization_transactions
@@ -188,6 +234,25 @@ func (s *IdentityStore) RevokeSession(ctx context.Context, tenantID, sessionID s
 		}
 		return shared.ErrNotFound
 	})
+}
+
+// RevokeUserSessions terminally revokes every unrevoked session of one user. Expired sessions
+// are revoked too, so no row of the lineage can ever be reactivated by a later change.
+func (s *IdentityStore) RevokeUserSessions(ctx context.Context, tenantID, userID shared.ID, now time.Time) (int, error) {
+	if tenantID.IsZero() || userID.IsZero() {
+		return 0, fmt.Errorf("%w: session revocation tenant and user are required", shared.ErrValidation)
+	}
+	var revoked int
+	err := WithTenant(ctx, s.pool, tenantID.String(), func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE oidc_sessions SET revoked_at=$3, updated_at=GREATEST(updated_at, $3)
+			WHERE tenant_id=$1 AND user_id=$2 AND revoked_at IS NULL`, tenantID.String(), userID.String(), now)
+		if err != nil {
+			return fmt.Errorf("revoke user OIDC sessions: %w", err)
+		}
+		revoked = int(tag.RowsAffected())
+		return nil
+	})
+	return revoked, err
 }
 
 func scanExternalIdentity(row rowScanner) (identity.ExternalIdentity, error) {
