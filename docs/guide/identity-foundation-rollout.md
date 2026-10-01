@@ -73,6 +73,25 @@ locks instead of holding the tenant's user management. Rerunning resumes from th
 checkpoint; reprocessing a user is idempotent. A run whose lease expired is marked failed and can be
 restarted.
 
+Writes are still one row at a time, about six statements per user. On the first pass, the batch that
+creates persons also holds a deployment-wide person-audit lock until it commits, so creating a user in
+any tenant whose projection is on waits for that batch. Bearer and browser authentication take no lock
+and are not affected, and reruns skip person creation. On a database a few milliseconds away a batch of
+200 holds the lock for about a second; the time grows with batch size and with round-trip latency, so
+lower `--batch-size` on a high-latency link or when user creation must not wait.
+
+Each batch reads the tenant's audit records twice to find key-issuance evidence and link approvers, and
+`audit_log` has no index on the target. Before the first run on a large tenant, count what each batch
+will scan:
+
+```sql
+SELECT count(*) FROM audit_log WHERE tenant_id = 'tenant-a' AND hash_version = 2;
+```
+
+Tens of millions of rows make every batch noticeably slower, and a scan past the 60-second statement
+bound fails the batch; it rolls back without losing data. For a tenant that size, keep `--batch-size`
+high so there are fewer scans, and rehearse on a copy first.
+
 ## Reading the result
 
 | Exit code | Outcome | Meaning |
@@ -110,6 +129,10 @@ Archive them first, and roll every API, worker and MCP replica back to a binary 
 migration before running Down; a newer binary fails every user write once the tables are gone.
 
 ## Not in this release
+
+- The backfill write phase is per row, and its audit reads have no supporting index. A set-based write
+  phase and an `audit_log (tenant_id, target)` index built concurrently are planned before projection is
+  run on very large tenants or against a high-latency database.
 
 - Person-audit delivery runs only on demand (`--mode deliver`). No worker schedules it, and there is no
   metric or alert for pending or exhausted obligations. Nothing fans out to tenants yet, because persons
