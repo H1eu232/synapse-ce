@@ -29,25 +29,65 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository { return &UserReposit
 
 var _ ports.UserRepository = (*UserRepository)(nil)
 
+// Create inserts a user inside its own tenant transaction, joining the one TenantTransactionRunner
+// bound to ctx when present, so the users row, its audit record and the derived identity
+// projection commit or roll back together.
 func (r *UserRepository) Create(ctx context.Context, u *user.User) error {
-	if _, err := r.pool.Exec(ctx,
-		`INSERT INTO users (`+userCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		u.ID.String(), u.Name, string(u.Role), u.APIKeyHash, u.Disabled, u.Audit.CreatedAt, u.Audit.UpdatedAt, u.TenantID); err != nil {
-		return fmt.Errorf("create user: %w", err)
-	}
-	return nil
+	tenantID := shared.TenantOrDefault(shared.ID(u.TenantID))
+	return withUserTenant(ctx, r.pool, tenantID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO users (`+userCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+			u.ID.String(), u.Name, string(u.Role), u.APIKeyHash, u.Disabled, u.Audit.CreatedAt, u.Audit.UpdatedAt, u.TenantID); err != nil {
+			return fmt.Errorf("create user: %w", err)
+		}
+		if err := projectLegacyUser(ctx, tx, tenantID, legacyUserState{}, u, u.Audit.UpdatedAt); err != nil {
+			return fmt.Errorf("create user: %w", err)
+		}
+		return nil
+	})
 }
 
-func (r *UserRepository) Upsert(ctx context.Context, u *user.User) error {
-	if _, err := r.pool.Exec(ctx,
-		`INSERT INTO users (`+userCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-		 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, role=EXCLUDED.role,
-		     api_key_hash=EXCLUDED.api_key_hash, disabled=EXCLUDED.disabled, updated_at=EXCLUDED.updated_at,
-		     tenant_id=EXCLUDED.tenant_id`,
-		u.ID.String(), u.Name, string(u.Role), u.APIKeyHash, u.Disabled, u.Audit.CreatedAt, u.Audit.UpdatedAt, u.TenantID); err != nil {
-		return fmt.Errorf("upsert user: %w", err)
+// withUserTenant runs fn bound to the user's own tenant. A platform administrator provisions into
+// another tenant from inside its own tenant transaction; that transaction is rebound to the
+// target tenant for fn and restored afterwards, so the users row, its projection and the caller's
+// audit record still share one commit. Every other caller gets ordinary WithTenant semantics.
+func withUserTenant(ctx context.Context, pool *pgxpool.Pool, tenantID shared.ID, fn func(pgx.Tx) error) error {
+	bound, ok := ctx.Value(tenantTransactionKey{}).(tenantTransaction)
+	if !ok || bound.tenantID == tenantID.String() {
+		return WithTenant(ctx, pool, tenantID.String(), fn)
 	}
-	return nil
+	if _, err := bound.tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true)`, tenantID.String()); err != nil {
+		return fmt.Errorf("rls: rebind tenant: %w", err)
+	}
+	fnErr := fn(bound.tx)
+	if _, err := bound.tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true)`, bound.tenantID); err != nil {
+		return errors.Join(fnErr, fmt.Errorf("rls: restore tenant: %w", err))
+	}
+	return normalizePersistenceError(fnErr)
+}
+
+// Upsert inserts or refreshes a user by id inside the user's tenant transaction and projects it.
+// The bootstrap operator is never projected.
+func (r *UserRepository) Upsert(ctx context.Context, u *user.User) error {
+	tenantID := shared.TenantOrDefault(shared.ID(u.TenantID))
+	return withUserTenant(ctx, r.pool, tenantID, func(tx pgx.Tx) error {
+		before, err := lockLegacyUserState(ctx, tx, tenantID, u.ID)
+		if err != nil {
+			return fmt.Errorf("upsert user: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO users (`+userCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, role=EXCLUDED.role,
+			     api_key_hash=EXCLUDED.api_key_hash, disabled=EXCLUDED.disabled, updated_at=EXCLUDED.updated_at,
+			     tenant_id=EXCLUDED.tenant_id`,
+			u.ID.String(), u.Name, string(u.Role), u.APIKeyHash, u.Disabled, u.Audit.CreatedAt, u.Audit.UpdatedAt, u.TenantID); err != nil {
+			return fmt.Errorf("upsert user: %w", err)
+		}
+		if err := projectLegacyUser(ctx, tx, tenantID, before, u, u.Audit.UpdatedAt); err != nil {
+			return fmt.Errorf("upsert user: %w", err)
+		}
+		return nil
+	})
 }
 
 // Bootstrap atomically seeds or refreshes the bootstrap administrator. The audit row
@@ -106,7 +146,16 @@ func (r *UserRepository) GetByID(ctx context.Context, tenantID, id shared.ID) (*
 // from the SET list, so an update can never move a user between tenants, and the tenant predicate
 // means a cross-tenant id updates nothing.
 func (r *UserRepository) Update(ctx context.Context, tenantID shared.ID, u *user.User) error {
-	return WithTenant(ctx, r.pool, shared.TenantOrDefault(tenantID).String(), func(tx pgx.Tx) error {
+	tenant := shared.TenantOrDefault(tenantID)
+	return WithTenant(ctx, r.pool, tenant.String(), func(tx pgx.Tx) error {
+		// Lock the prior row so projection sees exactly the transition this write makes.
+		before, err := lockLegacyUserState(ctx, tx, tenant, u.ID)
+		if err != nil {
+			return fmt.Errorf("update user: %w", err)
+		}
+		if !before.exists {
+			return shared.ErrNotFound
+		}
 		tag, err := tx.Exec(ctx,
 			`UPDATE users SET name=$4, role=$5, api_key_hash=$6, disabled=$7, updated_at=$8
 			 WHERE `+userTenantPredicate+` AND id=$3`,
@@ -117,6 +166,11 @@ func (r *UserRepository) Update(ctx context.Context, tenantID shared.ID, u *user
 		}
 		if tag.RowsAffected() == 0 {
 			return shared.ErrNotFound
+		}
+		// Same transaction as the users write: the derived credential and the exact-digest index
+		// follow a rotation or disable atomically, and a projection failure rolls the write back.
+		if err := projectLegacyUser(ctx, tx, tenant, before, u, u.Audit.UpdatedAt); err != nil {
+			return fmt.Errorf("update user: %w", err)
 		}
 		return nil
 	})
