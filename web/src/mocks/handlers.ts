@@ -1920,10 +1920,15 @@ export const handlers = [
     const template = TEMPLATE_STORE.find((t) => t.id === params.nid)
     return template ? HttpResponse.json(templateDetail(template)) : HttpResponse.json({ error: 'not found' }, { status: 404 })
   }),
-  http.get('/api/v1/notifications/templates/:nid/versions', ({ params }) => {
+  http.get('/api/v1/notifications/templates/:nid/versions', ({ params, request }) => {
     const template = TEMPLATE_STORE.find((t) => t.id === params.nid)
     if (!template) return HttpResponse.json({ error: 'not found' }, { status: 404 })
-    return HttpResponse.json({ items: [...template.versions].reverse().map((v) => ({ ...v, tenant_id: 'tenant-dev', template_id: template.id })) })
+    // Newest first, older than `before`, at most `limit` (50 by default, 200 at most), as the server pages.
+    const query = new URL(request.url).searchParams
+    const before = Number(query.get('before')) || 0
+    const limit = Math.min(Number(query.get('limit')) || 50, 200)
+    const items = [...template.versions].reverse().filter((v) => before <= 0 || v.version < before).slice(0, limit)
+    return HttpResponse.json({ items: items.map((v) => ({ ...v, tenant_id: 'tenant-dev', template_id: template.id })) })
   }),
   http.patch('/api/v1/notifications/templates/:nid', async ({ params, request }) => {
     const template = TEMPLATE_STORE.find((t) => t.id === params.nid)

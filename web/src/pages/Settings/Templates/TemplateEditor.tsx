@@ -1,7 +1,6 @@
-import { ArrowLeft, BellRinging01, CheckCircle, FileCode02, RefreshCw01, ReverseLeft, Archive } from '@untitledui/icons'
+import { ArrowLeft, BellRinging01, CheckCircle, FileCode02, RefreshCw01, Archive } from '@untitledui/icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { Badge } from '../../../components/base/badges/badges'
 import { TextArea } from '../../../components/base/textarea/textarea'
 import { Button, Card, EmptyState, ErrorState, Field, InfoNote, Input, Select, Spinner } from '../../../components/ui'
 import {
@@ -11,6 +10,7 @@ import {
   TEMPLATE_FAMILY_FIELDS,
   TEMPLATE_FIELD_MAX_BYTES,
   TEMPLATE_LOCALES,
+  TEMPLATE_VERSION_PAGE,
   templateValidationError,
   type NotificationEventSpec,
   type NotificationTemplateDetail,
@@ -20,6 +20,7 @@ import {
 } from '../../../lib/api'
 import type { TemplateCloneState } from './TemplateLibrary'
 import { VariablePicker } from './VariablePicker'
+import { VersionHistory } from './VersionHistory'
 import {
   ANY_EVENT,
   FAMILY_INFO,
@@ -30,7 +31,6 @@ import {
   StatusBadge,
   errorMessage,
   eventLabel,
-  formatDateTime,
   isForbidden,
   templateVariables,
   useTemplateAccess,
@@ -95,6 +95,9 @@ function Editor({ id }: { id: string | undefined }) {
   const [catalogError, setCatalogError] = useState<string | null>(null)
   const [detail, setDetail] = useState<NotificationTemplateDetail | undefined>(undefined)
   const [versions, setVersions] = useState<NotificationTemplateVersion[]>([])
+  const [hasOlder, setHasOlder] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [olderError, setOlderError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<{ message: string; status: number } | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [generation, setGeneration] = useState(0)
@@ -135,7 +138,7 @@ function Editor({ id }: { id: string | undefined }) {
       try {
         const [loaded, history] = await Promise.all([api.getNotificationTemplate(id), api.listNotificationTemplateVersions(id)])
         setDetail(loaded)
-        setVersions(history)
+        showVersions(history)
         setLoadError(null)
         if (!keepText) {
           setName(loaded.name)
@@ -155,6 +158,36 @@ function Editor({ id }: { id: string | undefined }) {
   useEffect(() => {
     void load(false)
   }, [load, generation])
+
+  /** Replaces the history with its newest page; older pages load on demand. */
+  function showVersions(page: NotificationTemplateVersion[]) {
+    setVersions(page)
+    setHasOlder(page.length === TEMPLATE_VERSION_PAGE)
+    setOlderError(null)
+  }
+
+  async function refreshVersions(templateId: string) {
+    try {
+      showVersions(await api.listNotificationTemplateVersions(templateId))
+    } catch {
+      // The mutation succeeded; the history stays as it was until the next load.
+    }
+  }
+
+  async function loadOlder() {
+    if (!detail || versions.length === 0) return
+    setLoadingOlder(true)
+    setOlderError(null)
+    try {
+      const page = await api.listNotificationTemplateVersions(detail.id, versions[versions.length - 1].version)
+      setVersions((current) => [...current, ...page.filter((v) => !current.some((known) => known.version === v.version))])
+      setHasOlder(page.length === TEMPLATE_VERSION_PAGE)
+    } catch (caught) {
+      setOlderError(errorMessage(caught))
+    } finally {
+      setLoadingOlder(false)
+    }
+  }
 
   const variables = useMemo(() => templateVariables(catalog ?? [], eventType), [catalog, eventType])
   const fieldNames = TEMPLATE_FAMILY_FIELDS[family]
@@ -275,7 +308,7 @@ function Editor({ id }: { id: string | undefined }) {
       })
       setDetail(updated)
       setName(updated.name)
-      setVersions(await api.listNotificationTemplateVersions(detail.id).catch(() => versions))
+      await refreshVersions(detail.id)
       setNotice(`Saved version ${updated.latest_version}. What renders does not change until you activate it.`)
     } catch (caught) {
       await handleError(caught)
@@ -298,7 +331,7 @@ function Editor({ id }: { id: string | undefined }) {
             ? await api.rollbackNotificationTemplate(detail.id, { revision: detail.revision, version: version ?? 0 })
             : await api.archiveNotificationTemplate(detail.id, { revision: detail.revision })
       setDetail(updated)
-      setVersions(await api.listNotificationTemplateVersions(detail.id).catch(() => versions))
+      await refreshVersions(detail.id)
       const archivedOther = updated.archived_template_id
         ? ' The template that was active for the same event, family and language has been archived.'
         : ''
@@ -457,79 +490,34 @@ function Editor({ id }: { id: string | undefined }) {
           <Card>
             <VariablePicker eventType={eventType} variables={variables} disabled={busy !== null} onInsert={insertVariable} />
           </Card>
-          {!creating && detail && (
-            <Card
-              title={
-                <span className="inline-flex items-center gap-1.5">
-                  Versions
-                  <InfoNote label="About versions">
-                    Versions are append-only. Rolling back activates an earlier version; it never rewrites one.
-                  </InfoNote>
-                </span>
-              }
-            >
-              <VersionList detail={detail} versions={versions} busy={busy} onRollback={(version) => void change('rollback', version)} />
-            </Card>
-          )}
         </div>
       </div>
-    </div>
-  )
-}
 
-function VersionList({
-  detail,
-  versions,
-  busy,
-  onRollback,
-}: {
-  detail: NotificationTemplateDetail
-  versions: NotificationTemplateVersion[]
-  busy: string | null
-  onRollback: (version: number) => void
-}) {
-  if (versions.length === 0) return <p className="text-sm text-tertiary">No versions reported.</p>
-  return (
-    <ol className="divide-y divide-secondary" aria-label="Template versions">
-      {versions.map((version) => {
-        const renders = detail.status === 'active' && version.version === detail.active_version
-        const latest = version.version === detail.latest_version
-        return (
-          <li key={version.version} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2 text-sm font-medium text-primary">
-                v{version.version}
-                {renders && (
-                  <Badge type="pill-color" size="sm" color="success">
-                    Renders
-                  </Badge>
-                )}
-                {latest && (
-                  <Badge type="pill-color" size="sm" color="gray">
-                    Latest
-                  </Badge>
-                )}
-              </div>
-              <p className="text-xs text-tertiary">
-                {formatDateTime(version.created_at)} · {version.created_by}
-              </p>
-            </div>
-            {!renders && !latest && (
-              <Button
-                type="button"
-                variant="secondary"
-                className="px-2.5 py-1 text-xs"
-                loading={busy === `rollback-${version.version}`}
-                disabled={busy !== null}
-                onClick={() => onRollback(version.version)}
-              >
-                <ReverseLeft className="size-3.5" /> Roll back to v{version.version}
-              </Button>
-            )}
-          </li>
-        )
-      })}
-    </ol>
+      {!creating && detail && (
+        <Card
+          title={
+            <span className="inline-flex items-center gap-1.5">
+              Version history
+              <InfoNote label="About versions">
+                Versions are append-only. Rolling back activates an earlier version; it never rewrites one.
+              </InfoNote>
+            </span>
+          }
+        >
+          <VersionHistory
+            detail={detail}
+            versions={versions}
+            fieldNames={TEMPLATE_FAMILY_FIELDS[detail.family]}
+            busy={busy}
+            hasOlder={hasOlder}
+            loadingOlder={loadingOlder}
+            olderError={olderError}
+            onLoadOlder={() => void loadOlder()}
+            onRollback={(version) => change('rollback', version)}
+          />
+        </Card>
+      )}
+    </div>
   )
 }
 

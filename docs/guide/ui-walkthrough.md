@@ -680,9 +680,16 @@ see this tab's content; everyone else sees **Administrator access required**.
    list cap in a tooltip; pressing one inserts `{{.name}}` at the cursor. An event without
    variables says so.
 5. `Save new version` appends a version; a field the template engine rejects shows its message and
-   line under that field. `Activate` makes the latest saved version render, **Versions** offers
-   `Roll back to vN` for an earlier one, and `Archive` retires the template. If someone else changed
-   the template meanwhile, the page reloads it, keeps your unsaved text and says so.
+   line under that field. `Activate` makes the latest saved version render, and `Archive` retires
+   the template. If someone else changed the template meanwhile, the page reloads it, keeps your
+   unsaved text and says so.
+6. **Version history** lists every version with who saved it and when (`Load older versions` pages
+   past the newest 200). The comparison opens on the version that renders against the latest, or
+   on the latest against the one before it; `Changes in vN` shows what a version changed, and the
+   **From** and **To** selects compare any two. Each field is shown side by side, removed lines on
+   the left and added lines on the right; picking the same version twice shows it on its own.
+   `Roll back to vN` asks for confirmation first, naming the version that stops rendering and the
+   fields that differ.
 
 ### Telemetry privacy
 
