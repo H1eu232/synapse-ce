@@ -126,6 +126,15 @@ type NotificationRepository interface {
 	ListChannelHealthEvents(context.Context, shared.ID, shared.ID, int) ([]notification.ChannelHealthEvent, error)
 }
 
+// NotificationEventReader reads a tenant's stored notification events for the template preview
+// (#1372). Both methods see only the tenant's own events; another tenant's event is not found.
+type NotificationEventReader interface {
+	// ListRecentNotificationEvents returns up to limit events of one type, newest first.
+	ListRecentNotificationEvents(ctx context.Context, tenant shared.ID, eventType notification.EventType, limit int) ([]notification.Event, error)
+	// GetNotificationEvent returns one event, or shared.ErrNotFound.
+	GetNotificationEvent(ctx context.Context, tenant, id shared.ID) (notification.Event, error)
+}
+
 // NotificationChannelOutcome is one finished attempt as channel health reads it.
 type NotificationChannelOutcome struct {
 	ChannelID  shared.ID

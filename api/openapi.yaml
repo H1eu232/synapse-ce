@@ -3436,6 +3436,46 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {description: Stale revision, or the template is already archived}
 
+  /api/v1/notifications/templates/preview:
+    post:
+      tags: [notifications]
+      operationId: previewNotificationTemplate
+      summary: Prepare a template preview for a channel and an event type, without sending
+      description: >
+        Picks the sample event (the event type's published fixture, or one of the tenant's stored
+        events when `event_id` is set) and the template text: what resolution would choose for the
+        channel, a saved version of `template_id`, or unsaved `fields` (alone for a new template,
+        with `template_id` for an unsaved edit). Unsaved text is checked exactly as a save checks
+        it, so an engine rejection is a 400 with its field and line. Nothing is sent or stored, and
+        the response is never logged. The response names the sample and the template; it never
+        carries the event's data, its template context or template source. `rendered` stays false
+        until send-time rendering (#1365) is available; the response then also carries the
+        suppressed state and the rendered message. Registered only when templates are configured.
+        Requires manage_integrations; a stored event also requires view.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplatePreviewInput'}}}}
+      responses:
+        '200': {description: Prepared preview, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplatePreview'}}}}
+        '400': {description: Invalid input, a template the channel cannot use, an event of another type, or unsaved text the engine rejected, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateValidationError'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {description: The channel, the template, its version or the stored event does not exist in the caller's tenant}
+
+  /api/v1/notifications/templates/preview/events:
+    get:
+      tags: [notifications]
+      operationId: listNotificationPreviewEvents
+      summary: List the tenant's newest events of one type a preview can render against (at most 20)
+      description: >
+        Newest first. Each item names the event and never carries its data or template context.
+        Registered only when templates are configured. Requires manage_integrations and view.
+      parameters:
+        - {name: event_type, in: query, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Recent events, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/NotificationPreviewEvent'}}}}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
   /api/v1/connectors:
     get:
       tags: [settings]
@@ -12900,6 +12940,55 @@ components:
         locale: {type: string, enum: [en, vi], description: The channel locale; absent when the tenant default applies}
         custom_body: {type: boolean, description: The webhook channel sends its template body as a custom JSON body (#1376)}
 
+    NotificationTemplatePreviewInput:
+      type: object
+      required: [channel_id, event_type]
+      additionalProperties: false
+      properties:
+        channel_id: {type: string}
+        event_type: {type: string, description: A catalog event type; not `*`.}
+        event_id: {type: string, description: A stored event of `event_type` in the caller's tenant. Omitted renders against the fixture.}
+        template_id: {type: string, description: Preview this template instead of the resolved one. It must be of the channel's family and cover `event_type`.}
+        version: {type: integer, minimum: 0, description: A version of `template_id`; 0 or omitted is the latest. Not combined with `fields`.}
+        fields: {type: object, additionalProperties: {type: string}, description: Unsaved text to preview, checked like a save.}
+    NotificationPreviewEvent:
+      type: object
+      required: [id, event_type, occurred_at]
+      properties:
+        id: {type: string}
+        event_type: {type: string}
+        occurred_at: {type: string, format: date-time}
+        engagement_id: {type: string}
+        severity: {type: string}
+        subject_kind: {type: string}
+    NotificationTemplatePreview:
+      type: object
+      required: [channel, sample, rendered]
+      description: Exactly one of `resolution` and `draft` is present.
+      properties:
+        channel:
+          type: object
+          required: [id, name, type, family]
+          properties:
+            id: {type: string}
+            name: {type: string}
+            type: {type: string}
+            family: {type: string, enum: [chat, email, pager, ticket, webhook]}
+        sample:
+          allOf:
+            - $ref: '#/components/schemas/NotificationPreviewEvent'
+            - type: object
+              required: [source]
+              properties:
+                source: {type: string, enum: [fixture, event]}
+        resolution: {$ref: '#/components/schemas/NotificationTemplateResolution'}
+        draft:
+          type: object
+          properties:
+            template_id: {type: string}
+            version: {type: integer, description: The saved version previewed; absent for unsaved text.}
+            unsaved: {type: boolean}
+        rendered: {type: boolean, description: False until send-time rendering (#1365) is available.}
     NotificationTemplateResolution:
       type: object
       description: >-

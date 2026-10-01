@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,10 @@ type Service struct {
 	events *EventBuilders
 	// tenantSettings supplies the tenant default_locale to template resolution (#1371).
 	tenantSettings ports.TenantSettingsStore
+	// fixtures are the published event fixtures and eventReader the tenant's stored events, the
+	// two samples a template preview renders against (#1372).
+	fixtures    fs.FS
+	eventReader ports.NotificationEventReader
 }
 
 // SetDisabledChannelTypes installs the operator kill switch (SYNAPSE_NOTIFICATION_PROVIDERS_DISABLED),

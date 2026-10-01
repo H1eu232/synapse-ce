@@ -191,6 +191,8 @@ tenant from the session, and is registered only when notifications are enabled.
 | `POST /api/v1/notifications/templates/{id}/activate` | Make a version render (`version` omitted or `0` means the newest) |
 | `POST /api/v1/notifications/templates/{id}/rollback` | Activate an earlier `version` |
 | `POST /api/v1/notifications/templates/{id}/archive` | Retire the template |
+| `POST /api/v1/notifications/templates/preview` | Prepare a preview for a channel and event type without sending (see below) |
+| `GET /api/v1/notifications/templates/preview/events` | The tenant's 20 newest events of an `event_type` a preview can use; also needs `view` |
 
 A template is keyed by event type (a catalog type or `*`), channel family and
 locale (`en`, `vi` or `*`); the key never changes. Each family has fixed
@@ -247,6 +249,32 @@ structured JSON body of a custom webhook is validated separately when that
 feature lands. Channels carry no data class and cannot be bound to a template
 yet, so saving does not yet warn about bound channels whose class is below a
 variable the template uses.
+
+### Template preview
+
+`POST /api/v1/notifications/templates/preview` takes a `channel_id` and a
+catalog `event_type` and prepares a preview without sending or storing
+anything:
+
+- **Sample event.** By default the event type's published fixture
+  ([event schemas](schemas/events/README.md)), with its illustrative engagement
+  dropped. With `event_id`, one of the tenant's stored events of that type, as
+  listed by `GET /api/v1/notifications/templates/preview/events?event_type=`
+  (newest first, at most 20). A stored event also needs `view`, because it
+  describes engagement data; another tenant's event is not found.
+- **Template text.** By default what resolution would pick for the channel
+  (the `resolution` field, as for the rule form). With `template_id`, a saved
+  version of that template (`version`, or the latest); the template must be of
+  the channel's family and cover the event type. With `fields`, unsaved text:
+  alone for a new template, with `template_id` for an unsaved edit. Unsaved
+  text goes through the same engine checks as a save and answers the same `400`.
+
+The response names the channel, the sample and the template; it never carries
+the event's data, its template context or template source, and it is never
+logged. Rendering uses the send-time renderer, so preview and delivery cannot
+differ: until that renderer lands (#1365) the response has `"rendered": false`
+and no message. It will then carry the message at the channel's data class, and
+the suppressed state when the engagement's override is `none`.
 
 Every create, update, activation, rollback and archive is written to the audit
 log (`notification.template.created`, `.updated`, `.activated`, `.rolled_back`,
