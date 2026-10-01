@@ -454,7 +454,7 @@ func TestNotificationPostgresRedriveIsFencedAndPreservesHistory(t *testing.T) {
 	}
 	if _, err = svc.UpdateChannel(ctx, "admin", changedChannel.ID, notificationuc.ChannelInput{
 		Name: changedChannel.Name, Type: changedChannel.Type, Enabled: true,
-		URL: "https://new.example.test/hook", Secret: "fedcba9876543210", Revision: changedChannel.Revision,
+		URL: "https://new.example.test/hook", Secret: "fedcba9876543210", Revision: changedChannel.Revision, AllowDestinationChange: true,
 	}); err != nil {
 		t.Fatal(err)
 	}

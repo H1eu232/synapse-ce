@@ -176,7 +176,7 @@ func TestNotificationPostgresRedriveEmailRequiresOriginalRecipient(t *testing.T)
 		t.Fatal(err)
 	}
 	updated, err := svc.UpdateChannel(ctx, "admin", channel.ID, notificationuc.ChannelInput{
-		Name: channel.Name, Type: channel.Type, Enabled: true, Revision: channel.Revision, Recipients: []string{"replacement@example.test"},
+		Name: channel.Name, Type: channel.Type, Enabled: true, Revision: channel.Revision, Recipients: []string{"replacement@example.test"}, AllowDestinationChange: true,
 	})
 	if err != nil {
 		t.Fatal(err)
