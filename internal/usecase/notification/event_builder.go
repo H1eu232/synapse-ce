@@ -9,7 +9,9 @@ import (
 	"time"
 
 	domain "github.com/KKloudTarus/synapse-ce/internal/domain/notification"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/privacy"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
+	"github.com/KKloudTarus/synapse-ce/internal/platform/redact"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
 
@@ -73,6 +75,9 @@ func (b *EventBuilders) Project(_ context.Context, e domain.Event) (domain.Event
 			vars[name] = value
 		}
 	}
+	for name, value := range vars {
+		vars[name] = scrubSecrets(value)
+	}
 	if e.Context, err = spec.Snapshot(vars).Encode(); err != nil {
 		return e, err
 	}
@@ -134,6 +139,13 @@ func (d eventData) text(key string) string {
 func (d eventData) time(key string) (time.Time, bool) {
 	t, err := time.Parse(time.RFC3339Nano, d.text(key))
 	return t, err == nil
+}
+
+// scrubSecrets removes secrets a scanner or a producer left in a value (#1361): keyed assignments
+// such as password=, bearer tokens, AWS access key IDs, PEM private keys and URL credentials. It
+// runs before the snapshot, so no template ever sees them.
+func scrubSecrets(value string) string {
+	return redact.URLCreds(privacy.ScrubSecretPatterns(value))
 }
 
 // sourceFacts are the values a producer read from the source row, passed as context variables.
