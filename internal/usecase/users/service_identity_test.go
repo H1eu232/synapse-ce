@@ -224,13 +224,13 @@ func TestAuditFailureFailsEveryConsequentialMutation(t *testing.T) {
 	}
 }
 
-// The link and the session revocation roll back with a failed audit record; the in-memory identity
-// store participates in the tenant transaction. (The in-memory users repository does not register
-// rollbacks, so the users row itself is proven atomic only by the PostgreSQL test.)
+// The link, the session revocation and the users row itself roll back with a failed audit record:
+// the in-memory identity store and users repository both register compensations with the tenant
+// transaction, so the no-DSN mode keeps the same atomicity the PostgreSQL test proves.
 func TestAuditFailureRollsBackLinkAndSessionRevocation(t *testing.T) {
 	rig := newIdentityRig(t, "acme")
 	ctx := context.Background()
-	target, _, err := rig.svc.CreateUser(ctx, rig.admin, "", "Alice", user.RoleMember)
+	target, key, err := rig.svc.CreateUser(ctx, rig.admin, "", "Alice", user.RoleMember)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,6 +247,16 @@ func TestAuditFailureRollsBackLinkAndSessionRevocation(t *testing.T) {
 	}
 	if !rig.sessionActive(t, "acme", "hash-a") {
 		t.Fatal("session revocation survived the failed disable")
+	}
+	restored, err := rig.repo.GetByID(ctx, "acme", target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Disabled || restored.APIKeyHash != target.APIKeyHash {
+		t.Fatalf("the users row kept the failed disable: disabled=%v, key replaced=%v", restored.Disabled, restored.APIKeyHash != target.APIKeyHash)
+	}
+	if _, err := rig.svc.Authenticate(ctx, key); err != nil {
+		t.Fatalf("the original key stopped working after a rolled-back disable: %v", err)
 	}
 	rig.audit.fail = false
 	other, _, err := rig.svc.CreateUser(ctx, rig.admin, "", "Bob", user.RoleMember)
