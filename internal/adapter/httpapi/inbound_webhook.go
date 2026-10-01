@@ -4,9 +4,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,6 +19,17 @@ import (
 
 const inboundWebhookBodyLimit = 1 << 20 // 1 MiB of raw, signed bytes.
 const inboundWebhookSignature = "X-Synapse-Hook-Signature"
+
+const (
+	githubSignatureHeader = "X-Hub-Signature-256"
+	githubEventHeader     = "X-GitHub-Event"
+	githubDeliveryHeader  = "X-GitHub-Delivery"
+)
+
+var (
+	githubWebhookSHA = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+	githubWebhookRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$`)
+)
 
 // The hook plane is mounted on a method-aware top-level mux outside the human
 // bearer/OIDC/AUP chain. Only its own header HMAC can establish tenant identity.
@@ -77,9 +90,8 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	publicID := r.PathValue("public_id")
-	presented, signatureOK := inboundSignature(r.Header.Values(inboundWebhookSignature))
 	// A query string cannot carry credentials, routing, or tenant overrides.
-	malformed := !validInboundPublicID(publicID) || r.URL.RawQuery != "" || !signatureOK
+	malformed := !validInboundPublicID(publicID) || r.URL.RawQuery != ""
 
 	var endpoint ports.InboundWebhookEndpoint
 	var found bool
@@ -95,7 +107,7 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 
 	// Evaluate both keys, even for missing, revoked or malformed endpoints.
 	// Never distinguish which key matched or whether an endpoint exists.
-	valid, usedPrevious := p.verify(endpoint, publicID, body, presented, time.Now())
+	valid, usedPrevious := p.verifyRequest(endpoint, publicID, body, r.Header, time.Now())
 	if malformed || !found || !valid {
 		// Bound response-time differences between known/unknown and malformed
 		// credential paths. Timing over a remote DB is inherently noisy; the
@@ -137,9 +149,41 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	event := ports.InboundWebhookEvent{Provider: endpoint.Provider, Body: body}
+	if endpoint.Provider == "github" {
+		var supported, eventOK bool
+		event, supported, eventOK = githubEventMetadata(r.Header, body)
+		if !eventOK {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_webhook_event"})
+			return
+		}
+		if !supported {
+			writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+			return
+		}
+	}
+
 	// Bind ONLY the authenticated record's tenant; do not use TenantOrDefault.
 	ctx := shared.WithTenant(r.Context(), endpoint.TenantID)
-	if err := p.receiver.ReceiveInboundWebhook(ctx, identity, body); err != nil {
+	if event.EventID != "" {
+		claimed, err := p.store.ClaimInboundWebhookEvent(ctx, identity, event.Provider, event.EventID, time.Now())
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "webhook_unavailable"})
+			return
+		}
+		if !claimed {
+			writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+			return
+		}
+	}
+	if err := p.receiver.ReceiveInboundWebhook(ctx, identity, event); err != nil {
+		if event.EventID != "" {
+			_ = p.store.ReleaseInboundWebhookEvent(ctx, identity, event.Provider, event.EventID)
+		}
+		if errors.Is(err, shared.ErrValidation) {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_webhook_event"})
+			return
+		}
 		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "webhook_receiver_unavailable"})
 		return
 	}
@@ -171,6 +215,139 @@ func inboundSignature(values []string) ([sha256.Size]byte, bool) {
 	}
 	copy(result[:], raw)
 	return result, true
+}
+
+func (p *inboundWebhookPlane) verifyRequest(e ports.InboundWebhookEndpoint, publicID string, body []byte, header http.Header, now time.Time) (bool, bool) {
+	signatureHeader := inboundWebhookSignature
+	if e.Provider == "github" {
+		signatureHeader = githubSignatureHeader
+	}
+	presented, signatureOK := inboundSignature(header.Values(signatureHeader))
+	valid, usedPrevious := p.verify(e, publicID, body, presented, now)
+	return valid && signatureOK, usedPrevious
+}
+
+func githubEventMetadata(header http.Header, body []byte) (ports.InboundWebhookEvent, bool, bool) {
+	eventType, typeOK := singleInboundWebhookHeader(header, githubEventHeader)
+	eventID, idOK := singleInboundWebhookHeader(header, githubDeliveryHeader)
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	eventID = strings.TrimSpace(eventID)
+	event := ports.InboundWebhookEvent{Provider: "github", EventType: eventType, EventID: eventID}
+	if !typeOK || !idOK || len(eventType) < 1 || len(eventType) > 64 || !validGitHubDelivery(eventID) {
+		return event, false, false
+	}
+	for _, r := range eventType {
+		if !((r >= 'a' && r <= 'z') || r == '_') {
+			return event, false, false
+		}
+	}
+
+	switch eventType {
+	case "push":
+		var payload struct {
+			Ref     string `json:"ref"`
+			After   string `json:"after"`
+			Deleted bool   `json:"deleted"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return event, true, false
+		}
+		if payload.Deleted || allZeroGitHubWebhookSHA(payload.After) {
+			return event, false, true
+		}
+		ref, ok := normalizeGitHubWebhookRef(payload.Ref)
+		sha := strings.TrimSpace(payload.After)
+		if !ok || !githubWebhookSHA.MatchString(sha) {
+			return event, true, false
+		}
+		event.Ref, event.SHA, event.Body = ref, sha, nil
+		return event, true, true
+
+	case "pull_request":
+		var payload struct {
+			Action string `json:"action"`
+			PullRequest struct {
+				Head struct {
+					Ref  string `json:"ref"`
+					SHA  string `json:"sha"`
+					Repo *struct {
+						ID int64 `json:"id"`
+					} `json:"repo"`
+				} `json:"head"`
+				Base struct {
+					Repo *struct {
+						ID int64 `json:"id"`
+					} `json:"repo"`
+				} `json:"base"`
+			} `json:"pull_request"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return event, true, false
+		}
+		switch strings.ToLower(strings.TrimSpace(payload.Action)) {
+		case "", "opened", "reopened", "synchronize", "ready_for_review":
+			// GitHub test fixtures and older deliveries may omit action; a valid
+			// PR head still represents a scan-worthy state.
+		default:
+			return event, false, true
+		}
+		ref, ok := normalizeGitHubWebhookRef(payload.PullRequest.Head.Ref)
+		sha := strings.TrimSpace(payload.PullRequest.Head.SHA)
+		if !ok || !githubWebhookSHA.MatchString(sha) {
+			return event, true, false
+		}
+		headRepo, baseRepo := payload.PullRequest.Head.Repo, payload.PullRequest.Base.Repo
+		event.Ref, event.SHA, event.Body = ref, sha, nil
+		// Repository identity is used only to decide whether credentials/build
+		// execution must be suppressed. It is never used as an acquisition URL.
+		event.Fork = headRepo == nil || baseRepo == nil || headRepo.ID == 0 || baseRepo.ID == 0 || headRepo.ID != baseRepo.ID
+		return event, true, true
+
+	default:
+		return event, false, true
+	}
+}
+
+func validGitHubDelivery(value string) bool {
+	if len(value) < 1 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeGitHubWebhookRef(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "refs/heads/")
+	if !githubWebhookRef.MatchString(value) {
+		return "", false
+	}
+	return value, true
+}
+
+func allZeroGitHubWebhookSHA(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if r != '0' {
+			return false
+		}
+	}
+	return true
+}
+
+func singleInboundWebhookHeader(header http.Header, name string) (string, bool) {
+	values := header.Values(name)
+	if len(values) != 1 || values[0] == "" {
+		return "", false
+	}
+	return values[0], true
 }
 
 func (p *inboundWebhookPlane) verify(e ports.InboundWebhookEndpoint, publicID string, body []byte, signature [sha256.Size]byte, now time.Time) (valid, usedPrevious bool) {

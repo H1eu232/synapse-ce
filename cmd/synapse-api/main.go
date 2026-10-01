@@ -55,6 +55,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/egressbroker"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/fleetca"
 	azurepipelinesintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/azurepipelines"
+	githubintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/github"
 	jenkinsintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/jenkins"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/llm/openai"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/logstream"
@@ -196,6 +197,7 @@ import (
 	ownershipuc "github.com/KKloudTarus/synapse-ce/internal/usecase/ownership"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 	projectuc "github.com/KKloudTarus/synapse-ce/internal/usecase/projectuc"
+	scmwebhookuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scmwebhook"
 	promotionuc "github.com/KKloudTarus/synapse-ce/internal/usecase/promotion"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/purplecoverage"
 	purpleteamuc "github.com/KKloudTarus/synapse-ce/internal/usecase/purpleteam"
@@ -967,6 +969,10 @@ func main() {
 		log.Error("integration provider registry init failed", "err", err)
 		os.Exit(1)
 	}
+	if err := githubintegration.Register(integrationRegistry); err != nil {
+		log.Error("integration provider registry init failed", "err", err)
+		os.Exit(1)
+	}
 	integrationRules, err := cfg.IntegrationSelfHostedRules()
 	if err != nil {
 		log.Error("integration endpoint configuration invalid", "err", err)
@@ -1476,9 +1482,17 @@ func main() {
 			log.Error("inbound webhook runtime DB role cannot enforce tenant isolation", "err", err)
 			os.Exit(1)
 		}
-		// A provider-specific receiver is installed by its integration workstream.
-		// Without one, authenticated events fail closed with 503, never a false 202.
-		router.SetInboundWebhookPlane(postgres.NewInboundWebhookRepository(databasePool), vaultCipher, nil)
+		webhookRepository := postgres.NewInboundWebhookRepository(databasePool)
+		githubWebhookReceiver := scmwebhookuc.NewService(integrationService, projectService)
+		if err := githubWebhookReceiver.SetAdmin(
+			webhookRepository, vaultCipher, auditLog, clock,
+			postgres.NewTenantTransactionRunner(databasePool),
+		); err != nil {
+			log.Error("GitHub inbound webhook administration init failed", "err", err)
+			os.Exit(1)
+		}
+		router.SetInboundWebhookPlane(webhookRepository, vaultCipher, githubWebhookReceiver)
+		router.SetInboundWebhookAdmin(githubWebhookReceiver)
 	}
 	if cfg.OwnershipMode != "off" && cfg.OwnershipMode != "observe" && cfg.OwnershipMode != "enforce" {
 		log.Error("SYNAPSE_OWNERSHIP_MODE must be off, observe or enforce")

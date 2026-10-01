@@ -546,6 +546,149 @@ Monitor audience and never serializes that credential back through the SIEM
 API. Private Link DCEs are intentionally unsupported because SIEM egress
 rejects private addresses.
 
+### GitHub push and pull-request hooks (#1451)
+
+Create a `github` integration and bind it to **exactly one existing Git-backed Project**. With inbound webhooks enabled, an administrator then calls `POST /api/v1/integrations/{id}/inbound-webhook` with a 32-128 byte `secret` in the JSON request body. Use that same secret when configuring the webhook in GitHub. Synapse seals the secret immediately and never returns it in an API response. The response contains only the opaque relative `path`, version and rotation metadata. Provisioning may be done while the integration is disabled; configure the GitHub hook first, then enable the integration when it is ready to accept deliveries. A later call with a new secret keeps the same path and rotates the sealed secret, accepting the immediately previous secret only during the bounded overlap. The runtime database role still has no direct DML on the routing registry: provision and rotation go through tenant-bound SECURITY DEFINER functions, and the mutation plus its audit record share one tenant transaction.
+
+Configure the GitHub webhook for **push** and **pull_request** events, point it at the deployment's public HTTPS origin plus the returned path, and use the same caller-supplied secret. Synapse requires one `X-GitHub-Delivery` value and deduplicates that delivery durably across API replicas; a replay is acknowledged with `202` without creating another scan. A receiver failure releases the claim so GitHub can retry instead of silently losing the scan.
+
+For a push, Synapse accepts only the event kind, branch ref and 40- or 64-hex commit SHA needed to select the scan. For a pull request, only `opened`, `reopened`, `synchronize` and `ready_for_review` trigger scans. **The repository/clone URL in the provider payload is never used**: the target URL always comes from the Project's persisted `source_binding`, and the scan fetches the exact signed-event commit instead of a mutable branch head. Deleted pushes and other GitHub event/action types are acknowledged without scanning.
+
+A pull request whose GitHub head repository is a fork is treated as untrusted source. Its acquisition path hard-disables SCM connector credentials even when the tenant has a matching connector, and its scan disables Maven, Gradle, npm, manifest and Go dependency-graph command execution. Static source/SBOM analysis still runs. This prevents fork-controlled code from causing a tenant source-control token to be presented or a repository build/dependency command to execute.
+
+Provider receivers receive only the authenticated tenant/owner context and the bounded provider event. Request logs and metrics contain no raw path IDs, credentials or tenant IDs.
+
+## Observability
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SYNAPSE_METRICS_ENABLED` | `false` | Expose Prometheus metrics on a SEPARATE listener (`SYNAPSE_METRICS_ADDR`). Off by default; the listener is never bearer-protected and is never itself instrumented. On an `all` profile worker with notifications enabled, it also exposes worker-owned delivery metrics. |
+| `SYNAPSE_METRICS_ADDR` | `127.0.0.1:9090` | Metrics listener address. Loopback-only by default; widen it only onto a private scrape network, never a public interface. |
+| `SYNAPSE_ACCESS_LOG_ENABLED` | `true` | Emit one structured `http access` log event per request (method, matched route, status, latency, request id, and (once authenticated) the resolved principal id). Never logs raw paths, query strings, headers, bodies, tenant ids, remote addresses, user agents, or secrets. |
+
+Metric names and label cardinality:
+
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `synapse_http_requests_total` | counter | `method`, `route`, `status_class` | Total HTTP requests. `route` is the matched `net/http` `ServeMux` pattern (e.g. `GET /api/v1/engagements/{id}`), never the raw path, path *values* collapse into one bounded label. An unmatched request reports `route="unmatched"`. `status_class` is `2xx`/`3xx`/`4xx`/`5xx`. |
+| `synapse_http_request_duration_seconds` | histogram | `method`, `route`, `status_class` | Request handling latency. |
+| `synapse_job_queue_queued` | gauge | none | Aggregate queued durable jobs, across every tenant. Present only when the configured job queue supports aggregate stats (Postgres and in-memory both do). |
+| `synapse_job_queue_in_flight` | gauge | none | Aggregate claimed/in-flight durable jobs, across every tenant. |
+| `synapse_job_queue_oldest_active_age_seconds` | gauge | none | Age of the oldest still-queued-or-claimed job (`ports.JobStats.OldestActiveAt`), `0` when the queue is empty. |
+| `synapse_job_queue_scrape_errors_total` | counter | none | Failed attempts to read aggregate durable job queue stats for a scrape. The three `synapse_job_queue_*` gauges above are omitted from that scrape (never a stale or bogus value) when this increments. |
+| `synapse_notification_worker_sent_total` | counter | `channel_type`, `provider` | Committed successful notification delivery attempts, emitted by the worker only. |
+| `synapse_notification_worker_failed_total` | counter | `channel_type`, `provider` | Committed unsuccessful attempts, including retryable ones. |
+| `synapse_notification_worker_dead_lettered_total` | counter | `channel_type`, `provider` | Committed terminal delivery transitions observed by the worker. |
+| `synapse_notification_worker_delivery_duration_seconds` | histogram | `channel_type`, `provider` | Attempt duration excluding durable queue wait. |
+| `synapse_notification_worker_oldest_pending_age_seconds` | gauge | `channel_type`, `provider` | Oldest pending/retrying delivery across RLS-scoped tenants (0 if none). Omitted when any tenant read fails. |
+| `synapse_notification_worker_pending_scrape_error` | gauge | none | 1 if aggregate backlog read failed, otherwise 0. |
+| `synapse_notification_worker_template_fallback_total` | counter | `channel_type`, `provider` | Committed attempts that rendered built-in title/summary fallback content. |
+| `synapse_sca_scan_duration_seconds` | histogram | `outcome` | Completed synchronous or asynchronous SCA execution duration. For an async scan, measured from worker execution start, not from `StartScan`/enqueue time. Queue failures, dead letters, stale sweeps, and blocked gates do not record a duration. |
+| `synapse_sca_scan_outcomes_total` | counter | `outcome` | Terminal SCA outcomes: `success`, `failed`, or `blocked`. Queue failures, dead letters, and stale sweeps count as `failed` without a duration. `blocked` is recorded only for an execution-gate denial reached after a genuine scan attempt, never for a pre-gate validation failure. |
+| `synapse_finding_lineage_operations_total` | counter | `outcome`, `method`, `reason` | Finding correlation and human-review outcomes. Every label is reduced to a fixed allowlist. |
+| `synapse_finding_lineage_backfill_items_total` | counter | `outcome` | Backfill item outcomes: `observation_created`, `provisional_candidate_created`, `skipped`, or `unknown`. |
+| `synapse_finding_lineage_backfill_runs_total` | counter | `state` | Backfill terminal states: `completed`, `cancelled`, `failed`, or `unknown`. |
+| `synapse_assessment_comparison_operations_total` | counter | `status`, `mode`, `reason` | Comparison generation outcomes with allowlisted status, mode, and reason values. |
+| `synapse_assessment_comparison_backlog` | gauge | `tenant_id`, `state` | Per-tenant queued, generating, failed, and dead-lettered Comparison backlog used by rollout gates. |
+| `synapse_assessment_comparison_oldest_active_age_seconds` | gauge | `tenant_id` | Age of the oldest queued or generating Comparison for a tenant. |
+| `synapse_assessment_comparison_generation_duration_seconds` | histogram | `tenant_id`, `mode`, `status`, `fingerprint_version`, `risk_model_version`, `item_count_band` | Worker generation latency; item counts are reduced to bounded bands. |
+| `synapse_assessment_relationship_candidates_total` | counter | `outcome`, `confidence` | Historical relationship candidate generation outcomes. |
+| `synapse_assessment_relationship_decisions_total` | counter | `action`, `outcome` | Relationship review decision outcomes. |
+| `synapse_assessment_closure_reports_total` | counter | `outcome`, `reason` | Deterministic closure-report generation outcomes with bounded reasons. |
+
+Only the explicitly documented Assessment Comparison rollout series carry `tenant_id`; access logs and every other metric omit tenant, engagement, target, raw path, and free-form error text. All non-tenant label values are fixed allowlists or bounded bands.
+
+Example Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: synapse-api
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+```
+
+The metrics listener has no authentication of its own. Keep `SYNAPSE_METRICS_ADDR` on loopback or a private network reachable only by your scrape infrastructure; do not put it behind the same reverse-proxy path as the bearer-protected API, and do not widen it to a public interface. The API warns when a configured metrics listener is non-loopback. A co-located `synapse-worker` must use a different metrics port (for example `127.0.0.1:9091`); its listener is enabled only in the `all` profile with notifications enabled. Worker delivery metric labels are fixed to `webhook/generic`, `slack/slack`, `email/smtp` or `other/other`, never tenant or destination data.
+
+## Persistence
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SYNAPSE_DB_DSN` | (in-memory) | Runtime PostgreSQL connection URL. Empty runs an in-memory dev store, so nothing is durable. |
+| `SYNAPSE_DB_MIGRATION_DSN` | `SYNAPSE_DB_DSN` in development | Optional owner-level PostgreSQL DSN used only by `synapse-migrate`, separating migration authority from the least-privileged runtime DSN. In production it must use a database user distinct from the runtime DSN. |
+| `SYNAPSE_DB_HALT_WRITER_DSN` | (none) | PostgreSQL DSN for the dedicated response halt-writer role. Required with PostgreSQL-backed live response execution; its database user must differ from both migration and ordinary runtime users. Expose it only to the API, and grant only the fence, dispatch, and response-audit-intent privileges provisioned by `synapse-migrate`. |
+| `SYNAPSE_DB_AUTO_MIGRATE` | `true` in development | Long-running services apply embedded migrations only in development. Production requires `false`; run `synapse-migrate` first. Use backward-compatible, phased, migrate-first changes: the API accepts only an applied forward migration strictly above its embedded maximum and exposes a stale or divergent schema through `/readyz`; worker and MCP refuse startup until the schema is current because they have no readiness endpoint. |
+| `SYNAPSE_DB_MAX_CONNS` | `32` | pgx pool maximum connections. |
+| `SYNAPSE_DB_MIN_CONNS` | `0` | pgx pool minimum connections. |
+| `SYNAPSE_DB_MAX_CONN_LIFETIME` | `1h` | Connection lifetime. |
+| `SYNAPSE_DB_MAX_CONN_IDLE` | `30m` | Idle connection timeout. |
+
+## Shared artifact store (S3 or MinIO)
+
+When S3/MinIO is configured, the same object store retains evidence artifacts and Engagement source
+packages uploaded from the UI. Uploaded packages accept non-empty `.zip`, `.tar`, `.tar.gz`, and `.tgz`
+files up to 512 MiB compressed. API and worker processes must use the same endpoint and bucket.
+Without an endpoint, evidence uses the non-durable development store, but uploaded source uses a
+persistent filesystem root. Durable source metadata also requires PostgreSQL; an in-memory database
+is not a restart-safe deployment even when archive files are retained.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SYNAPSE_BLOB_ENDPOINT` | (none) | Host and port without a scheme. Empty uses in-memory evidence storage and filesystem storage for uploaded Engagement source. |
+| `SYNAPSE_BLOB_ACCESS_KEY` | (none) | Object-store access key; provide through the deployment's secret-management mechanism. |
+| `SYNAPSE_BLOB_SECRET_KEY` | (none) | Object-store secret key; never commit it to configuration or logs. |
+| `SYNAPSE_BLOB_BUCKET` | `synapse-evidence` | Shared bucket for evidence artifacts and uploaded Engagement source packages. |
+| `SYNAPSE_BLOB_USE_SSL` | `false` | Set true for HTTPS endpoints; use TLS for production object-store traffic. |
+| `SYNAPSE_ENGAGEMENT_SOURCE_DIR` | OS user configuration directory + `synapse/engagement-sources` | Durable operator-owned source archive root when the blob endpoint is empty. Must be an absolute, non-root real directory, not a symlink. API and workers must use the same persistent volume and root; keep it outside scanned repositories and temporary workspaces. |
+
+The filesystem adapter creates private directories/files and refuses unsafe roots or invalid object
+paths. Do not treat this root as a disposable cache. Separate containers or hosts do not share their
+default user configuration directories: mount the same retained volume and configure the path in each
+process, or use S3/MinIO. Back up PostgreSQL and source objects consistently. Changing an existing
+filesystem root or bucket does not migrate retained objects. Source reuse verifies the actual bytes;
+metadata or SHA-256 alone cannot restore a missing archive. See the
+[uploaded-source lifecycle](assessment-lifecycle-operations.md#uploaded-source-lifecycle) for immutable
+versions, Re-test choices, legacy limitations and migrations `0159`/`0160`.
+
+## Restore verification (synapse-verify-restore)
+
+`synapse-verify-restore` is a read-only recovery tool. It reuses `SYNAPSE_DB_DSN` and the evidence
+blob-store settings above, and requires a database identity permitted to read every tenant's
+evidence chain; a least-privilege runtime role fails closed rather than reporting an empty restore
+as intact.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SYNAPSE_RESTORE_VERIFY_TIMEOUT` | `2m` | Maximum duration for one restore-verification run before it fails. |
+| `SYNAPSE_RESTORE_VERIFY_EXPECTED_STATE` | (none) | Path to an independently captured expected-state manifest (audit head, per-engagement evidence heads and counts, expected applied migration versions). Equivalent to `--expected-state`. Without it a run reports `completeness: incomplete_no_expected_state`, because an emptied database cannot be distinguished from an intact one. |
+
+## Custody, signing, and anchoring (required in production)
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SYNAPSE_VAULT_MASTER_KEY` | (ephemeral) | AES-256 credential-vault master key, 64 hex chars or base64 of 32 bytes. Empty uses an ephemeral dev key, so stored secrets do not survive a restart. Never logged. |
+| `SYNAPSE_EVIDENCE_SIGNING_SEED` | (ephemeral) | ed25519 seed attesting evidence and audit chain heads. Never logged. |
+| `SYNAPSE_TSA_URL` | (none) | RFC-3161 timestamp authority for external anchoring. Empty leaves the chain signed but not anchored, still tamper-evident. |
+
+## Software composition analysis
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SYNAPSE_SBOM_PRODUCER` | `ownsbom` | `ownsbom` (default; detection-independent owned parsers across 23 ecosystems with dep-graph edges, so no third-party scanner binary is required) or `syft` (the pinned Syft binary, an opt-in cross-check). Set `syft` to roll back. |
+| `SYNAPSE_SYFT_BIN` | `syft` | Syft executable, resolved on PATH. |
+| `SYNAPSE_GRYPE_BIN` | `grype` | Grype executable. Missing means detection degrades to the live source only. |
+| `SYNAPSE_GRYPE_DB_DIR` | (online) | Pin Grype's vulnerability database to a pre-synced directory for offline, reproducible scans. |
+| `SYNAPSE_DETECTION_SOURCES` | (owned default) | Comma list selecting and ordering the vulnerability detection sources from `grype`, `osv`, `advisory-store` (Synapse's own advisory corpus). Empty selects the owned-only default: `osv` unless offline, then `advisory-store` when `SYNAPSE_OWNED_ADVISORY` (the default), with Grype dropped to an opt-in cross-check. Dropping Grype does not silently lower OS-package recall: the OS-distro coverage guard marks a scan not-confident when an OS-package's distro is not covered by the owned store and Grype is absent. When set it is authoritative, so an operator restores Grype with `osv,grype,advisory-store`. Unknown names fail closed at startup. |
+| `SYNAPSE_STRICT_SOURCES` | `false` | Fail closed on a detection-source error. Default degrades: a source that errors (a transient OSV.dev outage, an advisory-store read blip) is skipped with a warning and the remaining sources still run, matching how Grype self-degrades when its binary or database is absent. |
+| `SYNAPSE_SCAN_TIMEOUT` | `10m` | Per-scan timeout. 0 disables. |
+| `SYNAPSE_FINDING_MIN_SEVERITY` | `info` | Lowest severity promoted to a finding: critical, high, medium, low, info. The default promotes everything; set `high` to tighten the floor and drop medium/low/info. |
+| `SYNAPSE_MAX_WORKSPACE_BYTES` | `2147483648` | Maximum prepared workspace size. A bigger target or archive is rejected. |
+| `SYNAPSE_OWNED_ADVISORY` | `true` | Match the SBOM against the owned advisory store, the default primary vulnerability source. Populate it first with `synapse-cli sync-advisories`; an empty store yields no findings, so a deployment that has not synced advisories should keep `osv`/`grype` in `SYNAPSE_DETECTION_SOURCES`. |
+| `SYNAPSE_SYMBOL_OVERLAY_DIR` | (none) | Directory of curated advisory-id -> affected-symbol JSON files; the owned matcher merges these onto findings so non-Go / NVD-CSAF-only advisories can drive symbol reachability. Best-effort. |
+| `SYNAPSE_JARHASH_ONLINE_ENABLED` | `false` | Recover the coordinate of a shaded or metadata-less JAR by its SHA-1. |
+| `SYNAPSE_OSV_URL`, `SYNAPSE_OSV_BULK_URL`, `SYNAPSE_DEPSDEV_URL`, `SYNAPSE_KEV_URL`, `SYNAPSE_EPSS_URL` | (public) | Feed overrides for tests or mirrors. |
+| `SYNAPSE_ALPINE_SECDB_URL` | `https://secdb.alpinelinux.org` | Base URL `sync-advisories --remote-secdb` ingests Alpine's apk advisories from. Point it at an internal mirror of the same layout for an air-gapped estate. |
+
+
 ### Database, project storage, and maintenance
 
 | Variable | Default | Description |
