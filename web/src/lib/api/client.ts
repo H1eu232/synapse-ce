@@ -1,20 +1,14 @@
-export class ApiError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-    // The parsed JSON error body, when the server sent one. Some endpoints attach structured detail
-    // alongside the message (e.g. /alerts/test returns { error, outcome } on 502); callers that need it
-    // read err.body, while the common `err.status === 404` checks are unaffected.
-    public body?: unknown,
-  ) {
-    super(message)
-    this.name = 'ApiError'
-  }
-}
+import { ApiError, errorFromResponse } from './errors'
+
+export { ApiError } from './errors'
 
 let token = ''
 let csrfToken = ''
-let onUnauthorized: (() => void) | null = null
+// Called when a response says the caller is no longer authenticated. It receives the parsed error so
+// it can tell a rejected credential from a missing one; streaming callers that only see a bare 401
+// invoke it without an argument.
+type UnauthorizedHandler = (error?: ApiError) => void
+let onUnauthorized: UnauthorizedHandler | null = null
 
 export function setToken(t: string): void {
   token = t
@@ -25,7 +19,7 @@ export function setCSRFToken(t: string): void {
   csrfToken = t
 }
 
-export function setUnauthorizedHandler(fn: () => void): void {
+export function setUnauthorizedHandler(fn: UnauthorizedHandler): void {
   onUnauthorized = fn
 }
 
@@ -33,7 +27,7 @@ export function getToken(): string {
   return token
 }
 
-export function getOnUnauthorized(): (() => void) | null {
+export function getOnUnauthorized(): UnauthorizedHandler | null {
   return onUnauthorized
 }
 
@@ -56,22 +50,40 @@ function apiRequestInit(init: RequestInit = {}, json = true): RequestInit {
   return { ...init, credentials: token ? 'omit' : 'same-origin', headers: { ...headers, ...(init.headers as Record<string, string> ?? {}) } }
 }
 
-async function errorMessage(res: Response): Promise<string> {
-  try { const b = await res.json(); return b?.error ?? `HTTP ${res.status}` } catch { return `HTTP ${res.status}` }
+// Only an authentication outcome reaches the global handler. A 503 authentication_unavailable, a
+// 403 of any kind or another 5xx describes a dependency or an authorization decision, not the
+// credential, so it never signs the operator out.
+function notifyUnauthorized(error: ApiError): void {
+  if (!onUnauthorized) return
+  if (error.status === 401 || error.code === 'authentication_invalid') onUnauthorized(error)
 }
 
-export async function discoverSession(): Promise<BFFSession> {
-  let res: Response
+// Discovery rotates the session. When two tabs discover at the same moment one rotation wins and the
+// other gets 409 conflict with the cookie left in place; the browser already holds the winner's
+// replacement cookie, so one more attempt picks it up.
+const DISCOVERY_CONFLICT_RETRY_MS = 250
+
+async function fetchSession(): Promise<Response> {
   try {
-    res = await fetch('/api/auth/session', { credentials: 'same-origin' })
+    return await fetch('/api/auth/session', { credentials: 'same-origin' })
   } catch {
     throw new ApiError(0, 'Cannot reach the API. Is the server running on :8080?')
   }
+}
+
+export async function discoverSession(): Promise<BFFSession> {
+  let res = await fetchSession()
+  if (res.status === 409) {
+    await new Promise((resolve) => setTimeout(resolve, DISCOVERY_CONFLICT_RETRY_MS))
+    res = await fetchSession()
+  }
   // 401/403 = not signed in; 404 = a token-only server that doesn't mount the OIDC BFF
   // (the /api/auth/* routes are registered only when OIDC is enabled). Both mean "no
-  // session" — surface the login screen rather than an error.
+  // session" — surface the login screen rather than an error. A 503 authentication_unavailable
+  // or any other failure is thrown instead: the session store could not answer, which says
+  // nothing about whether the cookie is still valid.
   if (res.status === 401 || res.status === 403 || res.status === 404) return { authenticated: false, csrfToken: '' }
-  if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+  if (!res.ok) throw await errorFromResponse(res)
   const body = await res.json()
   if (body?.authenticated !== true) return { authenticated: false, csrfToken: '' }
   const csrf = body?.csrf_token ?? body?.csrfToken ?? body?.csrf
@@ -88,7 +100,7 @@ export async function logoutSession(): Promise<void> {
   } catch {
     throw new ApiError(0, 'Cannot reach the API. Is the server running on :8080?')
   }
-  if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+  if (!res.ok) throw await errorFromResponse(res)
 }
 
 export async function req(path: string, init?: RequestInit): Promise<any> {
@@ -101,17 +113,10 @@ export async function req(path: string, init?: RequestInit): Promise<any> {
     }
     throw new ApiError(0, 'Cannot reach the API. Is the server running on :8080?')
   }
-  if (res.status === 401 && onUnauthorized) onUnauthorized()
   if (!res.ok) {
-    let msg = `HTTP ${res.status}`
-    let body: unknown
-    try {
-      body = await res.json()
-      if ((body as { error?: string })?.error) msg = (body as { error: string }).error
-    } catch {
-      /* non-JSON error body */
-    }
-    throw new ApiError(res.status, msg, body)
+    const error = await errorFromResponse(res)
+    notifyUnauthorized(error)
+    throw error
   }
   if (res.status === 204) return null
   return res.json()
@@ -120,16 +125,10 @@ export async function req(path: string, init?: RequestInit): Promise<any> {
 /** Fetch a SARIF/OpenVEX export with the bearer token and trigger a browser download. */
 export async function blobDownload(path: string, fallbackName: string): Promise<void> {
   const res = await fetch(path, apiRequestInit({}, false))
-  if (res.status === 401 && onUnauthorized) onUnauthorized()
   if (!res.ok) {
-    let msg = `HTTP ${res.status}`
-    try {
-      const b = await res.json()
-      if (b?.error) msg = b.error
-    } catch {
-      /* non-JSON */
-    }
-    throw new ApiError(res.status, msg)
+    const error = await errorFromResponse(res)
+    notifyUnauthorized(error)
+    throw error
   }
   const blob = await res.blob()
   const cd = res.headers.get('content-disposition') ?? ''
