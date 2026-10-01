@@ -67,13 +67,14 @@ export function VersionHistory({ detail, versions, fieldNames, busy, hasOlder, l
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
       <div className="space-y-3">
-        <ol className="divide-y divide-secondary" aria-label="Template versions">
+        {/* A long history scrolls inside the card, so the comparison and "Load older" stay in reach. */}
+        <ol className="max-h-[36rem] divide-y divide-secondary overflow-y-auto pr-1" aria-label="Template versions">
           {versions.map((version) => {
             const renders = version.version === rendering
             const isLatest = version.version === latest
             const selected = version.version === pair.to
             return (
-              <li key={version.version} className={`space-y-2 py-2.5 ${selected ? 'bg-secondary/40' : ''}`}>
+              <li key={version.version} className={`space-y-2 px-2 py-2.5 ${selected ? 'rounded-lg bg-secondary' : ''}`}>
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2 text-sm font-medium text-primary">
                     v{version.version}
