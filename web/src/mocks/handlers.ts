@@ -577,10 +577,18 @@ function mockTemplateVersion(version: number, fields: Record<string, string>): M
 const TEMPLATE_STORE: MockTemplate[] = [
   {
     id: 'tpl-incident-chat', name: 'Incident alert for chat', event_type: 'incident.created', family: 'chat', locale: 'en',
-    status: 'active', active_version: 2, revision: 3, created_at: WEEK_AGO, updated_at: DAY_AGO,
+    // v2 renders and v3 is a saved, not yet activated edit, so the version history (#1375) has a diff to show.
+    status: 'active', active_version: 2, revision: 4, created_at: WEEK_AGO, updated_at: HOUR_AGO,
     versions: [
       { ...mockTemplateVersion(1, { title: 'New incident', body: 'Open the console for details.' }), created_at: WEEK_AGO },
-      { ...mockTemplateVersion(2, { title: '{{.severity}}: {{.title}}', body: 'A new incident was opened.' }), created_at: DAY_AGO },
+      { ...mockTemplateVersion(2, { title: '{{.severity}}: {{.title}}', body: 'A new incident was opened.\nOpen the console for details.' }), created_at: DAY_AGO },
+      {
+        ...mockTemplateVersion(3, {
+          title: '{{.severity}}: {{.title}}',
+          body: 'A new incident was opened by the detection pipeline.\nAffected assets are listed in the console.\nOpen the console for details.',
+        }),
+        created_at: HOUR_AGO,
+      },
     ],
   },
   {
