@@ -116,6 +116,9 @@ export function templateValidationError(error: unknown): NotificationTemplateVal
   }
 }
 
+/** The server's largest version page (ports.MaxNotificationTemplateVersionPage). */
+export const TEMPLATE_VERSION_PAGE = 200
+
 const PAGE_LIMIT = 500
 // A tenant with more templates than this is not a realistic console case; the loop stops rather than
 // paging forever against a server that keeps answering full pages.
@@ -150,8 +153,18 @@ export const notificationTemplatesApi = {
     req('/notifications/templates', { method: 'POST', body: JSON.stringify(input) }),
   updateNotificationTemplate: (id: string, input: NotificationTemplateUpdateInput): Promise<NotificationTemplateDetail> =>
     req(templatePath(id), { method: 'PATCH', body: JSON.stringify(input) }),
-  listNotificationTemplateVersions: async (id: string): Promise<NotificationTemplateVersion[]> =>
-    ((await req(`${templatePath(id, '/versions')}?limit=200`)) as { items?: NotificationTemplateVersion[] } | null)?.items ?? [],
+  /** One page of versions, newest first; `before` pages to versions older than that number. */
+  listNotificationTemplateVersions: async (id: string, before?: number, limit = TEMPLATE_VERSION_PAGE): Promise<NotificationTemplateVersion[]> => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (before) params.set('before', String(before))
+    return ((await req(`${templatePath(id, '/versions')}?${params}`)) as { items?: NotificationTemplateVersion[] } | null)?.items ?? []
+  },
+  /** One saved version, read as the single version just below `version + 1`. */
+  getNotificationTemplateVersion: async (id: string, version: number): Promise<NotificationTemplateVersion> => {
+    const [item] = await notificationTemplatesApi.listNotificationTemplateVersions(id, version + 1, 1)
+    if (!item || item.version !== version) throw new ApiError(404, `version ${version} not found`)
+    return item
+  },
   activateNotificationTemplate: (id: string, input: { revision: number; version?: number }): Promise<NotificationTemplateDetail> =>
     req(templatePath(id, '/activate'), { method: 'POST', body: JSON.stringify(input) }),
   rollbackNotificationTemplate: (id: string, input: { revision: number; version: number }): Promise<NotificationTemplateDetail> =>
