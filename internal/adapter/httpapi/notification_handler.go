@@ -375,6 +375,26 @@ func (rt *Router) getNotificationDelivery(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, item)
 }
+
+func (rt *Router) redriveNotificationDelivery(w http.ResponseWriter, r *http.Request) {
+	id, err := notificationID(r)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	var in notificationuc.RedriveInput
+	if err = decodeNotificationBody(w, r, &in); err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	item, err := rt.notifications.RedriveDelivery(r.Context(), PrincipalFrom(r.Context()), id, in)
+	if err != nil {
+		writeError(w, rt.log, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, item)
+}
+
 func (rt *Router) listNotificationAttempts(w http.ResponseWriter, r *http.Request) {
 	id, err := notificationID(r)
 	if err != nil {

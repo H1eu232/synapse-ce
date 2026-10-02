@@ -19,6 +19,17 @@ const Placeholder = "[REDACTED]"
 // urlCredsRE matches the userinfo of a URL (scheme://user:pass@host or scheme://token@host).
 var urlCredsRE = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@`)
 
+var auditURLRE = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>"']+`)
+
+// AuditText removes known secrets (including common encodings) and entire URLs
+// from free-text audit reasons. A webhook's path or query can itself be a
+// credential, even without userinfo or a recognizable token parameter name.
+func AuditText(s string, secrets []string) string {
+	// Strip URLs before matching known secrets: replacing a known URL prefix first
+	// could hide its scheme and leave an appended credential-bearing query intact.
+	return String(auditURLRE.ReplaceAllString(s, Placeholder), secrets)
+}
+
 // URLCreds strips credentials embedded in any URL, keeping the scheme + host:
 // https://user:pass@h → https://***@h. (Generalizes acquire.credsRE / sca.credInErr.)
 func URLCreds(s string) string { return urlCredsRE.ReplaceAllString(s, "$1***@") }

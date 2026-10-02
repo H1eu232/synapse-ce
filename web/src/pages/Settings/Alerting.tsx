@@ -24,6 +24,8 @@ import {
   Spinner,
 } from '../../components/ui'
 import { useToast } from '../../components/synapse/Toast'
+import { ConfirmDialog } from '../../components/synapse/ConfirmDialog'
+import { TextAreaBase } from '@/components/base/textarea/textarea'
 import { capabilityHint, disabledCapability, loadCapabilities, useCapabilities } from '../../lib/capabilities'
 import type { Capability } from '../../lib/types'
 import { useFetch } from '../../hooks'
@@ -44,6 +46,15 @@ const stateTone: Record<string, string> = {
   retrying: 'text-warning-primary',
   dead_letter: 'text-error-primary',
   cancelled: 'text-tertiary',
+}
+
+function redriveDestination(channel?: NotificationChannel, recipient?: string): string | undefined {
+  if (!channel) return undefined
+  if (channel.type !== 'email') return channel.destination
+  const at = recipient?.lastIndexOf('@') ?? -1
+  return recipient && at > 0 && at < recipient.length - 1
+    ? recipient.slice(at + 1).toLowerCase()
+    : 'Email recipient'
 }
 
 export function Alerting() {
@@ -206,6 +217,7 @@ export function Alerting() {
           {canManage && channels !== undefined && (
             <DeliveryHistory
               key={historyVersion}
+              canAdmin={canAdmin}
               channels={channels ?? []}
               eventTypes={eventTypes ?? []}
             />
@@ -1245,14 +1257,25 @@ function RuleList({
 }
 
 function DeliveryHistory({
+  canAdmin,
   channels,
   eventTypes,
 }: {
+  canAdmin: boolean
   channels: NotificationChannel[]
   eventTypes: NotificationEventSpec[]
 }) {
+  const { notify } = useToast()
   const historyRequest = useRef(0)
   const attemptRequest = useRef(0)
+  const redriveInFlight = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const [items, setItems] = useState<NotificationDelivery[]>([])
   const [next, setNext] = useState<string>()
   const [channel, setChannel] = useState('all')
@@ -1264,6 +1287,10 @@ function DeliveryHistory({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<NotificationDelivery>()
+  const [redriveTarget, setRedriveTarget] = useState<NotificationDelivery>()
+  const [redriveReason, setRedriveReason] = useState('')
+  const [redriveBusy, setRedriveBusy] = useState(false)
+  const [redriveError, setRedriveError] = useState<string | null>(null)
   const [attempts, setAttempts] = useState<
     import('../../lib/api').NotificationAttempt[]
   >([])
@@ -1286,21 +1313,23 @@ function DeliveryHistory({
           to: to ? new Date(to).toISOString() : undefined,
           cursor,
         })
-        if (request !== historyRequest.current) return
+        if (!mounted.current || request !== historyRequest.current) return
         setItems((old) => (cursor ? [...old, ...page.items] : page.items))
         setNext(page.next)
       } catch (e) {
-        if (request !== historyRequest.current) return
+        if (!mounted.current || request !== historyRequest.current) return
         setError(
           e instanceof Error ? e.message : 'Could not load delivery history',
         )
       } finally {
-        if (request === historyRequest.current) setBusy(false)
+        if (mounted.current && request === historyRequest.current) setBusy(false)
       }
     },
     [channel, event, state, from, to],
   )
+  const reloadHistory = useRef(load)
   useEffect(() => {
+    reloadHistory.current = load
     void load()
   }, [load])
   async function inspect(d: NotificationDelivery) {
@@ -1311,14 +1340,53 @@ function DeliveryHistory({
     setAttemptsBusy(true)
     try {
       const records = await api.listNotificationAttempts(d.id)
-      if (request === attemptRequest.current) setAttempts(records)
+      if (mounted.current && request === attemptRequest.current) setAttempts(records)
     } catch (e) {
-      if (request === attemptRequest.current)
+      if (mounted.current && request === attemptRequest.current)
         setError(e instanceof Error ? e.message : 'Could not load attempts')
     } finally {
-      if (request === attemptRequest.current) setAttemptsBusy(false)
+      if (mounted.current && request === attemptRequest.current) setAttemptsBusy(false)
     }
   }
+  async function confirmRedrive() {
+    if (!canAdmin || !redriveTarget || redriveInFlight.current) return
+    const reason = redriveReason.trim()
+    if (!reason || Array.from(reason).length > 500) {
+      setRedriveError('Enter a reason of 1 to 500 characters.')
+      return
+    }
+    redriveInFlight.current = true
+    const selectionRequest = attemptRequest.current
+    setRedriveBusy(true)
+    setRedriveError(null)
+    try {
+      const updated = await api.redriveNotificationDelivery(
+        redriveTarget.id,
+        reason,
+        redriveTarget.redrive_fence,
+      )
+      if (!mounted.current) return
+      setRedriveTarget(undefined)
+      setRedriveReason('')
+      await reloadHistory.current()
+      if (!mounted.current) return
+      if (selectionRequest === attemptRequest.current && selected?.id === updated.id) await inspect(updated)
+      if (mounted.current) notify('Redrive queued. Delivery will run asynchronously.', 'success')
+    } catch (e) {
+      if (!mounted.current) return
+      setRedriveError(
+        e instanceof Error ? e.message : 'Could not queue this delivery for redrive',
+      )
+      if (e instanceof ApiError && e.status === 409) void reloadHistory.current()
+    } finally {
+      redriveInFlight.current = false
+      if (mounted.current) setRedriveBusy(false)
+    }
+  }
+  const redriveChannel = redriveTarget
+    ? channels.find((channel) => channel.id === redriveTarget.channel_id)
+    : undefined
+  const safeRedriveDestination = redriveDestination(redriveChannel, redriveTarget?.recipient)
   return (
     <Card
       title="Delivery history"
@@ -1425,6 +1493,18 @@ function DeliveryHistory({
                     )}
                   </td>
                   <td className="p-3">
+                    {canAdmin && d.state === 'dead_letter' && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          setRedriveTarget(d)
+                          setRedriveReason('')
+                          setRedriveError(null)
+                        }}
+                      >
+                        Redrive
+                      </Button>
+                    )}
                     <Button variant="secondary" onClick={() => void inspect(d)}>
                       View {d.attempts} attempts
                     </Button>
@@ -1473,6 +1553,55 @@ function DeliveryHistory({
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={redriveTarget !== undefined}
+        title="Redrive notification delivery?"
+        confirmLabel="Queue redrive"
+        tone="brand"
+        busy={redriveBusy}
+        error={redriveError}
+        onCancel={() => {
+          if (redriveBusy) return
+          setRedriveTarget(undefined)
+          setRedriveError(null)
+        }}
+        onConfirm={() => void confirmRedrive()}
+        description={
+          <div className="space-y-3">
+            <p>
+              {redriveChannel?.name ??
+                redriveTarget?.channel_type}{' '}
+              · {redriveTarget?.channel_type}
+              {safeRedriveDestination && (
+                <span>
+                  {' '}· destination: {safeRedriveDestination}
+                </span>
+              )}
+            </p>
+            <p>
+              This retries the same delivery to its original channel configuration
+              and keeps the existing attempt history. If the receiver accepted an
+              earlier request before its acknowledgement was lost, this may send
+              a duplicate.
+            </p>
+            <label className="block space-y-1.5 text-sm text-secondary">
+              <span>Reason for redrive</span>
+              <TextAreaBase
+                aria-label="Reason for redrive"
+                aria-required="true"
+                maxLength={1000}
+                rows={3}
+                value={redriveReason}
+                onChange={(event) => setRedriveReason(event.currentTarget.value)}
+                placeholder="Describe what changed before retrying"
+              />
+              <span className="block text-xs text-tertiary">
+                {Array.from(redriveReason.trim()).length}/500 characters
+              </span>
+            </label>
+          </div>
+        }
+      />
     </Card>
   )
 }

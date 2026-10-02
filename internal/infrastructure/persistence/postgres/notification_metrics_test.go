@@ -150,7 +150,7 @@ func TestNotificationDeadLetterConcurrentPostgres(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ok, err := repo.DeadLetterDelivery(tenantCtx, tenant, did, "worker_dead_letter")
+			ok, err := repo.DeadLetterDelivery(tenantCtx, tenant, did, job.Fence, "worker_dead_letter")
 			changed <- ok
 			errors <- err
 		}()

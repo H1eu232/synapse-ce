@@ -411,6 +411,50 @@ channel ID, recipient, host, URL, provider credentials or raw error text
 can become a metric label. Counters restart with each worker process;
 the pending-age gauge reads durable state at scrape time.
 
+Administrators can manually redrive one dead-lettered channel delivery from
+**Settings → Alerting → Delivery history**, or call
+`POST /api/v1/notifications/deliveries/{id}/redrive` with a 1–500 character
+`reason` and `expected_fence` set to the delivery's current `redrive_fence`. The API requires administer
+permission. Redrive reuses the same event, delivery and queue job, resets the
+queue's eight-attempt budget, and preserves the lifetime attempt count and all
+attempt records. Its reason and safe destination summary are audited. A stale
+fence, non-dead delivery, missing queue job, or changed channel configuration
+returns a conflict.
+
+Audit reasons remove URLs and known channel credentials, including common encoded
+forms. If the API cannot open the delivery's bound channel configuration to scrub
+those credentials, it returns a conflict before queuing work. Email audit and
+confirmation destinations name only the original recipient's domain.
+
+Redrive is allowed only while the original channel remains enabled, present,
+unpaused and enabled for its channel type. Webhook and Slack deliveries keep
+their sealed channel version; an email delivery is eligible only while its
+original recipient remains configured. Redrive never retargets an event or
+recipient and does not resume a channel. A channel rename or resume does not by
+itself invalidate the original destination binding. Retry is still at least
+once: if a receiver accepted the earlier request before its acknowledgement was
+lost, redrive can send a duplicate. The confirmation asks for an operator reason
+and states this risk.
+
+The redrive transition clears only the delivery's current template pin and
+keeps attempt-level references. Fresh active-template resolution is part of
+#1365; clearing the pin here alone does not implement that renderer or prove a
+redrive uses a newer template. Until #1365 lands, this reset does not change the
+rendered content.
+
+### Rolling out redrive
+
+Deploy the cycle-aware `synapse-worker` release to every worker before deploying
+the API release that exposes redrive. Wait until all older workers have stopped
+and their in-flight jobs have drained before administrators use the action. The
+new worker records the queue claim fence when it dead-letters a delivery, and
+reconciliation uses that fence to avoid applying an old failure to a later
+redrive cycle. An older worker callback has no cycle fence and can otherwise
+mark a redriven delivery dead-lettered again. If rolling back, first stop
+redrives and drain all redriven jobs and callbacks, or restore a worker release
+that understands the cycle fence; do not run an older worker against active
+redrive cycles.
+
 ## Channel health and automatic pause
 
 The worker keeps a failure count on every channel so that a broken destination is
@@ -510,8 +554,8 @@ but keeps retained records and the activation cutoff.
 Use channel editing to rotate destinations and signing keys. Keep the previous
 receiver key valid until its pending deliveries have completed. Channel deletion is
 soft deletion; immutable event, attempt and encrypted version history remains.
-This release has no automatic retention purge or manual redrive API. Monitor
-database size and retain the vault master key with database backups. Replacing the
-master key directly makes existing ciphertext unreadable; master-key rotation
-requires an operator-controlled offline decrypt/re-encrypt migration of every retained
+This release has no automatic retention purge. Monitor database size and retain
+the vault master key with database backups. Replacing the master key directly
+makes existing ciphertext unreadable; master-key rotation requires an
+operator-controlled offline decrypt/re-encrypt migration of every retained
 channel version using the same tenant/channel/version associated data.

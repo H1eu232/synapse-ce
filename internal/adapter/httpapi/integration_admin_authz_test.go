@@ -70,6 +70,7 @@ var integrationRoutePermissions = map[string]string{
 	"GET /api/v1/notifications/rules/{nid}":                        "PermManageIntegrations",
 	"PATCH /api/v1/notifications/rules/{nid}":                      "PermManageIntegrations",
 	"DELETE /api/v1/notifications/rules/{nid}":                     "PermManageIntegrations",
+	"POST /api/v1/notifications/deliveries/{nid}/redrive":          "PermAdminister",
 	"GET /api/v1/notifications/deliveries":                         "PermManageIntegrations",
 	"GET /api/v1/notifications/quarantined-sources":                "PermManageIntegrations",
 	"GET /api/v1/notifications/deliveries/{nid}":                   "PermManageIntegrations",

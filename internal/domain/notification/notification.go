@@ -259,6 +259,9 @@ type Delivery struct {
 	EventID        shared.ID     `json:"event_id"`
 	ChannelID      shared.ID     `json:"channel_id"`
 	ChannelType    ChannelType   `json:"channel_type"`
+	// RedriveFence is the durable queue's claim fence for this delivery's stable job.
+	// It is returned for optimistic redrive requests; every claim and redrive advances it.
+	RedriveFence   int64         `json:"redrive_fence"`
 	Recipient      string        `json:"recipient,omitempty"`
 	MatchedRuleIDs []shared.ID   `json:"matched_rule_ids"`
 	State          DeliveryState `json:"state"`

@@ -66,10 +66,10 @@ func TestDeadLetterReportsOnlyTheFirstTransition(t *testing.T) {
 	ctx := context.Background()
 	repo := newTestNotificationRepository()
 	delivery := publishedDelivery(t, repo)
-	if changed, err := repo.DeadLetterDelivery(ctx, notificationTestTenant, delivery, "worker_dead_letter"); err != nil || !changed {
+	if changed, err := repo.DeadLetterDelivery(ctx, notificationTestTenant, delivery, 1, "worker_dead_letter"); err != nil || !changed {
 		t.Fatalf("first dead letter = %v err=%v", changed, err)
 	}
-	if changed, _ := repo.DeadLetterDelivery(ctx, notificationTestTenant, delivery, "worker_dead_letter"); changed {
+	if changed, _ := repo.DeadLetterDelivery(ctx, notificationTestTenant, delivery, 1, "worker_dead_letter"); changed {
 		t.Fatal("second dead letter reported a transition")
 	}
 	if err := repo.CancelDelivery(ctx, notificationTestTenant, delivery, "job", 1, "late_cancel"); err != nil {
@@ -77,6 +77,60 @@ func TestDeadLetterReportsOnlyTheFirstTransition(t *testing.T) {
 	}
 	if d, _ := repo.GetDelivery(ctx, notificationTestTenant, delivery); d.State != notification.DeliveryDead || d.LastError != "worker_dead_letter" {
 		t.Fatalf("terminal delivery changed: %+v", d)
+	}
+}
+
+func TestRedrivePreservesHistoryAndFencesOldCallbacks(t *testing.T) {
+	ctx := shared.WithTenant(context.Background(), notificationTestTenant)
+	jobs := NewJobQueue(idgen.RandomID{}, func() time.Time { return notificationTestNow })
+	repo := NewNotificationRepository(jobs, func() time.Time { return notificationTestNow })
+	id := publishedDelivery(t, repo)
+	job, err := jobs.Claim(ctx, time.Minute, notificationDeliverJobKey)
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v %v", job, err)
+	}
+	if _, err := repo.BeginAttempt(ctx, notificationTestTenant, id, job.ID, job.Fence, "attempt", notificationTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FinishAttempt(ctx, notificationTestTenant, id, job.ID, job.Fence, "attempt", notificationTestNow, "failed", 503, "http_503", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.Deadletter(ctx, job.ID, job.Fence); err != nil {
+		t.Fatal(err)
+	}
+	d, err := repo.GetDelivery(ctx, notificationTestTenant, id)
+	if err != nil || d.RedriveFence != job.Fence {
+		t.Fatalf("delivery fence: %+v %v", d, err)
+	}
+	if _, _, err := repo.RedriveDelivery(ctx, "other-tenant", id, job.Fence); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("cross tenant: %v", err)
+	}
+	d, _, err = repo.RedriveDelivery(ctx, notificationTestTenant, id, job.Fence)
+	if err != nil || d.State != notification.DeliveryPending || d.Attempts != 1 || d.RedriveFence != job.Fence+1 {
+		t.Fatalf("redrive: %+v %v", d, err)
+	}
+	if _, _, err := repo.RedriveDelivery(ctx, notificationTestTenant, id, job.Fence); !errors.Is(err, shared.ErrConflict) {
+		t.Fatalf("stale redrive: %v", err)
+	}
+	if changed, err := repo.DeadLetterDelivery(ctx, notificationTestTenant, id, job.Fence, "late"); err != nil || changed {
+		t.Fatalf("old callback: %v %v", changed, err)
+	}
+	next, err := jobs.Claim(ctx, time.Minute, notificationDeliverJobKey)
+	if err != nil || next == nil || next.Attempts != 1 || next.Fence <= job.Fence {
+		t.Fatalf("fresh retry budget: %+v %v", next, err)
+	}
+	if err := jobs.Deadletter(ctx, next.ID, next.Fence); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := repo.DeadLetterDelivery(ctx, notificationTestTenant, id, job.Fence, "late"); err != nil || changed {
+		t.Fatalf("old callback after new failure: %v %v", changed, err)
+	}
+	if changed, err := repo.DeadLetterDelivery(ctx, notificationTestTenant, id, next.Fence, "current"); err != nil || !changed {
+		t.Fatalf("current callback: %v %v", changed, err)
+	}
+	attempts, err := repo.ListAttempts(ctx, notificationTestTenant, id)
+	if err != nil || len(attempts) != 1 || attempts[0].ErrorCode != "http_503" {
+		t.Fatalf("history: %+v %v", attempts, err)
 	}
 }
 
@@ -121,7 +175,7 @@ func TestAttemptTransitionsAreFencedByTheJobClaim(t *testing.T) {
 	if err := repo.FinishAttempt(ctx, notificationTestTenant, delivery, job.ID, job.Fence, "att-1", now, "delivered", 200, "", nil); !errors.Is(err, ports.ErrStaleLease) {
 		t.Fatalf("finish after the lease expired err = %v", err)
 	}
-	if changed, _ := repo.DeadLetterDelivery(ctx, notificationTestTenant, delivery, "worker_dead_letter"); changed {
+	if changed, _ := repo.DeadLetterDelivery(ctx, notificationTestTenant, delivery, 1, "worker_dead_letter"); changed {
 		t.Fatal("dead-lettered a delivery whose job has not failed")
 	}
 }

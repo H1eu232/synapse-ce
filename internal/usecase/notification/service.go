@@ -7,13 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	domain "github.com/KKloudTarus/synapse-ce/internal/domain/notification"
+	"github.com/KKloudTarus/synapse-ce/internal/domain/privacy"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/tenancy"
+	"github.com/KKloudTarus/synapse-ce/internal/platform/redact"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
 
@@ -436,6 +439,116 @@ func (s *Service) ListAttempts(ctx context.Context, did shared.ID) ([]domain.Att
 	return s.repo.ListAttempts(ctx, tenant, did)
 }
 
+// RedriveInput is the administrator's confirmation for one dead-lettered delivery.
+type RedriveInput struct {
+	Reason        string `json:"reason"`
+	ExpectedFence int64  `json:"expected_fence"`
+}
+
+// RedriveDelivery schedules a new bounded retry cycle for the same delivery. It
+// does not send inline, change the event or recipient, or update channel health.
+func (s *Service) RedriveDelivery(ctx context.Context, actor string, id shared.ID, in RedriveInput) (domain.Delivery, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return domain.Delivery{}, fmt.Errorf("%w: redriving a delivery requires an actor", shared.ErrValidation)
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" || len([]rune(reason)) > 500 {
+		return domain.Delivery{}, fmt.Errorf("%w: redrive reason must contain 1 to 500 characters", shared.ErrValidation)
+	}
+	if in.ExpectedFence < 1 {
+		return domain.Delivery{}, fmt.Errorf("%w: a positive expected queue fence is required", shared.ErrValidation)
+	}
+	tenant, err := tenantFrom(ctx)
+	if err != nil {
+		return domain.Delivery{}, err
+	}
+	return mutation(ctx, s, func(ctx context.Context) (domain.Delivery, error) {
+		current, err := s.repo.GetDelivery(ctx, tenant, id)
+		if err != nil {
+			return domain.Delivery{}, err
+		}
+		if err = s.refuseDisabled(current.ChannelType); err != nil {
+			return domain.Delivery{}, err
+		}
+		if current.State != domain.DeliveryDead || current.RedriveFence != in.ExpectedFence {
+			return domain.Delivery{}, fmt.Errorf("notification delivery state changed: %w", shared.ErrConflict)
+		}
+		safeReason, err := s.redriveAuditReason(ctx, tenant, id, reason)
+		if err != nil {
+			return domain.Delivery{}, err
+		}
+		redriven, channel, err := s.repo.RedriveDelivery(ctx, tenant, id, in.ExpectedFence)
+		if err != nil {
+			return domain.Delivery{}, err
+		}
+		scheme, host := "", ""
+		if channel.Type == domain.ChannelWebhook || channel.Type == domain.ChannelSlack {
+			scheme, host, _ = domain.MaskedEndpoint(channel.Destination)
+		} else if channel.Type == domain.ChannelEmail {
+			// The public channel summary may contain an email local-part when there is one
+			// recipient. Audit only the validated domains, never full addresses.
+			scheme, host = "mailto", emailDomainSummary([]string{redriven.Recipient})
+		}
+		if err := s.record(ctx, actor, "notification.delivery_redriven", id.String(), map[string]string{
+			"channel_id":          channel.ID.String(),
+			"channel_type":        string(channel.Type),
+			"destination_scheme":  scheme,
+			"destination_host":    host,
+			"previous_fence":      strconv.FormatInt(in.ExpectedFence, 10),
+			"queue_fence":         strconv.FormatInt(redriven.RedriveFence, 10),
+			"previous_error_code": sanitizeCode(current.LastError),
+			"reason":              safeReason,
+		}); err != nil {
+			return domain.Delivery{}, err
+		}
+		return redriven, nil
+	})
+}
+
+func (s *Service) redriveAuditReason(ctx context.Context, tenant, id shared.ID, reason string) (string, error) {
+	work, err := s.repo.LoadWork(ctx, tenant, id)
+	if err != nil {
+		return "", err
+	}
+	// Open only the delivery's immutable bound version, and keep its credentials
+	// in the usecase. Never return plaintext or a protector error to the handler.
+	raw, err := s.protector.Open(work.Sealed, channelAAD(tenant, work.Channel.ID, work.Channel.SecretVersion))
+	if err != nil {
+		return "", fmt.Errorf("notification channel configuration unavailable for audit: %w", shared.ErrConflict)
+	}
+	var cfg struct {
+		URL    string `json:"url"`
+		Secret string `json:"secret"`
+	}
+	if json.Unmarshal(raw, &cfg) != nil {
+		return "", fmt.Errorf("notification channel configuration unavailable for audit: %w", shared.ErrConflict)
+	}
+	return privacy.ScrubSecretPatterns(redact.AuditText(reason, []string{cfg.URL, cfg.Secret, work.Delivery.Recipient})), nil
+}
+
+func emailDomainSummary(recipients []string) string {
+	domains := make(map[string]struct{}, len(recipients))
+	for _, recipient := range recipients {
+		recipient = strings.TrimSpace(recipient)
+		at := strings.LastIndex(recipient, "@")
+		if at <= 0 || at == len(recipient)-1 {
+			continue
+		}
+		address := recipient[at+1:]
+		if strings.ContainsAny(address, " \t\r\n<>@") {
+			continue
+		}
+		domains[strings.ToLower(address)] = struct{}{}
+	}
+	ordered := make([]string, 0, len(domains))
+	for domain := range domains {
+		ordered = append(ordered, domain)
+	}
+	sort.Strings(ordered)
+	return strings.Join(ordered, ",")
+}
+
 func (s *Service) seal(tenant, id shared.ID, version int, cfg ports.NotificationChannelConfig) (string, error) {
 	//nolint:gosec // The secret-bearing configuration is immediately sealed and is never persisted or logged as plaintext.
 	raw, err := json.Marshal(cfg)
@@ -596,7 +709,7 @@ func (s *Service) OnDeadLetter(ctx context.Context, job ports.QueuedJob, cause e
 	if d.State != domain.DeliveryPending && d.State != domain.DeliveryRetrying {
 		return nil // already terminal: do not count the same dead letter twice
 	}
-	transitioned, err := s.repo.DeadLetterDelivery(tenantCtx, job.TenantID, p.DeliveryID, "worker_dead_letter")
+	transitioned, err := s.repo.DeadLetterDelivery(tenantCtx, job.TenantID, p.DeliveryID, job.Fence, "worker_dead_letter")
 	if err != nil {
 		return err
 	}
