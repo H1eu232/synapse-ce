@@ -101,6 +101,27 @@ func TestIdentityWrongPersonAndWrongTenantReferencesRejected(t *testing.T) {
 	err = f.runtimeExec("org-a", `INSERT INTO identity_authenticators(tenant_id,id,connection_id,protocol_subject,membership_id,person_id,approved_by,source)
 		VALUES('org-a','auth-5','conn-a','sub-5',$1,$2,'admin','native')`, carol.ID.String(), carol.PersonID.String())
 	requireSQLState(t, err, "SYN01")
+	// A session's credential and membership must belong to the same person. The matching owner is
+	// accepted, while independently valid same-tenant rows for another person fail the composite FK.
+	f.declare(t, "org-a")
+	aliceCredential := identityDigest("alice-browser-session")
+	if err := f.runtimeExec("org-a", `INSERT INTO identity_credentials
+		(tenant_id,id,kind,digest,membership_id,person_id,source,legacy_key_issued)
+		VALUES('org-a','cred-session','browser_session',$1,$2,$3,'native',false)`, aliceCredential, alice.ID.String(), alice.PersonID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.runtimeExec("org-a", `INSERT INTO identity_sessions
+		(tenant_id,id,credential_id,membership_id,person_id,lineage_id,authenticated_at,origin_at,expires_at,person_epoch,membership_epoch)
+		VALUES('org-a','session-owner','cred-session',$1,$2,'lineage-owner',now(),now(),now()+interval '1 hour',1,1)`, alice.ID.String(), alice.PersonID.String()); err != nil {
+		t.Fatalf("matching credential owner rejected: %v", err)
+	}
+	if err := f.runtimeExec("org-a", `DELETE FROM identity_sessions WHERE tenant_id='org-a' AND id='session-owner'`); err != nil {
+		t.Fatal(err)
+	}
+	err = f.runtimeExec("org-a", `INSERT INTO identity_sessions
+		(tenant_id,id,credential_id,membership_id,person_id,lineage_id,authenticated_at,origin_at,expires_at,person_epoch,membership_epoch)
+		VALUES('org-a','session-non-owner','cred-session',$1,$2,'lineage-non-owner',now(),now(),now()+interval '1 hour',1,1)`, carol.ID.String(), carol.PersonID.String())
+	requireSQLState(t, err, "23503")
 	// The connection trust namespace is pinned.
 	err = f.runtimeExec("org-a", `UPDATE identity_connections SET trust_namespace='https://evil.test' WHERE tenant_id='org-a' AND id='conn-a'`)
 	requireSQLState(t, err, "SYN02")

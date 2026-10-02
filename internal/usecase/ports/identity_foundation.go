@@ -310,25 +310,28 @@ type IdentityShadowThresholds struct {
 
 // IdentityShadowReport is the recorded shadow parity evidence of one tenant.
 type IdentityShadowReport struct {
-	ID                  shared.ID
-	TenantID            shared.ID
-	LegacyUsers         int
-	BootstrapSkipped    int
-	Memberships         int
-	MissingMemberships  int
-	CredentialsExpected int
-	CredentialsMatched  int
-	DigestMismatches    int
-	RoutingMismatches   int
-	RoleDrift           int
-	StateDrift          int
-	Placeholders        int
-	Ambiguous           int
-	DriftTotal          int
-	Aborted             bool
-	Ready               bool
-	RollbackPrepared    bool
-	DriftedUserIDs      []shared.ID
+	ID                      shared.ID
+	TenantID                shared.ID
+	LegacyUsers             int
+	BootstrapSkipped        int
+	Memberships             int
+	MissingMemberships      int
+	CredentialsExpected     int
+	CredentialsMatched      int
+	AuthenticatorsExpected  int
+	AuthenticatorsMatched   int
+	AuthenticatorMismatches int
+	DigestMismatches        int
+	RoutingMismatches       int
+	RoleDrift               int
+	StateDrift              int
+	Placeholders            int
+	Ambiguous               int
+	DriftTotal              int
+	Aborted                 bool
+	Ready                   bool
+	RollbackPrepared        bool
+	DriftedUserIDs          []shared.ID
 }
 
 // IdentityBackfillStore is the fenced, resumable, idempotent backfill and shadow store. It never

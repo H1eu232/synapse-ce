@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, isCredentialInvalid, isUnauthenticated } from './errors'
-import { blobDownload, discoverSession, req, setUnauthorizedHandler } from './client'
+import { blobDownload, discoverSession, req, setToken, setUnauthorizedHandler } from './client'
 
 function respond(status: number, body: unknown, headers: Record<string, string> = {}) {
   return new Response(body === undefined ? null : typeof body === 'string' ? body : JSON.stringify(body), {
@@ -11,8 +11,8 @@ function respond(status: number, body: unknown, headers: Record<string, string> 
 
 describe('ApiError contract parsing', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>
-  beforeEach(() => { fetchSpy = vi.spyOn(globalThis, 'fetch') })
-  afterEach(() => { fetchSpy.mockRestore(); setUnauthorizedHandler(() => {}) })
+  beforeEach(() => { fetchSpy = vi.spyOn(globalThis, 'fetch'); setToken('') })
+  afterEach(() => { fetchSpy.mockRestore(); setUnauthorizedHandler(() => {}); setToken('') })
 
   it('reads code, request_id and retryable from the error body', async () => {
     fetchSpy.mockResolvedValueOnce(respond(503, { error: 'store down', code: 'authentication_unavailable', request_id: 'req-1', retryable: true }))
@@ -83,6 +83,37 @@ describe('ApiError contract parsing', () => {
     await req('/findings').catch(() => {})
     expect(handler).toHaveBeenCalledTimes(1)
     expect((handler.mock.calls[0][0] as ApiError).code).toBe('authentication_invalid')
+  })
+
+  it('ignores a late invalid response from a replaced bearer epoch', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    setToken('old-token')
+    let resolveOld!: (response: Response) => void
+    fetchSpy.mockReturnValueOnce(new Promise<Response>((resolve) => { resolveOld = resolve }))
+
+    const oldRequest = req('/aup').catch((error: unknown) => error)
+    setToken('new-token')
+    fetchSpy.mockResolvedValueOnce(respond(200, { accepted: true }))
+    await expect(req('/aup')).resolves.toEqual({ accepted: true })
+    resolveOld(respond(401, { error: 'revoked', code: 'authentication_invalid' }))
+
+    const oldError = await oldRequest as ApiError
+    expect(oldError.code).toBe('authentication_invalid')
+    expect(handler).not.toHaveBeenCalled()
+    expect(fetchSpy.mock.calls[0][1]).toMatchObject({ headers: expect.objectContaining({ authorization: 'Bearer old-token' }) })
+    expect(fetchSpy.mock.calls[1][1]).toMatchObject({ headers: expect.objectContaining({ authorization: 'Bearer new-token' }) })
+  })
+
+  it('notifies for an invalid response from the current bearer epoch', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    setToken('new-token')
+    fetchSpy.mockResolvedValueOnce(respond(401, { error: 'revoked', code: 'authentication_invalid' }))
+
+    await req('/aup').catch(() => {})
+
+    expect(handler).toHaveBeenCalledTimes(1)
   })
 
   it('reports an unavailable session store as an error rather than as signed out', async () => {

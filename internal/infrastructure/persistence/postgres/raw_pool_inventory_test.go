@@ -206,6 +206,7 @@ var securityDefinerExceptions = map[string]string{
 	"synapse_track_assignee_review":                   "trigger: finding assignee review queue",
 	"synapse_lookup_inbound_webhook":                  "callable: inbound webhook exact public-ID routing",
 	"synapse_admit_inbound_webhook":                   "callable: inbound webhook row-locked admission",
+	"synapse_lock_inbound_webhook_event":              "callable: inbound webhook enqueue lock",
 	"synapse_provision_github_inbound_webhook":        "callable: tenant-bound GitHub webhook endpoint provisioning",
 	"synapse_rotate_github_inbound_webhook":           "callable: tenant-bound GitHub webhook secret rotation",
 	"synapse_identity_index_membership":               "trigger: identity person-membership routing index",
@@ -223,6 +224,7 @@ var securityDefinerExceptions = map[string]string{
 var runtimeExecuteGrants = []string{
 	"synapse_lookup_inbound_webhook(TEXT)",
 	"synapse_admit_inbound_webhook(TEXT,TEXT,TEXT,TEXT,INT,BOOLEAN)",
+	"synapse_lock_inbound_webhook_event(TEXT,TEXT,TEXT,TEXT,TEXT)",
 	"synapse_provision_github_inbound_webhook(TEXT,TEXT,TEXT,TEXT,INT)",
 	"synapse_rotate_github_inbound_webhook(TEXT,TEXT,TEXT,INT,TEXT,TIMESTAMPTZ)",
 	"synapse_identity_route_credential(TEXT)",
@@ -289,7 +291,7 @@ func TestSecurityDefinerInventory(t *testing.T) {
 		return v
 	}(), "\n")
 	for name, kind := range securityDefinerExceptions {
-		if strings.HasPrefix(kind, "callable:") && !regexp.MustCompile(`REVOKE ALL ON FUNCTION `+name+`\(`).MatchString(all) {
+		if strings.HasPrefix(kind, "callable:") && seen[name] && !regexp.MustCompile(`REVOKE ALL ON FUNCTION `+name+`\(`).MatchString(all) {
 			t.Errorf("callable SECURITY DEFINER function %s is not revoked from PUBLIC", name)
 		}
 	}

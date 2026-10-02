@@ -41,3 +41,11 @@ type IdentityStore interface {
 type UserSessionRevoker interface {
 	RevokeUserSessions(ctx context.Context, tenantID, userID shared.ID, now time.Time) (int, error)
 }
+
+// ExternalIdentitySessionIssuer performs the final OIDC callback write. It atomically verifies that
+// the exact issuer/subject still links to session.UserID, verifies that the user is enabled and has
+// not changed since approval was read, and creates the session. Implementations serialize it with
+// link removal and user lifecycle revocation.
+type ExternalIdentitySessionIssuer interface {
+	CreateSessionForExternalIdentity(ctx context.Context, issuer, subject string, approvedUserUpdatedAt time.Time, session identity.Session) error
+}

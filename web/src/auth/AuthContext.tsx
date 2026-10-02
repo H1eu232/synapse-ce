@@ -129,13 +129,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [resetLocalAuthentication])
 
   // Loads the authenticated state. It never sets phase itself, so callers decide whether the result
-  // still applies. A /me failure that says the caller is not authenticated fails the whole check,
-  // so a revoked credential cannot reach the ready state on the strength of the AUP read alone.
+  // still applies. Once the AUP is accepted, /me is part of authentication restoration: any failure
+  // remains a failure instead of presenting a ready state with an unknown user.
   const loadAuthenticated = useCallback(async () => {
     const status = await api.aup()
-    const me = status.accepted && typeof api.me === 'function'
-      ? await api.me().catch((e: unknown) => { if (isUnauthenticated(e)) throw e; return null })
-      : null
+    const me = status.accepted && typeof api.me === 'function' ? await api.me() : null
     return { status, me }
   }, [])
 
@@ -326,9 +324,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       applyAuthenticated(result)
     } catch (e) {
       if (gen !== generation.current) return
+      if (isCredentialInvalid(e)) {
+        clearAuthentication()
+        setPhase('unauthenticated')
+        setError(authMethodRef.current === 'token' ? INVALID_TOKEN : SESSION_EXPIRED)
+        return
+      }
       setError(e instanceof Error ? e.message : 'Could not accept the acceptable use policy.')
     }
-  }, [aup, applyAuthenticated, loadAuthenticated, setError])
+  }, [aup, applyAuthenticated, clearAuthentication, loadAuthenticated, setError])
 
   useEffect(() => {
     // The refusal notice was captured on first render; drop the parameter so a reload does not

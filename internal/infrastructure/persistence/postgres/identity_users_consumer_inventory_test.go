@@ -105,9 +105,9 @@ func TestUsersConsumerInventory(t *testing.T) {
 }
 
 func TestMigration0206IdentityFoundationRoundTrip(t *testing.T) {
-	isolated := newIsolatedMigrationDB(t, 203, 202)
+	isolated := newIsolatedMigrationDB(t, 206, 205)
 	for pass := 0; pass < 2; pass++ {
-		if err := goose.UpTo(isolated.db, ".", 203); err != nil {
+		if err := goose.UpTo(isolated.db, ".", 206); err != nil {
 			t.Fatalf("pass %d: migrate up to 0206: %v", pass, err)
 		}
 		var tables int
@@ -117,8 +117,8 @@ func TestMigration0206IdentityFoundationRoundTrip(t *testing.T) {
 		if tables != 18 {
 			t.Fatalf("pass %d: %d identity tables with FORCE RLS, want 18", pass, tables)
 		}
-		if err := goose.DownTo(isolated.db, ".", 202); err != nil {
-			t.Fatalf("pass %d: migrate down to 0202: %v", pass, err)
+		if err := goose.DownTo(isolated.db, ".", 205); err != nil {
+			t.Fatalf("pass %d: migrate down to 0205: %v", pass, err)
 		}
 		var left int
 		if err := isolated.db.QueryRow(`SELECT (SELECT count(*) FROM pg_class WHERE relname LIKE 'identity_%')
@@ -141,13 +141,13 @@ func TestMigration0206DownRefusesEvidence(t *testing.T) {
 			INSERT INTO tenants(id, name) VALUES ('org-down', 'Org down');
 			PERFORM set_config('app.current_tenant', 'org-down', true);
 			INSERT INTO identity_shadow_reports(tenant_id, id, legacy_users, bootstrap_skipped, memberships, missing_memberships,
-				credentials_expected, credentials_matched, digest_mismatches, routing_mismatches, role_drift, state_drift,
-				placeholders, ambiguous, drift_total, max_drift, aborted, ready, rollback_prepared)
-			VALUES ('org-down', 'report-down', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, true, true);
+				credentials_expected, credentials_matched, authenticators_expected, authenticators_matched, authenticator_mismatches,
+				digest_mismatches, routing_mismatches, role_drift, state_drift, placeholders, ambiguous, drift_total, max_drift, aborted, ready, rollback_prepared)
+			VALUES ('org-down', 'report-down', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, true, true);
 		END $$`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			isolated := newIsolatedMigrationDB(t, 203, 203)
+			isolated := newIsolatedMigrationDB(t, 206, 206)
 			tx, err := isolated.db.Begin()
 			if err != nil {
 				t.Fatal(err)
@@ -159,7 +159,7 @@ func TestMigration0206DownRefusesEvidence(t *testing.T) {
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
-			err = goose.DownTo(isolated.db, ".", 202)
+			err = goose.DownTo(isolated.db, ".", 205)
 			if err == nil || !strings.Contains(err.Error(), "archive them and roll binaries back") {
 				t.Fatalf("down with evidence = %v, want refusal", err)
 			}

@@ -80,26 +80,59 @@ func (p *fakeProvider) ExchangeAndVerify(_ context.Context, _, _, nonce string) 
 // countingStore wraps the in-memory identity store to count writes and inject dependency failures.
 type countingStore struct {
 	*memory.IdentityStore
-	mu             sync.Mutex
-	sessions       int
-	links          int
-	tamperTenant   bool
-	getIdentityErr error
-	getSessionErr  error
+	mu                   sync.Mutex
+	sessions             int
+	links                int
+	tamperTenant         bool
+	getIdentityErr       error
+	getSessionErr        error
+	beforeSessionWrite   chan struct{}
+	continueSessionWrite chan struct{}
 }
 
 func (s *countingStore) CreateSession(ctx context.Context, session identity.Session) error {
+	s.pauseBeforeSessionWrite()
+	if err := s.IdentityStore.CreateSession(ctx, session); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	s.sessions++
 	s.mu.Unlock()
-	return s.IdentityStore.CreateSession(ctx, session)
+	return nil
+}
+
+func (s *countingStore) pauseBeforeSessionWrite() {
+	s.mu.Lock()
+	before, resume := s.beforeSessionWrite, s.continueSessionWrite
+	s.beforeSessionWrite = nil
+	s.continueSessionWrite = nil
+	s.mu.Unlock()
+	if before != nil {
+		close(before)
+		<-resume
+	}
 }
 func (s *countingStore) CreateExternalIdentity(ctx context.Context, external identity.ExternalIdentity) error {
+	if err := s.IdentityStore.CreateExternalIdentity(ctx, external); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	s.links++
 	s.mu.Unlock()
-	return s.IdentityStore.CreateExternalIdentity(ctx, external)
+	return nil
 }
+
+func (s *countingStore) CreateSessionForExternalIdentity(ctx context.Context, issuer, subject string, approvedUserUpdatedAt time.Time, session identity.Session) error {
+	s.pauseBeforeSessionWrite()
+	if err := s.IdentityStore.CreateSessionForExternalIdentity(ctx, issuer, subject, approvedUserUpdatedAt, session); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.sessions++
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *countingStore) GetExternalIdentity(ctx context.Context, issuer, subject string) (identity.ExternalIdentity, error) {
 	if s.getIdentityErr != nil {
 		return identity.ExternalIdentity{}, s.getIdentityErr
@@ -215,6 +248,31 @@ func (r *bffRig) login(t *testing.T, id ports.OIDCIdentity) (Session, error) {
 		t.Fatal(err)
 	}
 	return r.svc.Complete(context.Background(), parsed.Query().Get("state"), "code", r.provider.nonce)
+}
+
+type loginResult struct {
+	value Session
+	err   error
+}
+
+type pausedLogin struct {
+	result <-chan loginResult
+	resume chan struct{}
+}
+
+func (r *bffRig) pauseLoginBeforeSessionWrite(t *testing.T, id ports.OIDCIdentity) pausedLogin {
+	t.Helper()
+	paused, resume := make(chan struct{}), make(chan struct{})
+	r.store.mu.Lock()
+	r.store.beforeSessionWrite, r.store.continueSessionWrite = paused, resume
+	r.store.mu.Unlock()
+	result := make(chan loginResult, 1)
+	go func() {
+		value, err := r.login(t, id)
+		result <- loginResult{value: value, err: err}
+	}()
+	<-paused
+	return pausedLogin{result: result, resume: resume}
 }
 
 func (r *bffRig) member(t *testing.T, name string, role user.Role) *user.User {
@@ -556,5 +614,55 @@ func TestUnlinkedSubjectIsDeniedAndItsSessionIsDead(t *testing.T) {
 	}
 	if _, err := rig.login(t, subject("sub-dana")); !errors.Is(err, ErrAccessDenied) {
 		t.Fatalf("a callback for the unlinked subject must be access_denied: %v", err)
+	}
+}
+
+func TestApprovedCallbackPausedBeforeIssuanceCannotSurviveUnlink(t *testing.T) {
+	rig := newBFFRig(t, testTenant)
+	dana := rig.member(t, "Dana", user.RoleConsultant)
+	link, err := rig.users.LinkOIDCIdentity(context.Background(), rig.admin, dana.ID, testIssuer, "sub-dana-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	login := rig.pauseLoginBeforeSessionWrite(t, subject("sub-dana-race"))
+	if _, err := rig.users.UnlinkOIDCIdentity(context.Background(), rig.admin, dana.ID, link.ID); err != nil {
+		t.Fatalf("unlink while callback is paused: %v", err)
+	}
+	close(login.resume)
+
+	completed := <-login.result
+	if !errors.Is(completed.err, ErrAccessDenied) {
+		t.Fatalf("paused callback after unlink = %v, want access denied", completed.err)
+	}
+	if completed.value.Token != "" {
+		t.Fatal("callback returned a token after its approval was revoked")
+	}
+}
+
+func TestApprovedCallbackPausedBeforeIssuanceCannotSurviveDisableAndReenable(t *testing.T) {
+	rig := newBFFRig(t, testTenant)
+	dana := rig.member(t, "Dana", user.RoleConsultant)
+	if _, err := rig.users.LinkOIDCIdentity(context.Background(), rig.admin, dana.ID, testIssuer, "sub-dana-state-race"); err != nil {
+		t.Fatal(err)
+	}
+
+	rig.clock.set(loginTime.Add(time.Second))
+	login := rig.pauseLoginBeforeSessionWrite(t, subject("sub-dana-state-race"))
+	rig.clock.set(loginTime.Add(2 * time.Second))
+	if _, err := rig.users.SetDisabled(context.Background(), rig.admin, dana.ID, true); err != nil {
+		t.Fatalf("disable while callback is paused: %v", err)
+	}
+	if _, err := rig.users.SetDisabled(context.Background(), rig.admin, dana.ID, false); err != nil {
+		t.Fatalf("re-enable while callback is paused: %v", err)
+	}
+	close(login.resume)
+
+	completed := <-login.result
+	if !errors.Is(completed.err, ErrAccessDenied) {
+		t.Fatalf("paused callback after disable/re-enable = %v, want access denied", completed.err)
+	}
+	if completed.value.Token != "" {
+		t.Fatal("callback returned a token after the user's credentials were revoked")
 	}
 }

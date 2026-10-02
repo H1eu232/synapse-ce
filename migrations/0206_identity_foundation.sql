@@ -407,6 +407,7 @@ CREATE TABLE identity_credentials (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     revoked_at TIMESTAMPTZ,
     PRIMARY KEY (tenant_id, id),
+    UNIQUE (tenant_id, id, membership_id, person_id),
     CHECK ((state = 'revoked') = (revoked_at IS NOT NULL)),
     CHECK (source <> 'legacy_projection' OR (kind = 'api_key' AND legacy_user_id IS NOT NULL)),
     CHECK (state <> 'active' OR source <> 'legacy_projection' OR legacy_key_issued),
@@ -536,7 +537,8 @@ CREATE TABLE identity_sessions (
     CHECK (expires_at > created_at),
     CHECK (origin_at <= created_at AND authenticated_at <= created_at),
     CHECK ((connection_id IS NULL) = (connection_epoch IS NULL)),
-    FOREIGN KEY (tenant_id, credential_id) REFERENCES identity_credentials(tenant_id, id),
+    FOREIGN KEY (tenant_id, credential_id, membership_id, person_id)
+        REFERENCES identity_credentials(tenant_id, id, membership_id, person_id),
     FOREIGN KEY (tenant_id, membership_id, person_id) REFERENCES identity_memberships(tenant_id, id, person_id),
     FOREIGN KEY (tenant_id, connection_id) REFERENCES identity_connections(tenant_id, id),
     FOREIGN KEY (tenant_id, rotated_from_session_id) REFERENCES identity_sessions(tenant_id, id)
@@ -692,6 +694,9 @@ CREATE TABLE identity_shadow_reports (
     missing_memberships INT NOT NULL CHECK (missing_memberships >= 0),
     credentials_expected INT NOT NULL CHECK (credentials_expected >= 0),
     credentials_matched INT NOT NULL CHECK (credentials_matched >= 0),
+    authenticators_expected INT NOT NULL CHECK (authenticators_expected >= 0),
+    authenticators_matched INT NOT NULL CHECK (authenticators_matched >= 0),
+    authenticator_mismatches INT NOT NULL CHECK (authenticator_mismatches >= 0),
     digest_mismatches INT NOT NULL CHECK (digest_mismatches >= 0),
     routing_mismatches INT NOT NULL CHECK (routing_mismatches >= 0),
     role_drift INT NOT NULL CHECK (role_drift >= 0),
@@ -885,7 +890,7 @@ ALTER TABLE identity_shadow_reports NO FORCE ROW LEVEL SECURITY;
 DO $evidence_guard$
 BEGIN
     IF EXISTS (SELECT 1 FROM identity_person_audit) OR EXISTS (SELECT 1 FROM identity_shadow_reports) THEN
-        RAISE EXCEPTION 'identity_person_audit or identity_shadow_reports holds evidence rows; archive them and roll binaries back before reverting migration 0203'
+        RAISE EXCEPTION 'identity_person_audit or identity_shadow_reports holds evidence rows; archive them and roll binaries back before reverting migration 0206'
             USING ERRCODE = 'SYN02';
     END IF;
 END;

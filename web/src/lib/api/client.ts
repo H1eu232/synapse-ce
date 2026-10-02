@@ -2,33 +2,44 @@ import { ApiError, errorFromResponse } from './errors'
 
 export { ApiError } from './errors'
 
-let token = ''
-let csrfToken = ''
+type AuthMaterial = Readonly<{ bearer: string; csrf: string; epoch: number }>
+
+// Changing either credential creates a new epoch. Requests retain the immutable material they began
+// with, so a late rejection cannot invalidate a credential installed by a newer authentication flow.
+let authMaterial: AuthMaterial = { bearer: '', csrf: '', epoch: 0 }
+
 // Called when a response says the caller is no longer authenticated. It receives the parsed error so
-// it can tell a rejected credential from a missing one; streaming callers that only see a bare 401
-// invoke it without an argument.
+// it can tell a rejected credential from a missing one.
 type UnauthorizedHandler = (error?: ApiError) => void
 let onUnauthorized: UnauthorizedHandler | null = null
 
 export function setToken(t: string): void {
-  token = t
+  if (t === authMaterial.bearer) return
+  authMaterial = { ...authMaterial, bearer: t, epoch: authMaterial.epoch + 1 }
 }
 
 // The BFF issues this token with the session; it intentionally remains in memory only.
 export function setCSRFToken(t: string): void {
-  csrfToken = t
+  if (t === authMaterial.csrf) return
+  authMaterial = { ...authMaterial, csrf: t, epoch: authMaterial.epoch + 1 }
 }
 
 export function setUnauthorizedHandler(fn: UnauthorizedHandler): void {
   onUnauthorized = fn
 }
 
-export function getToken(): string {
-  return token
-}
+export type AuthSnapshot = Readonly<{
+  requestInit: (init?: RequestInit, json?: boolean) => RequestInit
+  notifyUnauthorized: (error?: ApiError) => void
+}>
 
-export function getOnUnauthorized(): UnauthorizedHandler | null {
-  return onUnauthorized
+/** Captures the current authentication material for one request without exposing it to React state. */
+export function snapshotAuth(): AuthSnapshot {
+  const snapshot = authMaterial
+  return {
+    requestInit: (init = {}, json = true) => apiRequestInit(snapshot, init, json),
+    notifyUnauthorized: (error) => notifyUnauthorized(snapshot.epoch, error),
+  }
 }
 
 export function newIdempotencyKey(): string {
@@ -40,22 +51,22 @@ export function newIdempotencyKey(): string {
 
 export type BFFSession = { authenticated: boolean; csrfToken: string }
 
-function apiRequestInit(init: RequestInit = {}, json = true): RequestInit {
+function apiRequestInit(material: AuthMaterial, init: RequestInit = {}, json = true): RequestInit {
   const method = (init.method ?? 'GET').toUpperCase()
   const headers: Record<string, string> = {}
   const formData = typeof FormData !== 'undefined' && init.body instanceof FormData
   if (json && !formData) headers['content-type'] = 'application/json'
-  if (token) headers.authorization = `Bearer ${token}`
-  else if (!['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method) && csrfToken) headers['X-CSRF-Token'] = csrfToken
-  return { ...init, credentials: token ? 'omit' : 'same-origin', headers: { ...headers, ...(init.headers as Record<string, string> ?? {}) } }
+  if (material.bearer) headers.authorization = `Bearer ${material.bearer}`
+  else if (!['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method) && material.csrf) headers['X-CSRF-Token'] = material.csrf
+  return { ...init, credentials: material.bearer ? 'omit' : 'same-origin', headers: { ...headers, ...(init.headers as Record<string, string> ?? {}) } }
 }
 
-// Only an authentication outcome reaches the global handler. A 503 authentication_unavailable, a
-// 403 of any kind or another 5xx describes a dependency or an authorization decision, not the
-// credential, so it never signs the operator out.
-function notifyUnauthorized(error: ApiError): void {
-  if (!onUnauthorized) return
-  if (error.status === 401 || error.code === 'authentication_invalid') onUnauthorized(error)
+// Only an authentication outcome for the still-current material reaches the global handler. A 503
+// authentication_unavailable, a 403 of any kind or another 5xx describes a dependency or an
+// authorization decision, not the credential, so it never signs the operator out.
+function notifyUnauthorized(epoch: number, error?: ApiError): void {
+  if (!onUnauthorized || epoch !== authMaterial.epoch) return
+  if (error === undefined || error.status === 401 || error.code === 'authentication_invalid') onUnauthorized(error)
 }
 
 // Discovery rotates the session. When two tabs discover at the same moment one rotation wins and the
@@ -94,19 +105,25 @@ export async function discoverSession(): Promise<BFFSession> {
 }
 
 export async function logoutSession(): Promise<void> {
+  const auth = snapshotAuth()
   let res: Response
   try {
-    res = await fetch('/api/auth/logout', apiRequestInit({ method: 'POST' }))
+    res = await fetch('/api/auth/logout', auth.requestInit({ method: 'POST' }))
   } catch {
     throw new ApiError(0, 'Cannot reach the API. Is the server running on :8080?')
   }
-  if (!res.ok) throw await errorFromResponse(res)
+  if (!res.ok) {
+    const error = await errorFromResponse(res)
+    auth.notifyUnauthorized(error)
+    throw error
+  }
 }
 
 export async function req(path: string, init?: RequestInit): Promise<any> {
+  const auth = snapshotAuth()
   let res: Response
   try {
-    res = await fetch(`/api/v1${path}`, apiRequestInit(init))
+    res = await fetch(`/api/v1${path}`, auth.requestInit(init))
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw error
@@ -115,7 +132,7 @@ export async function req(path: string, init?: RequestInit): Promise<any> {
   }
   if (!res.ok) {
     const error = await errorFromResponse(res)
-    notifyUnauthorized(error)
+    auth.notifyUnauthorized(error)
     throw error
   }
   if (res.status === 204) return null
@@ -124,10 +141,11 @@ export async function req(path: string, init?: RequestInit): Promise<any> {
 
 /** Fetch a SARIF/OpenVEX export with the bearer token and trigger a browser download. */
 export async function blobDownload(path: string, fallbackName: string): Promise<void> {
-  const res = await fetch(path, apiRequestInit({}, false))
+  const auth = snapshotAuth()
+  const res = await fetch(path, auth.requestInit({}, false))
   if (!res.ok) {
     const error = await errorFromResponse(res)
-    notifyUnauthorized(error)
+    auth.notifyUnauthorized(error)
     throw error
   }
   const blob = await res.blob()

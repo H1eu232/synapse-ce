@@ -3,8 +3,10 @@ package identitybff
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -50,6 +52,7 @@ type Service struct {
 	store      ports.IdentityStore
 	users      ports.UserRepository
 	clock      ports.Clock
+	ids        ports.IDGenerator
 	cfg        Config
 	contacts   interface {
 		ImportOIDCEmail(context.Context, shared.ID, shared.ID, string, string) error
@@ -66,13 +69,12 @@ func (s *Service) SetVerifiedEmailImporter(importer interface {
 	s.contacts = importer
 }
 
-// NewService validates the BFF dependencies. ids is accepted for constructor stability; the BFF
-// no longer mints user identities.
+// NewService validates the BFF dependencies.
 func NewService(provider ports.OIDCProvider, identities *identityuc.Service, store ports.IdentityStore, users ports.UserRepository, clock ports.Clock, ids ports.IDGenerator, cfg Config) (*Service, error) {
 	if provider == nil || identities == nil || store == nil || users == nil || clock == nil || ids == nil || cfg.TenantID.IsZero() || cfg.TransactionTTL <= 0 || cfg.SessionTTL <= 0 {
 		return nil, fmt.Errorf("%w: OIDC BFF service has invalid configuration", shared.ErrValidation)
 	}
-	return &Service{provider: provider, identities: identities, store: store, users: users, clock: clock, cfg: cfg}, nil
+	return &Service{provider: provider, identities: identities, store: store, users: users, clock: clock, ids: ids, cfg: cfg}, nil
 }
 
 func (s *Service) Begin(ctx context.Context) (Authorization, error) {
@@ -122,11 +124,43 @@ func (s *Service) Complete(ctx context.Context, state, code, nonce string) (Sess
 			return Session{}, fmt.Errorf("synchronize verified OIDC contact: %w", syncErr)
 		}
 	}
-	created, err := s.identities.CreateSession(ctx, s.cfg.TenantID, u.ID, nil, s.cfg.SessionTTL)
+	created, err := s.createSessionForExternalIdentity(ctx, u.ID, u.Audit.UpdatedAt, verified.Issuer, verified.Subject)
 	if err != nil {
-		return Session{}, fmt.Errorf("create OIDC session: %w", err)
+		return Session{}, err
 	}
 	return Session{Token: created.Token, CSRFToken: created.CSRFToken, Principal: s.principal(u, created.Session)}, nil
+}
+
+// createSessionForExternalIdentity generates opaque credentials, then delegates the final exact
+// subject, enabled-user, and unchanged-approval checks plus persistence to one atomic store write.
+func (s *Service) createSessionForExternalIdentity(ctx context.Context, userID shared.ID, approvedUserUpdatedAt time.Time, issuer, subject string) (identityuc.CreatedSession, error) {
+	issuerStore, ok := s.store.(ports.ExternalIdentitySessionIssuer)
+	if !ok {
+		return identityuc.CreatedSession{}, fmt.Errorf("create OIDC session: %w", authz.ErrAuthenticationUnavailable)
+	}
+	if s.cfg.TenantID.IsZero() || userID.IsZero() || s.cfg.SessionTTL <= 0 {
+		return identityuc.CreatedSession{}, fmt.Errorf("%w: tenant, user, and positive session lifetime are required", shared.ErrValidation)
+	}
+	token, err := opaqueToken()
+	if err != nil {
+		return identityuc.CreatedSession{}, err
+	}
+	csrfToken, err := opaqueToken()
+	if err != nil {
+		return identityuc.CreatedSession{}, err
+	}
+	now := s.clock.Now().UTC()
+	session, err := identity.NewSession(s.ids.NewID(), s.cfg.TenantID, userID, hash(token), hash(csrfToken), nil, now.Add(s.cfg.SessionTTL), now)
+	if err != nil {
+		return identityuc.CreatedSession{}, err
+	}
+	if err := issuerStore.CreateSessionForExternalIdentity(ctx, issuer, subject, approvedUserUpdatedAt, session); err != nil {
+		if errors.Is(err, shared.ErrNotFound) {
+			return identityuc.CreatedSession{}, fmt.Errorf("OIDC subject or user is no longer available: %w", ErrAccessDenied)
+		}
+		return identityuc.CreatedSession{}, fmt.Errorf("create OIDC session: %w", err)
+	}
+	return identityuc.CreatedSession{Session: session, Token: token, CSRFToken: csrfToken}, nil
 }
 
 // resolveUser maps a verified issuer/subject to its preapproved tenant-scoped user. It only reads:
@@ -241,4 +275,12 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 func hash(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func opaqueToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate secure random value: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

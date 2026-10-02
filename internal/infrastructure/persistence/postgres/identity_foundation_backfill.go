@@ -133,9 +133,12 @@ func (s *IdentityFoundationStore) ApplyBatch(ctx context.Context, run *ports.Ide
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if err := applyLegacyDecision(ctx, tx, legacy[i], classify(legacy[i]), issuer, connectionID, run.ID, now); err != nil {
+			if err := applyLegacyDecision(ctx, tx, legacy[i], classify(legacy[i]), run.ID, now); err != nil {
 				return fmt.Errorf("backfill user %s: %w", legacy[i].ID, err)
 			}
+		}
+		if err := reconcileLegacyAuthenticators(ctx, tx, tenant, connectionID, issuer, now); err != nil {
+			return err
 		}
 		out.Processed = len(legacy)
 		out.CheckpointUserID = run.CheckpointUserID
@@ -378,7 +381,7 @@ func scanPairs(ctx context.Context, tx pgx.Tx, op string, scan func(pgx.Rows) er
 // the newest user.oidc_identity_linked record naming that link, or empty for a link that predates
 // operator-approved linking.
 func loadApprovedLinks(ctx context.Context, tx pgx.Tx, tenant string, ids []string, byID map[string]*ports.IdentityLegacyUser) error {
-	return scanPairs(ctx, tx, "read approved OIDC links", func(rows pgx.Rows) error {
+	return scanPairs(ctx, tx, "lock approved OIDC links", func(rows pgx.Rows) error {
 		var userID string
 		var link ports.IdentityLegacyLink
 		if err := rows.Scan(&userID, &link.Issuer, &link.Subject, &link.ApprovedBy); err != nil {
@@ -388,19 +391,127 @@ func loadApprovedLinks(ctx context.Context, tx pgx.Tx, tenant string, ids []stri
 			u.Links = append(u.Links, link)
 		}
 		return nil
-	}, `WITH approvals AS (
+	}, `WITH locked_links AS MATERIALIZED (
+			SELECT l.id, l.user_id, l.issuer, l.subject, l.created_at
+			  FROM oidc_external_identities l
+			 WHERE l.tenant_id=$1 AND l.user_id = ANY($2)
+			 ORDER BY l.id
+			 FOR UPDATE
+		), approvals AS (
 			SELECT DISTINCT ON (a.target, a.metadata->>'link_id') a.target, a.metadata->>'link_id' AS link_id, a.actor
 			  FROM audit_log a
 			 WHERE a.tenant_id=$1 AND a.hash_version=2 AND a.action='user.oidc_identity_linked' AND a.target = ANY($2)
 			 ORDER BY a.target, a.metadata->>'link_id', a.id DESC)
 		SELECT l.user_id, l.issuer, l.subject, COALESCE(ap.actor, '')
-		  FROM oidc_external_identities l
+		  FROM locked_links l
 		  LEFT JOIN approvals ap ON ap.target=l.user_id AND ap.link_id=l.id
-		 WHERE l.tenant_id=$1 AND l.user_id = ANY($2)
 		 ORDER BY l.user_id, l.created_at, l.id`, tenant, ids)
 }
 
-func applyLegacyDecision(ctx context.Context, tx pgx.Tx, u ports.IdentityLegacyUser, d ports.IdentityBackfillDecision, issuer string, connectionID, runID shared.ID, now time.Time) error {
+// reconcileLegacyAuthenticators makes source=legacy_link rows an exact projection of the
+// authoritative approved links for the configured issuer. Source rows are locked by ID before this
+// function runs. Derived rows are then locked by subject, stale rows are removed, obsolete legacy
+// bindings are replaced, and a native owner of an authoritative key fails the batch closed.
+func reconcileLegacyAuthenticators(ctx context.Context, tx pgx.Tx, tenantID, connectionID shared.ID, issuer string, now time.Time) error {
+	if connectionID.IsZero() || issuer == "" {
+		return nil
+	}
+	tenant := tenantID.String()
+	connection := connectionID.String()
+	// Reconciliation is tenant-wide, so lock every authoritative row it compares rather than only
+	// the current users batch. Existing link updates/deletes then serialize before any derived write.
+	rows, err := tx.Query(ctx, `SELECT id FROM oidc_external_identities
+		WHERE tenant_id=$1 AND issuer=$2
+		ORDER BY id
+		FOR UPDATE`, tenant, issuer)
+	if err != nil {
+		return fmt.Errorf("lock authoritative authenticators: %w", err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan authoritative authenticator: %w", err)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("lock authoritative authenticators: %w", err)
+	}
+	rows, err = tx.Query(ctx, `SELECT protocol_subject, source
+		FROM identity_authenticators
+		WHERE tenant_id=$1 AND connection_id=$2
+		ORDER BY protocol_subject
+		FOR UPDATE`, tenant, connection)
+	if err != nil {
+		return fmt.Errorf("lock derived authenticators: %w", err)
+	}
+	for rows.Next() {
+		var subject, source string
+		if err := rows.Scan(&subject, &source); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan derived authenticator: %w", err)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("lock derived authenticators: %w", err)
+	}
+
+	// A native row can exist only after declaration. If an authoritative legacy link now claims its
+	// canonical key, replacing it would silently transfer ownership across sources.
+	var nativeSubject string
+	err = tx.QueryRow(ctx, `SELECT a.protocol_subject
+		FROM identity_authenticators a
+		JOIN oidc_external_identities l
+		  ON l.tenant_id=a.tenant_id AND l.issuer=$3 AND l.subject=a.protocol_subject
+		WHERE a.tenant_id=$1 AND a.connection_id=$2 AND a.source='native'
+		ORDER BY a.protocol_subject LIMIT 1`, tenant, connection, issuer).Scan(&nativeSubject)
+	switch {
+	case err == nil:
+		return fmt.Errorf("%w: native authenticator conflicts with approved legacy subject %q", shared.ErrConflict, nativeSubject)
+	case !errors.Is(err, pgx.ErrNoRows):
+		return fmt.Errorf("check native authenticator conflict: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM identity_authenticators a
+		WHERE a.tenant_id=$1 AND a.connection_id=$2 AND a.source='legacy_link'
+		  AND NOT EXISTS (
+			SELECT 1 FROM oidc_external_identities l
+			WHERE l.tenant_id=a.tenant_id AND l.issuer=$3 AND l.subject=a.protocol_subject
+		  )`, tenant, connection, issuer); err != nil {
+		return fmt.Errorf("remove stale legacy authenticators: %w", identityPersistenceError(err))
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM identity_authenticators a
+		USING oidc_external_identities l, identity_memberships m
+		WHERE a.tenant_id=$1 AND a.connection_id=$2 AND a.source='legacy_link'
+		  AND l.tenant_id=a.tenant_id AND l.issuer=$3 AND l.subject=a.protocol_subject
+		  AND m.tenant_id=l.tenant_id AND m.legacy_user_id=l.user_id
+		  AND (a.membership_id,a.person_id) IS DISTINCT FROM (m.id,m.person_id)`, tenant, connection, issuer); err != nil {
+		return fmt.Errorf("replace rebound legacy authenticators: %w", identityPersistenceError(err))
+	}
+	if _, err := tx.Exec(ctx, `WITH approvals AS (
+		SELECT DISTINCT ON (a.target,a.metadata->>'link_id') a.target, a.metadata->>'link_id' AS link_id, a.actor
+		FROM audit_log a
+		WHERE a.tenant_id=$1 AND a.hash_version=2 AND a.action='user.oidc_identity_linked'
+		ORDER BY a.target,a.metadata->>'link_id',a.id DESC
+	)
+	INSERT INTO identity_authenticators
+		(tenant_id,id,connection_id,protocol_subject,membership_id,person_id,approved_by,source,created_at,updated_at)
+	SELECT l.tenant_id,
+	       'authenticator_'||substr(encode(digest(convert_to(l.tenant_id||E'\\000'||l.issuer||E'\\000'||l.subject,'UTF8'),'sha256'),'hex'),1,40),
+	       $2,l.subject,m.id,m.person_id,COALESCE(NULLIF(ap.actor,''),'legacy-approved-link'),'legacy_link',$4,$4
+	FROM oidc_external_identities l
+	JOIN identity_memberships m ON m.tenant_id=l.tenant_id AND m.legacy_user_id=l.user_id
+	LEFT JOIN approvals ap ON ap.target=l.user_id AND ap.link_id=l.id
+	WHERE l.tenant_id=$1 AND l.issuer=$3
+	ON CONFLICT (tenant_id,connection_id,protocol_subject) DO NOTHING`, tenant, connection, issuer, now); err != nil {
+		return fmt.Errorf("insert approved legacy authenticators: %w", identityPersistenceError(err))
+	}
+	return nil
+}
+
+func applyLegacyDecision(ctx context.Context, tx pgx.Tx, u ports.IdentityLegacyUser, d ports.IdentityBackfillDecision, runID shared.ID, now time.Time) error {
 	var personID, membershipID shared.ID
 	if d.Project {
 		var existingMembership, existingPerson string
@@ -428,24 +539,6 @@ func applyLegacyDecision(ctx context.Context, tx pgx.Tx, u ports.IdentityLegacyU
 			}
 		} else if err := revokeLegacyCredential(ctx, tx, u, now); err != nil {
 			return identityPersistenceError(err)
-		}
-		if d.ImportLinks && connectionID != "" {
-			for _, link := range u.Links {
-				if link.Issuer != issuer {
-					continue
-				}
-				approvedBy := link.ApprovedBy
-				if approvedBy == "" {
-					approvedBy = "legacy-approved-link"
-				}
-				if _, err := tx.Exec(ctx, `INSERT INTO identity_authenticators
-					(tenant_id, id, connection_id, protocol_subject, membership_id, person_id, approved_by, source, created_at, updated_at)
-					VALUES ($1,$2,$3,$4,$5,$6,$7,'legacy_link',$8,$8) ON CONFLICT (tenant_id, connection_id, protocol_subject) DO NOTHING`,
-					u.TenantID.String(), legacyIdentityID("authenticator_", u.TenantID, shared.ID(link.Issuer+"\x00"+link.Subject)).String(),
-					connectionID.String(), link.Subject, membershipID.String(), personID.String(), approvedBy, now); err != nil {
-					return fmt.Errorf("import approved OIDC link: %w", identityPersistenceError(err))
-				}
-			}
 		}
 	}
 	return upsertBackfillItem(ctx, tx, u.TenantID, u.ID, d.Class, d.CredentialClass, personID, membershipID, u.APIKeyHash, runID, now)
@@ -537,6 +630,30 @@ func (s *IdentityFoundationStore) RecordShadowReport(ctx context.Context, tenant
 			WHERE u.ownership_tenant_id=$1 AND u.id <> $2`, t, bootstrap).Scan(&r.CredentialsExpected, &r.CredentialsMatched, &r.DigestMismatches); err != nil {
 			return fmt.Errorf("shadow credential parity: %w", err)
 		}
+		// Authenticator parity: one approved source link under the configured connection has exactly
+		// one approved legacy_link row with the membership/person derived from its current user.
+		if err := tx.QueryRow(ctx, `WITH source_links AS (
+			SELECT l.subject,m.id AS membership_id,m.person_id
+			FROM oidc_external_identities l
+			JOIN identity_connections cn ON cn.tenant_id=l.tenant_id AND cn.protocol='oidc' AND cn.trust_namespace=l.issuer
+			JOIN identity_memberships m ON m.tenant_id=l.tenant_id AND m.legacy_user_id=l.user_id
+			WHERE l.tenant_id=$1
+		), derived AS (
+			SELECT a.protocol_subject,a.membership_id,a.person_id,a.source,a.state
+			FROM identity_authenticators a
+			JOIN identity_connections cn ON cn.tenant_id=a.tenant_id AND cn.id=a.connection_id AND cn.protocol='oidc'
+			WHERE a.tenant_id=$1
+		), matched AS (
+			SELECT s.subject FROM source_links s JOIN derived d ON d.protocol_subject=s.subject
+			WHERE d.source='legacy_link' AND d.state='approved'
+			  AND d.membership_id=s.membership_id AND d.person_id=s.person_id
+		)
+		SELECT (SELECT count(*) FROM source_links),
+		       (SELECT count(*) FROM matched),
+		       (SELECT count(*) FROM source_links)+(SELECT count(*) FROM derived)-2*(SELECT count(*) FROM matched)`, t).Scan(
+			&r.AuthenticatorsExpected, &r.AuthenticatorsMatched, &r.AuthenticatorMismatches); err != nil {
+			return fmt.Errorf("shadow authenticator parity: %w", err)
+		}
 		// Routing parity through the exact-digest function the authenticator will use: an active
 		// credential routes to this tenant and kind; a revoked credential or unusable legacy hash
 		// routes nowhere.
@@ -582,7 +699,7 @@ func (s *IdentityFoundationStore) RecordShadowReport(ctx context.Context, tenant
 		if err != nil {
 			return fmt.Errorf("shadow cutover state: %w", err)
 		}
-		r.DriftTotal = r.MissingMemberships + r.RoleDrift + r.StateDrift + r.DigestMismatches + r.RoutingMismatches
+		r.DriftTotal = r.MissingMemberships + r.RoleDrift + r.StateDrift + r.DigestMismatches + r.RoutingMismatches + r.AuthenticatorMismatches
 		r.Aborted = r.DriftTotal > thresholds.MaxDrift
 		r.Ready = !r.Aborted && r.DriftTotal == 0 && r.Ambiguous == 0 && r.MissingMemberships == 0
 		// Rollback is prepared while users is still authoritative: the derived rows can be dropped
@@ -599,12 +716,12 @@ func (s *IdentityFoundationStore) RecordShadowReport(ctx context.Context, tenant
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO identity_shadow_reports
 			(tenant_id, id, run_id, legacy_users, bootstrap_skipped, memberships, missing_memberships, credentials_expected, credentials_matched,
-			 digest_mismatches, routing_mismatches, role_drift, state_drift, placeholders, ambiguous, drift_total, max_drift, aborted, ready,
-			 rollback_prepared, details, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+			 authenticators_expected, authenticators_matched, authenticator_mismatches, digest_mismatches, routing_mismatches, role_drift, state_drift,
+			 placeholders, ambiguous, drift_total, max_drift, aborted, ready, rollback_prepared, details, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
 			t, reportID.String(), run, r.LegacyUsers, r.BootstrapSkipped, r.Memberships, r.MissingMemberships, r.CredentialsExpected, r.CredentialsMatched,
-			r.DigestMismatches, r.RoutingMismatches, r.RoleDrift, r.StateDrift, r.Placeholders, r.Ambiguous, r.DriftTotal, thresholds.MaxDrift,
-			r.Aborted, r.Ready, r.RollbackPrepared, string(details), now); err != nil {
+			r.AuthenticatorsExpected, r.AuthenticatorsMatched, r.AuthenticatorMismatches, r.DigestMismatches, r.RoutingMismatches, r.RoleDrift, r.StateDrift,
+			r.Placeholders, r.Ambiguous, r.DriftTotal, thresholds.MaxDrift, r.Aborted, r.Ready, r.RollbackPrepared, string(details), now); err != nil {
 			return fmt.Errorf("record shadow report: %w", err)
 		}
 		return nil

@@ -117,6 +117,36 @@ func TestIdentityStoreSessionRevocationAndTenantLinkage(t *testing.T) {
 	}
 }
 
+func TestIdentityMemoryCreateSessionForExternalIdentityRequiresCurrentApproval(t *testing.T) {
+	store, ctx, now := identityMemoryStore(t)
+	external, err := identity.NewExternalIdentity("link-1", "tenant-a", "user", "https://issuer.example", "sub", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateExternalIdentity(ctx, external); err != nil {
+		t.Fatal(err)
+	}
+	session, err := identity.NewSession("session-approval", "tenant-a", "user", "token-approval", "csrf-approval", nil, now.Add(time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSessionForExternalIdentity(ctx, external.Issuer, external.Subject, now.Add(-time.Second), session); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("stale user approval = %v, want not found", err)
+	}
+	if _, err := store.GetSessionByTokenHash(ctx, session.TokenHash); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("stale approval persisted session: %v", err)
+	}
+	if _, err := store.DeleteExternalIdentity(ctx, external.TenantID, external.UserID, external.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateSessionForExternalIdentity(ctx, external.Issuer, external.Subject, now, session); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("removed subject approval = %v, want not found", err)
+	}
+	if _, err := store.GetSessionByTokenHash(ctx, session.TokenHash); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("removed approval persisted session: %v", err)
+	}
+}
+
 // DeleteExternalIdentity removes only a link of the named tenant and user, and inside a tenant
 // transaction that fails the link is restored.
 func TestIdentityMemoryDeleteExternalIdentity(t *testing.T) {

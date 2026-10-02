@@ -136,8 +136,8 @@ func run(args []string, output io.Writer) error {
 			return
 		}
 		worst = max(worst, code)
-		parity = errors.Join(parity, fmt.Errorf("tenant %s: shadow report %s is %s (drift %d, max drift %d, ambiguous %d)",
-			tenantID, r.ID, label, r.DriftTotal, options.maxDrift, r.Ambiguous))
+		parity = errors.Join(parity, fmt.Errorf("tenant %s: shadow report %s is %s (drift %d, max drift %d, authenticator mismatch %d, ambiguous %d)",
+			tenantID, r.ID, label, r.DriftTotal, options.maxDrift, r.AuthenticatorMismatches, r.Ambiguous))
 	}
 	switch options.mode {
 	case "deliver":
@@ -193,7 +193,8 @@ func logReport(log infoLogger, r ports.IdentityShadowReport, outcome string) {
 	log.Info("identity shadow report", "tenant_id", r.TenantID, "report_id", r.ID, "outcome", outcome,
 		"legacy_users", r.LegacyUsers, "memberships", r.Memberships,
 		"credentials_expected", r.CredentialsExpected, "credentials_matched", r.CredentialsMatched,
-		"drift_total", r.DriftTotal, "missing_memberships", r.MissingMemberships, "role_drift", r.RoleDrift,
+		"authenticators_expected", r.AuthenticatorsExpected, "authenticators_matched", r.AuthenticatorsMatched,
+		"authenticator_mismatches", r.AuthenticatorMismatches, "drift_total", r.DriftTotal, "missing_memberships", r.MissingMemberships, "role_drift", r.RoleDrift,
 		"state_drift", r.StateDrift, "digest_mismatches", r.DigestMismatches, "routing_mismatches", r.RoutingMismatches,
 		"ambiguous", r.Ambiguous, "placeholders", r.Placeholders,
 		"aborted", r.Aborted, "ready", r.Ready, "rollback_prepared", r.RollbackPrepared)

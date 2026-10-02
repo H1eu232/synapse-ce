@@ -66,8 +66,12 @@ synapse-identity-backfill --mode rollback --tenants tenant-a
 | `--timeout` | Overall command timeout (default 30m) |
 | `--lease-duration` | A running backfill updated within this window blocks a second one (default 10m) |
 
-Each batch locks its `users` rows, reads all evidence for the batch in a fixed number of queries, and
-commits its checkpoint together with the derived rows. Inside a batch, a lock wait longer than 5 seconds
+Each batch locks its `users` rows in ID order, then locks approved OIDC links in link-ID order and derived
+authenticators in subject order. It reads all evidence for the batch in a fixed number of queries and
+commits its checkpoint together with the derived rows. The authoritative approved links are reconciled
+transactionally: stale `legacy_link` rows are removed, a rebound subject replaces its old legacy binding,
+and a canonical key already owned by a native authenticator fails closed without partial writes. Inside a
+batch, a lock wait longer than 5 seconds
 or a statement longer than 60 seconds fails that batch and rolls it back, so a stuck batch releases its
 locks instead of holding the tenant's user management. Rerunning resumes from the last committed
 checkpoint; reprocessing a user is idempotent. A run whose lease expired is marked failed and can be
@@ -102,8 +106,13 @@ high so there are fewer scans, and rehearse on a copy first.
 | 4 | aborted | Drift above `--max-drift` in at least one tenant |
 
 The log line for each tenant reports `outcome`, `drift_total` with each drift component, and `ambiguous`
-separately. Every shadow run also appends a row to `identity_shadow_reports`, and every backfill run is
-recorded in `identity_backfill_runs`. Per-user classification is in `identity_backfill_items`.
+separately. Authenticator parity has the same expected/matched/mismatch shape as credential parity:
+`authenticators_expected` counts authoritative approved links under the configured OIDC connection,
+`authenticators_matched` counts exact membership/person matches, and `authenticator_mismatches` includes
+missing, stale, extra, or rebound rows. Any authenticator mismatch contributes to `drift_total` and blocks
+readiness. Shadow mode only reports this drift; backfill mode performs the reconciliation. Every shadow run
+also appends a row to `identity_shadow_reports`, and every backfill run is recorded in
+`identity_backfill_runs`. Per-user classification is in `identity_backfill_items`.
 
 Ambiguous rows are users the backfill would not project a credential for:
 

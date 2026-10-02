@@ -316,6 +316,145 @@ func TestIdentityBackfillConcurrentOldWritesAndRotation(t *testing.T) {
 	}
 }
 
+func TestIdentityBackfillReconcilesAuthoritativeApprovedLinks(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+	f.tenants(t, "org-a")
+	f.seedIssued(t, "org-a", "alice", user.RoleAdmin, false)
+	f.seedIssued(t, "org-a", "bob", user.RoleMember, false)
+	f.exec(t, `INSERT INTO oidc_external_identities(id,tenant_id,user_id,issuer,subject) VALUES('link-a','org-a','alice',$1,'shared-subject')`, testIssuer)
+	first := f.backfill(t, "org-a", 10)
+	if !first.Report.Ready || first.Report.AuthenticatorsExpected != 1 || first.Report.AuthenticatorsMatched != 1 || first.Report.AuthenticatorMismatches != 0 {
+		t.Fatalf("initial authenticator parity = %+v", first.Report)
+	}
+	alice := f.membershipOf(t, "org-a", "alice")
+	bob := f.membershipOf(t, "org-a", "bob")
+	var membership, person string
+	if err := f.admin.QueryRow(ctx, `SELECT membership_id,person_id FROM identity_authenticators WHERE tenant_id='org-a' AND protocol_subject='shared-subject'`).Scan(&membership, &person); err != nil {
+		t.Fatal(err)
+	}
+	if membership != alice.ID.String() || person != alice.PersonID.String() {
+		t.Fatalf("initial owner = %s/%s, want alice", membership, person)
+	}
+
+	// Direct authoritative deletion is reconciled, including an extra stale derived row.
+	f.exec(t, `DELETE FROM oidc_external_identities WHERE id='link-a'`)
+	f.exec(t, `INSERT INTO identity_authenticators(tenant_id,id,connection_id,protocol_subject,membership_id,person_id,approved_by,source)
+		SELECT 'org-a','stale-auth',id,'stale-subject',$1,$2,'legacy','legacy_link' FROM identity_connections WHERE tenant_id='org-a' AND trust_namespace=$3`, alice.ID.String(), alice.PersonID.String(), testIssuer)
+	unlinked := f.backfill(t, "org-a", 10)
+	if !unlinked.Report.Ready || unlinked.Report.AuthenticatorsExpected != 0 || unlinked.Report.AuthenticatorsMatched != 0 || unlinked.Report.AuthenticatorMismatches != 0 {
+		t.Fatalf("unlink authenticator parity = %+v", unlinked.Report)
+	}
+	if n := f.adminCount(t, `SELECT count(*) FROM identity_authenticators WHERE tenant_id='org-a'`); n != 0 {
+		t.Fatalf("stale authenticators after unlink = %d", n)
+	}
+
+	// Reapproval to another user replaces the immutable legacy binding transactionally.
+	f.exec(t, `INSERT INTO oidc_external_identities(id,tenant_id,user_id,issuer,subject) VALUES('link-b','org-a','bob',$1,'shared-subject')`, testIssuer)
+	rebound := f.backfill(t, "org-a", 10)
+	if !rebound.Report.Ready || rebound.Report.AuthenticatorsExpected != 1 || rebound.Report.AuthenticatorsMatched != 1 || rebound.Report.AuthenticatorMismatches != 0 {
+		t.Fatalf("rebound authenticator parity = %+v", rebound.Report)
+	}
+	if err := f.admin.QueryRow(ctx, `SELECT membership_id,person_id FROM identity_authenticators WHERE tenant_id='org-a' AND protocol_subject='shared-subject'`).Scan(&membership, &person); err != nil {
+		t.Fatal(err)
+	}
+	if membership != bob.ID.String() || person != bob.PersonID.String() {
+		t.Fatalf("rebound owner = %s/%s, want bob", membership, person)
+	}
+
+	// Shadow reports direct authoritative drift without repairing it.
+	f.exec(t, `UPDATE oidc_external_identities SET user_id='alice' WHERE id='link-b'`)
+	drift, err := f.service(t).Shadow(ctx, "org-a", ports.IdentityShadowThresholds{MaxDrift: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drift.AuthenticatorsExpected != 1 || drift.AuthenticatorsMatched != 0 || drift.AuthenticatorMismatches != 2 || drift.DriftTotal < 2 || drift.Ready || !drift.Aborted {
+		t.Fatalf("direct rebind drift = %+v", drift)
+	}
+	var currentUser string
+	if err := f.admin.QueryRow(ctx, `SELECT user_id FROM oidc_external_identities WHERE id='link-b'`).Scan(&currentUser); err != nil || currentUser != "alice" {
+		t.Fatalf("shadow changed authoritative link = %q, %v", currentUser, err)
+	}
+	if repaired := f.backfill(t, "org-a", 10); !repaired.Report.Ready || repaired.Report.AuthenticatorMismatches != 0 {
+		t.Fatalf("direct rebind reconciliation = %+v", repaired.Report)
+	}
+}
+
+func TestIdentityBackfillFailsClosedOnNativeAuthenticatorConflict(t *testing.T) {
+	f := newIdentityFixture(t)
+	f.tenants(t, "org-a")
+	f.seedIssued(t, "org-a", "alice", user.RoleAdmin, false)
+	f.backfill(t, "org-a", 10)
+	f.declare(t, "org-a")
+	alice := f.membershipOf(t, "org-a", "alice")
+	f.exec(t, `INSERT INTO identity_authenticators(tenant_id,id,connection_id,protocol_subject,membership_id,person_id,approved_by,source)
+		SELECT 'org-a','native-auth',id,'native-subject',$1,$2,'admin','native' FROM identity_connections WHERE tenant_id='org-a' AND trust_namespace=$3`, alice.ID.String(), alice.PersonID.String(), testIssuer)
+	f.exec(t, `INSERT INTO oidc_external_identities(id,tenant_id,user_id,issuer,subject) VALUES('link-native','org-a','alice',$1,'native-subject')`, testIssuer)
+	_, err := f.service(t).Backfill(context.Background(), "org-a", identityfoundation.BackfillOptions{
+		Actor: "backfill-test", Issuer: testIssuer, BatchSize: 10, Lease: time.Minute,
+	})
+	if !errors.Is(err, shared.ErrConflict) {
+		t.Fatalf("native conflict error = %v, want conflict", err)
+	}
+	if n := f.adminCount(t, `SELECT count(*) FROM identity_authenticators WHERE tenant_id='org-a' AND id='native-auth' AND source='native'`); n != 1 {
+		t.Fatalf("native conflict changed native row: %d", n)
+	}
+	if n := f.adminCount(t, `SELECT count(*) FROM identity_authenticators WHERE tenant_id='org-a' AND protocol_subject='native-subject' AND source='legacy_link'`); n != 0 {
+		t.Fatalf("native conflict inserted legacy row: %d", n)
+	}
+}
+
+func TestIdentityBackfillSerializesConcurrentLinkChange(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+	f.tenants(t, "org-a")
+	f.seedIssued(t, "org-a", "alice", user.RoleAdmin, false)
+	f.seedIssued(t, "org-a", "bob", user.RoleMember, false)
+	f.exec(t, `INSERT INTO oidc_external_identities(id,tenant_id,user_id,issuer,subject) VALUES('link-race','org-a','alice',$1,'race-subject')`, testIssuer)
+	f.backfill(t, "org-a", 10)
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	changeDone := make(chan error, 1)
+	go func() {
+		err := WithTenant(ctx, f.runtime, "org-a", func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `UPDATE oidc_external_identities SET user_id='bob' WHERE id='link-race'`); err != nil {
+				return err
+			}
+			close(locked)
+			<-release
+			return nil
+		})
+		changeDone <- err
+	}()
+	<-locked
+	backfillDone := make(chan identityfoundation.BackfillResult, 1)
+	backfillErr := make(chan error, 1)
+	go func() {
+		res, err := f.service(t).Backfill(context.Background(), "org-a", identityfoundation.BackfillOptions{
+			Actor: "backfill-test", Issuer: testIssuer, BatchSize: 10, Lease: time.Minute,
+		})
+		backfillDone <- res
+		backfillErr <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	if err := <-changeDone; err != nil {
+		t.Fatal(err)
+	}
+	res := <-backfillDone
+	if err := <-backfillErr; err != nil {
+		t.Fatal(err)
+	}
+	if !res.Report.Ready || res.Report.AuthenticatorMismatches != 0 {
+		t.Fatalf("concurrent link reconciliation = %+v", res.Report)
+	}
+	bob := f.membershipOf(t, "org-a", "bob")
+	if n := f.adminCount(t, `SELECT count(*) FROM identity_authenticators WHERE tenant_id='org-a' AND protocol_subject='race-subject' AND membership_id=$1 AND person_id=$2`, bob.ID.String(), bob.PersonID.String()); n != 1 {
+		t.Fatalf("concurrent link owner not reconciled: %d", n)
+	}
+}
+
 func TestIdentityShadowDriftReportNeverRepairs(t *testing.T) {
 	f := newIdentityFixture(t)
 	ctx := context.Background()

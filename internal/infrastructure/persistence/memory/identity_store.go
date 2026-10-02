@@ -15,6 +15,7 @@ import (
 // IdentityStore is a race-safe in-memory ports.IdentityStore for development and tests.
 type IdentityStore struct {
 	mu               sync.RWMutex
+	authorizationMu  sync.Mutex
 	users            ports.UserRepository
 	identitiesByKey  map[string]identity.ExternalIdentity
 	transactions     map[string]identity.AuthorizationTransaction
@@ -33,7 +34,10 @@ func NewIdentityStore(users ports.UserRepository) (*IdentityStore, error) {
 	}, nil
 }
 
-var _ ports.IdentityStore = (*IdentityStore)(nil)
+var (
+	_ ports.IdentityStore                 = (*IdentityStore)(nil)
+	_ ports.ExternalIdentitySessionIssuer = (*IdentityStore)(nil)
+)
 
 func (s *IdentityStore) CreateExternalIdentity(ctx context.Context, external identity.ExternalIdentity) error {
 	if err := ctx.Err(); err != nil {
@@ -69,6 +73,8 @@ func (s *IdentityStore) CreateExternalIdentity(ctx context.Context, external ide
 // DeleteExternalIdentity removes one approved link of a user. Inside a tenant transaction the link
 // is restored if the enclosing unit fails, matching the PostgreSQL store.
 func (s *IdentityStore) DeleteExternalIdentity(ctx context.Context, tenantID, userID, linkID shared.ID) (identity.ExternalIdentity, error) {
+	s.authorizationMu.Lock()
+	defer s.authorizationMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return identity.ExternalIdentity{}, err
 	}
@@ -119,6 +125,8 @@ func (s *IdentityStore) ListExternalIdentities(ctx context.Context, tenantID, us
 
 // RevokeUserSessions terminally revokes every unrevoked session of one user.
 func (s *IdentityStore) RevokeUserSessions(ctx context.Context, tenantID, userID shared.ID, now time.Time) (int, error) {
+	s.authorizationMu.Lock()
+	defer s.authorizationMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -209,6 +217,32 @@ func (s *IdentityStore) CreateSession(ctx context.Context, session identity.Sess
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.createSessionLocked(session)
+}
+
+func (s *IdentityStore) CreateSessionForExternalIdentity(ctx context.Context, issuer, subject string, approvedUserUpdatedAt time.Time, session identity.Session) error {
+	s.authorizationMu.Lock()
+	defer s.authorizationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if session.TenantID.IsZero() || session.UserID.IsZero() || issuer == "" || subject == "" || approvedUserUpdatedAt.IsZero() {
+		return fmt.Errorf("%w: OIDC session tenant, user, issuer, subject and approval version are required", shared.ErrValidation)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	external, ok := s.identitiesByKey[issuer+"\x00"+subject]
+	if !ok || external.TenantID != session.TenantID || external.UserID != session.UserID {
+		return shared.ErrNotFound
+	}
+	u, err := s.users.GetByID(ctx, session.TenantID, session.UserID)
+	if err != nil || u.Disabled || !u.Role.Valid() || u.ID.String() == "operator" || !u.Audit.UpdatedAt.Equal(approvedUserUpdatedAt) {
+		return shared.ErrNotFound
+	}
+	return s.createSessionLocked(session)
+}
+
+func (s *IdentityStore) createSessionLocked(session identity.Session) error {
 	if _, exists := s.sessionsByID[session.ID]; exists {
 		return fmt.Errorf("session id already exists: %w", shared.ErrConflict)
 	}

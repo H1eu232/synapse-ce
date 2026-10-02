@@ -195,36 +195,64 @@ func (r *UserRepository) List(ctx context.Context, tenantID shared.ID) ([]*user.
 	return r.list(ctx, tenantID, "")
 }
 
-// ListForUpdate is List with the tenant's rows locked for the rest of the caller's transaction, so
-// the last-admin guard's count cannot be invalidated by a concurrent demotion between the count and
-// the write. Outside a transaction the lock is released immediately and this is just List.
+// ListForUpdate locks and drains the tenant's rows in canonical ID order before reading them in
+// ordinary created_at/id presentation order. Backfill takes the same lock order, so roster-wide
+// mutations cannot deadlock with a batch whose IDs sort differently from its creation timestamps.
+// Outside a transaction the locks are released immediately and this is just List.
 func (r *UserRepository) ListForUpdate(ctx context.Context, tenantID shared.ID) ([]*user.User, error) {
-	return r.list(ctx, tenantID, " FOR UPDATE")
+	var out []*user.User
+	tenant := shared.TenantOrDefault(tenantID).String()
+	err := WithTenant(ctx, r.pool, tenant, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT id FROM users WHERE `+userTenantPredicate+` ORDER BY id FOR UPDATE`, shared.DefaultTenant.String(), tenant)
+		if err != nil {
+			return fmt.Errorf("lock users: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan locked user: %w", err)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("lock users: %w", err)
+		}
+		out, err = listUsers(ctx, tx, tenant)
+		return err
+	})
+	return out, err
 }
 
 var _ ports.UserRosterLocker = (*UserRepository)(nil)
 
-func (r *UserRepository) list(ctx context.Context, tenantID shared.ID, lock string) ([]*user.User, error) {
-	query := `SELECT ` + userCols + ` FROM users WHERE ` + userTenantPredicate + ` ORDER BY created_at ASC, id ASC` + lock
+func (r *UserRepository) list(ctx context.Context, tenantID shared.ID, _ string) ([]*user.User, error) {
 	var out []*user.User
-	err := WithTenant(ctx, r.pool, shared.TenantOrDefault(tenantID).String(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, query, shared.DefaultTenant.String(), shared.TenantOrDefault(tenantID).String())
-		if err != nil {
-			return fmt.Errorf("list users: %w", err)
-		}
-		defer rows.Close()
-		out = []*user.User{}
-		for rows.Next() {
-			u, scanErr := scanUser(rows)
-			if scanErr != nil {
-				return fmt.Errorf("scan user: %w", scanErr)
-			}
-			out = append(out, u)
-		}
-		return rows.Err()
+	tenant := shared.TenantOrDefault(tenantID).String()
+	err := WithTenant(ctx, r.pool, tenant, func(tx pgx.Tx) error {
+		var err error
+		out, err = listUsers(ctx, tx, tenant)
+		return err
 	})
+	return out, err
+}
+
+func listUsers(ctx context.Context, tx pgx.Tx, tenant string) ([]*user.User, error) {
+	rows, err := tx.Query(ctx, `SELECT `+userCols+` FROM users WHERE `+userTenantPredicate+` ORDER BY created_at ASC, id ASC`, shared.DefaultTenant.String(), tenant)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	out := []*user.User{}
+	for rows.Next() {
+		u, scanErr := scanUser(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan user: %w", scanErr)
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
 	}
 	return out, nil
 }

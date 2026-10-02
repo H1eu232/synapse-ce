@@ -97,6 +97,25 @@ func TestShadowOutcomeExitCodes(t *testing.T) {
 	}
 }
 
+type captureInfoLogger struct {
+	args []any
+}
+
+func (l *captureInfoLogger) Info(_ string, args ...any) { l.args = append(l.args, args...) }
+
+func TestLogReportIncludesAuthenticatorParity(t *testing.T) {
+	log := &captureInfoLogger{}
+	logReport(log, ports.IdentityShadowReport{
+		AuthenticatorsExpected: 3, AuthenticatorsMatched: 2, AuthenticatorMismatches: 1,
+	}, "not_ready")
+	got := fmt.Sprint(log.args...)
+	for _, want := range []string{"authenticators_expected", "3", "authenticators_matched", "2", "authenticator_mismatches", "1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("shadow log lacks %q: %v", want, log.args)
+		}
+	}
+}
+
 func TestUsageDocumentsExitCodes(t *testing.T) {
 	var out bytes.Buffer
 	if _, err := parseOptions([]string{"--help"}, &out); err == nil {

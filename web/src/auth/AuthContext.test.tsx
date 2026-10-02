@@ -7,11 +7,12 @@ import { ApiError } from '../lib/api/errors'
 
 const mocks = vi.hoisted(() => ({
   aup: vi.fn(),
+  me: vi.fn(),
   acceptAup: vi.fn(),
 }))
 
 vi.mock('../lib/api', () => ({
-  api: { aup: mocks.aup, acceptAup: mocks.acceptAup },
+  api: { aup: mocks.aup, me: mocks.me, acceptAup: mocks.acceptAup },
   discoverSession: vi.fn(),
   logoutSession: vi.fn(),
   setCSRFToken: vi.fn(),
@@ -23,6 +24,7 @@ import { discoverSession, logoutSession, setCSRFToken, setToken, setUnauthorized
 
 const ACCEPTED = { accepted: true, version: 'v1', text: 'Use responsibly.' }
 const PENDING_AUP = { accepted: false, version: 'v1', text: 'Use responsibly.' }
+const CURRENT_USER = { id: 'user-1', name: 'Operator', role: 'admin' }
 
 function apiError(status: number, code?: string, extra: Record<string, unknown> = {}) {
   const message = code ? `server says ${code}` : `HTTP ${status}`
@@ -62,6 +64,7 @@ beforeEach(() => {
   vi.mocked(setCSRFToken).mockClear()
   vi.mocked(setUnauthorizedHandler).mockClear()
   mocks.aup.mockReset().mockResolvedValue(ACCEPTED)
+  mocks.me.mockReset().mockResolvedValue(CURRENT_USER)
   mocks.acceptAup.mockReset().mockResolvedValue({})
 })
 
@@ -212,6 +215,36 @@ describe('credential restoration outcomes', () => {
 
     expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument()
     expect(sessionStorage.getItem('synapse.token')).toBe('saved-token')
+  })
+
+  it('keeps a saved token when /me has a dependency failure and succeeds on Retry', async () => {
+    sessionStorage.setItem('synapse.token', 'saved-token')
+    mocks.me
+      .mockRejectedValueOnce(apiError(503, 'authentication_unavailable', { retryable: true, request_id: 'me-req-7' }))
+      .mockResolvedValueOnce(CURRENT_USER)
+    renderConnect()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/temporarily unavailable/)
+    expect(screen.getByText('me-req-7')).toBeInTheDocument()
+    expect(phase()).toBe('unauthenticated')
+    expect(sessionStorage.getItem('synapse.token')).toBe('saved-token')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(phase()).toBe('ready'))
+    expect(mocks.me).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not persist a manually entered token when /me has a dependency failure', async () => {
+    mocks.me.mockRejectedValueOnce(apiError(503, 'authentication_unavailable', { retryable: true, request_id: 'me-connect-3' }))
+    renderConnect()
+
+    fireEvent.change(await screen.findByLabelText('API token'), { target: { value: 'unverified-token' } })
+    fireEvent.submit(screen.getByLabelText('API token').closest('form')!)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/authentication_unavailable/)
+    expect(screen.getByText('me-connect-3')).toBeInTheDocument()
+    expect(phase()).toBe('unauthenticated')
+    expect(sessionStorage.getItem('synapse.token')).toBeNull()
   })
 
   it('clears the saved token when the server reports authentication_invalid', async () => {
