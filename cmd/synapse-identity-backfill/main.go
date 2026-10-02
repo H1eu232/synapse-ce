@@ -293,8 +293,8 @@ func parseOptions(args []string, output io.Writer) (backfillOptions, error) {
 	if *timeout <= 0 || *lease <= 0 {
 		return backfillOptions{}, errors.New("--timeout and --lease-duration must be positive")
 	}
-	if *policyVersion < 0 || *migrationVersion < 208 {
-		return backfillOptions{}, errors.New("--expected-policy-version must not be negative and --migration-version must be at least 208")
+	if *policyVersion < 0 || *migrationVersion < 209 {
+		return backfillOptions{}, errors.New("--expected-policy-version must not be negative and --migration-version must be at least 209")
 	}
 	if *mode == "declare" && (strings.TrimSpace(*shadowReport) == "" || strings.TrimSpace(*oldWriterGeneration) == "") {
 		return backfillOptions{}, errors.New("declare requires --shadow-report-id and --old-writer-generation")

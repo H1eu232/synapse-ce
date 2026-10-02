@@ -10,7 +10,7 @@ CREATE TABLE identity_cutover_ledger (
     shadow_report_id TEXT,
     old_writer_generation TEXT,
     old_writer_count INT NOT NULL DEFAULT 0 CHECK (old_writer_count >= 0),
-    migration_version INT NOT NULL DEFAULT 208 CHECK (migration_version >= 208),
+    migration_version INT NOT NULL DEFAULT 209 CHECK (migration_version >= 209),
     created_at TIMESTAMPTZ NOT NULL
     -- Prepared and aborted are append-only attempts; only terminal transitions are unique.
 );
@@ -74,7 +74,7 @@ ALTER TABLE identity_cutover_writer_evidence NO FORCE ROW LEVEL SECURITY;
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM identity_cutover_ledger) OR EXISTS (SELECT 1 FROM identity_cutover_writer_evidence) THEN
-        RAISE EXCEPTION 'identity cutover evidence exists; forward-fix or archive it before reverting migration 0208';
+        RAISE EXCEPTION 'identity cutover evidence exists; forward-fix or archive it before reverting migration 0209';
     END IF;
 END $$;
 -- +goose StatementEnd

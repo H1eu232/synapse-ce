@@ -8,7 +8,7 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-const identityMigrationCurrent = 217
+const identityMigrationCurrent = 218
 
 func TestIdentityMigrationsForwardEmptyDownForward(t *testing.T) {
 	isolated := newIsolatedMigrationDB(t, identityMigrationCurrent, 206)
@@ -35,8 +35,8 @@ func TestIdentityMigrationsForwardEmptyDownForward(t *testing.T) {
 	requireIdentityMigrationReadiness(t, db)
 }
 
-func TestIdentityMigration0217BackfillsExistingRetryRoute(t *testing.T) {
-	isolation := newIsolatedMigrationDB(t, identityMigrationCurrent, 216)
+func TestIdentityMigration0218BackfillsExistingRetryRoute(t *testing.T) {
+	isolation := newIsolatedMigrationDB(t, identityMigrationCurrent, 217)
 	seedMigrationAcceptedInvitation(t, isolation)
 	const (
 		tenant      = "migration-retry"
@@ -68,22 +68,22 @@ func TestIdentityMigrationDownRefusesPopulatedEvidence(t *testing.T) {
 	t.Run("accepted invitation retry", func(t *testing.T) {
 		isolated := newIsolatedMigrationDB(t, identityMigrationCurrent, identityMigrationCurrent)
 		seedMigrationAcceptedInvitation(t, isolated)
-		err := goose.DownTo(isolated.db, ".", 215)
+		err := goose.DownTo(isolated.db, ".", 216)
 		if err == nil || !strings.Contains(err.Error(), "populated invitation retry evidence") {
 			t.Fatalf("down with accepted invitation retry = %v, want refusal", err)
 		}
-		requireIdentityMigrationVersion(t, isolated.db, 216)
+		requireIdentityMigrationVersion(t, isolated.db, 217)
 		requireMigrationRLS(t, isolated.db, "identity_invitations")
 	})
 
 	t.Run("admission evidence", func(t *testing.T) {
 		isolated := newIsolatedMigrationDB(t, identityMigrationCurrent, identityMigrationCurrent)
 		seedMigrationAdmissionEvidence(t, isolated)
-		err := goose.DownTo(isolated.db, ".", 210)
+		err := goose.DownTo(isolated.db, ".", 211)
 		if err == nil || !strings.Contains(err.Error(), "identity admission evidence requires a forward fix") {
 			t.Fatalf("down with admission evidence = %v, want refusal", err)
 		}
-		requireIdentityMigrationVersion(t, isolated.db, 211)
+		requireIdentityMigrationVersion(t, isolated.db, 212)
 		requireMigrationRLS(t, isolated.db, "identity_transactions")
 		requireMigrationRLS(t, isolated.db, "identity_invitation_challenges")
 	})
@@ -91,11 +91,11 @@ func TestIdentityMigrationDownRefusesPopulatedEvidence(t *testing.T) {
 	t.Run("declared cutover", func(t *testing.T) {
 		isolated := newIsolatedMigrationDB(t, identityMigrationCurrent, identityMigrationCurrent)
 		seedMigrationDeclaredCutover(t, isolated)
-		err := goose.DownTo(isolated.db, ".", 211)
+		err := goose.DownTo(isolated.db, ".", 212)
 		if err == nil || !strings.Contains(err.Error(), "writer fence rollback refused") {
 			t.Fatalf("down with declared cutover = %v, want refusal", err)
 		}
-		requireIdentityMigrationVersion(t, isolated.db, 212)
+		requireIdentityMigrationVersion(t, isolated.db, 213)
 		requireMigrationRLS(t, isolated.db, "identity_cutover_ledger")
 	})
 }

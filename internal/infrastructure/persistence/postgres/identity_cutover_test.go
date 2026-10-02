@@ -25,10 +25,10 @@ func TestIdentityCutoverDeclaresOnlyCleanCurrentShadowAndRefusesAbort(t *testing
 	if err != nil || canary.ID != result.Report.ID || !canary.Ready || !canary.RollbackPrepared {
 		t.Fatalf("canary = %+v, %v", canary, err)
 	}
-	if err := f.store.RecordCutoverWriterHeartbeat(ctx, "cutover", "release-208", "api-a", time.Now().UTC()); err != nil {
+	if err := f.store.RecordCutoverWriterHeartbeat(ctx, "cutover", "shared-authentication:test", "api-a", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.store.DeclareCutover(ctx, "cutover", prepared.PolicyVersion, ports.IdentityCutoverEvidence{ShadowReportID: canary.ID, OldWriterGeneration: "release-208", MigrationVersion: identityMigrationCeiling(t)}, "operator", time.Now().UTC()); err != nil {
+	if _, err = f.store.DeclareCutover(ctx, "cutover", prepared.PolicyVersion, ports.IdentityCutoverEvidence{ShadowReportID: canary.ID, OldWriterGeneration: "shared-authentication:test", MigrationVersion: identityMigrationCeiling(t)}, "operator", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = f.store.AbortCutover(ctx, "cutover", 2, "operator", time.Now().UTC()); !errors.Is(err, ports.ErrIdentityCutover) {
@@ -49,10 +49,10 @@ func TestIdentityCutoverRejectsStaleEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.RecordCutoverWriterHeartbeat(context.Background(), "cutover-stale", "release-208", "api-a", time.Now().UTC()); err != nil {
+	if err := f.store.RecordCutoverWriterHeartbeat(context.Background(), "cutover-stale", "shared-authentication:test", "api-a", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.store.DeclareCutover(context.Background(), "cutover-stale", prepared.PolicyVersion, ports.IdentityCutoverEvidence{ShadowReportID: result.Report.ID, OldWriterGeneration: "release-208", MigrationVersion: identityMigrationCeiling(t)}, "operator", time.Now().UTC().Add(25*time.Hour)); !errors.Is(err, ports.ErrIdentityCutover) {
+	if _, err = f.store.DeclareCutover(context.Background(), "cutover-stale", prepared.PolicyVersion, ports.IdentityCutoverEvidence{ShadowReportID: result.Report.ID, OldWriterGeneration: "shared-authentication:test", MigrationVersion: identityMigrationCeiling(t)}, "operator", time.Now().UTC().Add(25*time.Hour)); !errors.Is(err, ports.ErrIdentityCutover) {
 		t.Fatalf("stale declaration = %v", err)
 	}
 }

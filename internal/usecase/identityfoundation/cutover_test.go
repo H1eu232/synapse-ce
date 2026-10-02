@@ -50,7 +50,7 @@ func TestCutoverServiceDelegatesDeclarationEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := ports.IdentityCutoverEvidence{ShadowReportID: "clean-shadow", OldWriterGeneration: "release-208", MigrationVersion: 208}
+	e := ports.IdentityCutoverEvidence{ShadowReportID: "clean-shadow", OldWriterGeneration: "shared-authentication:test", MigrationVersion: 209}
 	if _, err = s.Declare(context.Background(), "tenant", 4, e, "operator"); err != nil {
 		t.Fatal(err)
 	}
