@@ -155,7 +155,7 @@ func (s *NotificationSource) pollVulnerability(ctx context.Context, tx pgx.Tx, t
 	if s.vulnerabilityDisabled {
 		return 0, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT o.id,o.payload,o.created_at,a.id,a.engagement_id,a.action_type,a.title,ra.severity FROM vulnerability_action_outbox o JOIN vulnerability_actions a ON a.tenant_id=o.tenant_id AND a.id=o.action_id JOIN vulnerability_risk_transitions t ON t.tenant_id=a.tenant_id AND t.id=a.transition_id JOIN vulnerability_risk_assessments ra ON ra.tenant_id=t.tenant_id AND ra.id=t.after_assessment_id WHERE o.tenant_id=$1 AND (o.state='pending' OR (o.state='delivering' AND o.locked_until<$3)) AND o.created_at >= $2 AND o.available_at <= $3 ORDER BY o.available_at,o.id FOR UPDATE OF o SKIP LOCKED LIMIT $4`, tenant, activated, now, limit)
+	rows, err := tx.Query(ctx, `SELECT o.id,o.payload,o.created_at,a.id,a.engagement_id,COALESCE(eg.name,''),a.action_type,a.title,ra.severity FROM vulnerability_action_outbox o JOIN vulnerability_actions a ON a.tenant_id=o.tenant_id AND a.id=o.action_id LEFT JOIN engagements eg ON eg.tenant_id=a.tenant_id AND eg.id=a.engagement_id JOIN vulnerability_risk_transitions t ON t.tenant_id=a.tenant_id AND t.id=a.transition_id JOIN vulnerability_risk_assessments ra ON ra.tenant_id=t.tenant_id AND ra.id=t.after_assessment_id WHERE o.tenant_id=$1 AND (o.state='pending' OR (o.state='delivering' AND o.locked_until<$3)) AND o.created_at >= $2 AND o.available_at <= $3 ORDER BY o.available_at,o.id FOR UPDATE OF o SKIP LOCKED LIMIT $4`, tenant, activated, now, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -166,12 +166,13 @@ func (s *NotificationSource) pollVulnerability(ctx context.Context, tx pgx.Tx, t
 		at                      time.Time
 		actionID                string
 		eng                     shared.ID
+		engagementName          string
 		action, title, severity string
 	}
 	var items []item
 	for rows.Next() {
 		var v item
-		if err := rows.Scan(&v.id, &v.payload, &v.at, &v.actionID, &v.eng, &v.action, &v.title, &v.severity); err != nil {
+		if err := rows.Scan(&v.id, &v.payload, &v.at, &v.actionID, &v.eng, &v.engagementName, &v.action, &v.title, &v.severity); err != nil {
 			return 0, err
 		}
 		items = append(items, v)
@@ -186,7 +187,7 @@ func (s *NotificationSource) pollVulnerability(ctx context.Context, tx pgx.Tx, t
 	rows.Close()
 	for _, v := range items {
 		data, _ := json.Marshal(map[string]any{"title": v.title, "summary": "A vulnerability risk action requires review.", "action_type": v.action, "outbox_id": v.id})
-		e := notification.Event{TenantID: tenant, ID: stableID(tenant.String(), "vulnerability", v.id.String()), Type: notification.EventVulnerabilityAction, SourceKind: "vulnerability_action_outbox", SourceID: v.id.String(), EngagementID: v.eng, Severity: shared.Severity(v.severity), SchemaVersion: 1, OccurredAt: v.at, Data: data, SubjectID: v.actionID}
+		e := notification.Event{TenantID: tenant, ID: stableID(tenant.String(), "vulnerability", v.id.String()), Type: notification.EventVulnerabilityAction, SourceKind: "vulnerability_action_outbox", SourceID: v.id.String(), EngagementID: v.eng, Severity: shared.Severity(v.severity), SchemaVersion: 1, OccurredAt: v.at, Data: data, SubjectID: v.actionID, Context: seedContext(map[string]string{"engagement_name": v.engagementName})}
 		if _, err := s.repo.publishTx(ctx, tx, e, ""); err != nil {
 			return 0, err
 		}
@@ -231,7 +232,7 @@ func (s *NotificationSource) pollSLA(ctx context.Context, tx pgx.Tx, tenant shar
 		if count >= limit {
 			break
 		}
-		rows, err := tx.Query(ctx, `SELECT ca.assessment_id,ca.engagement_id,ca.finding_id,a.remediate_by,a.tier FROM sla_current_assessments ca JOIN sla_assessments a ON a.tenant_id=ca.tenant_id AND a.id=ca.assessment_id JOIN sla_lifecycles l ON l.tenant_id=ca.tenant_id AND l.engagement_id=ca.engagement_id AND l.finding_id=ca.finding_id WHERE ca.tenant_id=$1 AND l.status IN ('open','mitigating') AND a.tier<>'exception' AND a.remediate_by>$2 AND a.remediate_by<=$2::timestamptz+make_interval(secs=>$3) AND NOT EXISTS (SELECT 1 FROM notification_events n WHERE n.tenant_id=$1 AND n.source_kind='sla_reminder' AND n.data->>'assessment_id'=ca.assessment_id AND (n.data->>'lead_time_seconds')::bigint=$3) ORDER BY a.remediate_by,ca.assessment_id LIMIT $4`, tenant, now, lead, limit-count)
+		rows, err := tx.Query(ctx, `SELECT ca.assessment_id,ca.engagement_id,ca.finding_id,a.remediate_by,a.tier,COALESCE(eg.name,''),COALESCE(f.title,'') FROM sla_current_assessments ca JOIN sla_assessments a ON a.tenant_id=ca.tenant_id AND a.id=ca.assessment_id JOIN sla_lifecycles l ON l.tenant_id=ca.tenant_id AND l.engagement_id=ca.engagement_id AND l.finding_id=ca.finding_id LEFT JOIN engagements eg ON eg.tenant_id=ca.tenant_id AND eg.id=ca.engagement_id LEFT JOIN findings f ON f.tenant_id=ca.tenant_id AND f.id=ca.finding_id WHERE ca.tenant_id=$1 AND l.status IN ('open','mitigating') AND a.tier<>'exception' AND a.remediate_by>$2 AND a.remediate_by<=$2::timestamptz+make_interval(secs=>$3) AND NOT EXISTS (SELECT 1 FROM notification_events n WHERE n.tenant_id=$1 AND n.source_kind='sla_reminder' AND n.data->>'assessment_id'=ca.assessment_id AND (n.data->>'lead_time_seconds')::bigint=$3) ORDER BY a.remediate_by,ca.assessment_id LIMIT $4`, tenant, now, lead, limit-count)
 		if err != nil {
 			return count, err
 		}
@@ -240,11 +241,13 @@ func (s *NotificationSource) pollSLA(ctx context.Context, tx pgx.Tx, tenant shar
 			eng, finding shared.ID
 			deadline     time.Time
 			tier         string
+			engagement   string
+			findingTitle string
 		}
 		var items []item
 		for rows.Next() {
 			var v item
-			if err := rows.Scan(&v.assessment, &v.eng, &v.finding, &v.deadline, &v.tier); err != nil {
+			if err := rows.Scan(&v.assessment, &v.eng, &v.finding, &v.deadline, &v.tier, &v.engagement, &v.findingTitle); err != nil {
 				rows.Close()
 				return count, err
 			}
@@ -258,7 +261,7 @@ func (s *NotificationSource) pollSLA(ctx context.Context, tx pgx.Tx, tenant shar
 		for _, v := range items {
 			source := v.assessment + ":" + strconv.FormatInt(lead, 10) + ":" + v.deadline.UTC().Format(time.RFC3339Nano)
 			data, _ := json.Marshal(map[string]any{"title": "Remediation SLA approaching", "summary": "A " + v.tier + " finding is approaching its remediation deadline.", "assessment_id": v.assessment, "engagement_id": v.eng, "finding_id": v.finding, "deadline": v.deadline, "lead_time_seconds": lead})
-			e := notification.Event{TenantID: tenant, ID: stableID(tenant.String(), "sla", source), Type: notification.EventSLAApproaching, SourceKind: "sla_reminder", SourceID: source, EngagementID: v.eng, SchemaVersion: 1, OccurredAt: now, Data: data, Context: seedContext(map[string]string{"tier": v.tier})}
+			e := notification.Event{TenantID: tenant, ID: stableID(tenant.String(), "sla", source), Type: notification.EventSLAApproaching, SourceKind: "sla_reminder", SourceID: source, EngagementID: v.eng, SchemaVersion: 1, OccurredAt: now, Data: data, Context: seedContext(map[string]string{"tier": v.tier, "engagement_name": v.engagement, "finding_title": v.findingTitle})}
 			if _, err := s.repo.publishTx(ctx, tx, e, ""); err != nil {
 				return count, err
 			}

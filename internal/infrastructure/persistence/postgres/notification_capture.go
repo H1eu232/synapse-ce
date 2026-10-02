@@ -37,7 +37,7 @@ func (s *NotificationSource) pollCaptured(ctx context.Context, tx pgx.Tx, tenant
 		if err != nil {
 			return 0, err
 		}
-		_, err = s.repo.publishTx(ctx, itemTx, e, "")
+		err = s.publishCaptured(ctx, itemTx, tenant, kind, e)
 		if err != nil {
 			if rollbackErr := itemTx.Rollback(ctx); rollbackErr != nil {
 				return 0, rollbackErr
@@ -62,4 +62,18 @@ func (s *NotificationSource) pollCaptured(ctx context.Context, tx pgx.Tx, tenant
 		}
 	}
 	return len(events), nil
+}
+
+// publishCaptured reads the record's source facts and publishes it. The event builder fills the
+// variables from them, and composes the data from them when the record carries only its identity.
+func (s *NotificationSource) publishCaptured(ctx context.Context, tx pgx.Tx, tenant shared.ID, kind string, e notification.Event) error {
+	facts, err := capturedFacts(ctx, tx, tenant, kind, e.SourceID)
+	if err != nil {
+		return err
+	}
+	if e.Context, err = withFacts(e.Context, facts); err != nil {
+		return err
+	}
+	_, err = s.repo.publishTx(ctx, tx, e, "")
+	return err
 }
