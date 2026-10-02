@@ -596,7 +596,7 @@ func (r *lockRecordingRepo) ListForUpdate(ctx context.Context, tenantID shared.I
 	r.mu.Lock()
 	r.lockedReads++
 	r.mu.Unlock()
-	return r.UserRepository.List(ctx, tenantID)
+	return r.List(ctx, tenantID)
 }
 
 func (r *lockRecordingRepo) GetByID(ctx context.Context, tenantID, id shared.ID) (*user.User, error) {

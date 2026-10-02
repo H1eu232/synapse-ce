@@ -112,7 +112,7 @@ type Decision struct {
 const (
 	ReasonAllowed              = "allowed"
 	ReasonUnauthenticated      = "unauthenticated"
-	ReasonInvalidCredential    = "invalid_credential"
+	ReasonInvalidCredential    = "invalid_credential" //nolint:gosec // G101 false positive: a decision reason code, not credential material.
 	ReasonSSORequired          = "sso_required"
 	ReasonNoMembership         = "no_membership"
 	ReasonRecoveryOnly         = "recovery_only"

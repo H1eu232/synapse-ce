@@ -203,9 +203,9 @@ func parseOptions(args []string, output io.Writer) (backfillOptions, error) {
 	flags := flag.NewFlagSet("synapse-identity-backfill", flag.ContinueOnError)
 	flags.SetOutput(output)
 	flags.Usage = func() {
-		fmt.Fprintf(flags.Output(), "Usage of %s:\n", flags.Name())
+		_, _ = fmt.Fprintf(flags.Output(), "Usage of %s:\n", flags.Name())
 		flags.PrintDefaults()
-		fmt.Fprint(flags.Output(), exitCodeUsage)
+		_, _ = fmt.Fprint(flags.Output(), exitCodeUsage)
 	}
 	mode := flags.String("mode", "backfill", "backfill, shadow, rollback or deliver")
 	tenantsValue := flags.String("tenants", "", fmt.Sprintf("comma-separated tenant IDs; maximum %d", maxTenants))
