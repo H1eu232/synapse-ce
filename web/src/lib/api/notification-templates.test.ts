@@ -54,4 +54,14 @@ describe('notification template API', () => {
     expect(templateValidationError(error)?.path).toBe('$.a["k"]')
     expect(formatValidation({ error: 'x', code: 'expression_outside_string', path: '$.a["k"]' })).toBe('$.a["k"] · expression_outside_string: x')
   })
+
+  it('reads one version as the single version below it, and 404s a gap', async () => {
+    respond({ items: [{ version: 7 }] })
+    expect(await notificationTemplatesApi.getNotificationTemplateVersion('a/b', 7)).toEqual({ version: 7 })
+    const url = new URL(String(vi.mocked(fetch).mock.calls[0][0]), 'http://x')
+    expect(url.pathname).toBe('/api/v1/notifications/templates/a%2Fb/versions')
+    expect(Object.fromEntries(url.searchParams)).toEqual({ limit: '1', before: '8' })
+    respond({ items: [{ version: 5 }] })
+    await expect(notificationTemplatesApi.getNotificationTemplateVersion('a', 7)).rejects.toMatchObject({ status: 404 })
+  })
 })

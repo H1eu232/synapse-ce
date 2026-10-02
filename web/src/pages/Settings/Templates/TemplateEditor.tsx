@@ -115,6 +115,7 @@ function Editor({ id }: { id: string | undefined }) {
 
   const fieldRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
   const lastFocused = useRef<string | null>(null)
+  const historyGeneration = useRef(0)
 
   useEffect(() => {
     let live = true
@@ -159,11 +160,17 @@ function Editor({ id }: { id: string | undefined }) {
     void load(false)
   }, [load, generation])
 
-  /** Replaces the history with its newest page; older pages load on demand. */
+  /**
+   * Replaces the history with its newest page; older pages load on demand. Replacing the history
+   * starts a new generation, so an older page requested for the previous history is dropped when it
+   * answers instead of being appended to the new one.
+   */
   function showVersions(page: NotificationTemplateVersion[]) {
+    historyGeneration.current += 1
     setVersions(page)
     setHasOlder(page.length === TEMPLATE_VERSION_PAGE)
     setOlderError(null)
+    setLoadingOlder(false)
   }
 
   async function refreshVersions(templateId: string) {
@@ -176,16 +183,18 @@ function Editor({ id }: { id: string | undefined }) {
 
   async function loadOlder() {
     if (!detail || versions.length === 0) return
+    const generation = historyGeneration.current
     setLoadingOlder(true)
     setOlderError(null)
     try {
       const page = await api.listNotificationTemplateVersions(detail.id, versions[versions.length - 1].version)
+      if (generation !== historyGeneration.current) return
       setVersions((current) => [...current, ...page.filter((v) => !current.some((known) => known.version === v.version))])
       setHasOlder(page.length === TEMPLATE_VERSION_PAGE)
     } catch (caught) {
-      setOlderError(errorMessage(caught))
+      if (generation === historyGeneration.current) setOlderError(errorMessage(caught))
     } finally {
-      setLoadingOlder(false)
+      if (generation === historyGeneration.current) setLoadingOlder(false)
     }
   }
 
@@ -513,6 +522,7 @@ function Editor({ id }: { id: string | undefined }) {
             loadingOlder={loadingOlder}
             olderError={olderError}
             onLoadOlder={() => void loadOlder()}
+            loadVersion={(version) => api.getNotificationTemplateVersion(detail.id, version)}
             onRollback={(version) => change('rollback', version)}
           />
         </Card>

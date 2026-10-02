@@ -17,6 +17,7 @@ vi.mock('../../../lib/api', async (original) => ({
     listNotificationTemplates: vi.fn(),
     getNotificationTemplate: vi.fn(),
     listNotificationTemplateVersions: vi.fn(),
+    getNotificationTemplateVersion: vi.fn(),
     createNotificationTemplate: vi.fn(),
     updateNotificationTemplate: vi.fn(),
     activateNotificationTemplate: vi.fn(),
@@ -96,6 +97,7 @@ beforeEach(() => {
   vi.mocked(api.listNotificationTemplates).mockResolvedValue([])
   vi.mocked(api.getNotificationTemplate).mockResolvedValue(DETAIL)
   vi.mocked(api.listNotificationTemplateVersions).mockResolvedValue([V2, V1])
+  vi.mocked(api.getNotificationTemplateVersion).mockRejectedValue(new Error('unexpected single-version read'))
 })
 
 describe('template library', () => {
@@ -450,5 +452,95 @@ describe('template version history (#1375)', () => {
     renderAt('/settings/templates/new')
     await findField('Body')
     expect(screen.queryByText('Version history')).not.toBeInTheDocument()
+  })
+})
+
+// Histories longer than one page (#1541 review): the paging cursor, the comparison baseline and the
+// "Changes in" predecessor must not depend on which versions happen to be loaded.
+describe('template version history across pages (#1375)', () => {
+  const PAGE = TEMPLATE_VERSION_PAGE
+  const body = (n: number) => (n === 1 ? 'Original body' : `Body ${n}`)
+  const make = (n: number) => version(n, { title: 'Incident', body: body(n) })
+  /** Versions from..to, newest first, as one API page. */
+  const page = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => make(to - i))
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((r) => {
+      resolve = r
+    })
+    return { promise, resolve }
+  }
+
+  it('drops an older page that answers after the history was replaced', async () => {
+    // v201 is the latest; the first page is v201..v2.
+    const v202 = make(PAGE + 2)
+    vi.mocked(api.getNotificationTemplate).mockResolvedValue({ ...DETAIL, latest_version: PAGE + 1, active_version: PAGE + 1, latest: make(PAGE + 1), active: make(PAGE + 1) })
+    const older = deferred<NotificationTemplateVersion[]>()
+    vi.mocked(api.listNotificationTemplateVersions)
+      .mockResolvedValueOnce(page(2, PAGE + 1))
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce(page(3, PAGE + 2))
+    vi.mocked(api.updateNotificationTemplate).mockResolvedValue({ ...DETAIL, revision: 4, latest_version: PAGE + 2, active_version: PAGE + 1, latest: v202, active: make(PAGE + 1) })
+    renderAt('/settings/templates/tpl-1')
+
+    // Ask for the page before v2 and hold it.
+    fireEvent.click(await screen.findByRole('button', { name: 'Load older versions' }))
+    await waitFor(() => expect(api.listNotificationTemplateVersions).toHaveBeenLastCalledWith('tpl-1', 2))
+
+    // Save v202: the history is replaced with v202..v3, which again has older versions.
+    fireEvent.change(await findField('Body'), { target: { value: 'Edited' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save new version' }))
+    expect(await screen.findByText(`Saved version ${PAGE + 2}. What renders does not change until you activate it.`)).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Changes in v2' })).not.toBeInTheDocument())
+
+    // The stale answer [v1] arrives: it must not be appended, and paging must stay available.
+    await act(async () => older.resolve([make(1)]))
+    expect(screen.queryByRole('button', { name: 'View v1' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Load older versions' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Load older versions' }))
+    await waitFor(() => expect(api.listNotificationTemplateVersions).toHaveBeenLastCalledWith('tpl-1', 3))
+  })
+
+  it('compares with the rendering version and names its changes even when it is not on a loaded page', async () => {
+    const v1 = make(1)
+    const latest = { ...make(PAGE + 1), fields: { title: 'Incident', body: 'Original body' } }
+    vi.mocked(api.getNotificationTemplate).mockResolvedValue({ ...DETAIL, latest_version: PAGE + 1, active_version: 1, latest, active: v1 })
+    vi.mocked(api.listNotificationTemplateVersions).mockResolvedValue(page(2, PAGE + 1))
+    renderAt('/settings/templates/tpl-1')
+
+    // v201 has the same text as v1, which renders: the comparison opens on v1 -> v201, not v200 -> v201.
+    // Title and body are both unchanged between v1 and v201.
+    expect(await screen.findAllByText(`The same line in v1 and v${PAGE + 1}.`)).toHaveLength(2)
+    expect(screen.queryByRole('table', { name: new RegExp(`changes from v${PAGE} to`) })).not.toBeInTheDocument()
+
+    // Rolling back to v200 is measured against v1, what renders, not against the latest.
+    fireEvent.click(screen.getByRole('button', { name: `Roll back to v${PAGE}` }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(`Messages will render v${PAGE} instead of v1.`)).toBeInTheDocument()
+    expect(within(dialog).getByText('Fields that differ from v1: Body.')).toBeInTheDocument()
+    expect(api.getNotificationTemplateVersion).not.toHaveBeenCalled()
+  })
+
+  it('reads a missing predecessor instead of comparing a version with itself', async () => {
+    vi.mocked(api.getNotificationTemplate).mockResolvedValue({ ...DETAIL, latest_version: PAGE + 1, active_version: PAGE + 1, latest: make(PAGE + 1), active: make(PAGE + 1) })
+    vi.mocked(api.listNotificationTemplateVersions).mockResolvedValue(page(2, PAGE + 1))
+    const v1 = deferred<NotificationTemplateVersion>()
+    vi.mocked(api.getNotificationTemplateVersion).mockRejectedValueOnce(new Error('offline')).mockReturnValueOnce(v1.promise)
+    renderAt('/settings/templates/tpl-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Changes in v2' }))
+    // Never "Body in v2" on its own.
+    expect(screen.queryByRole('table', { name: 'Body in v2' })).not.toBeInTheDocument()
+    expect(await screen.findByText('Could not load v1: offline')).toBeInTheDocument()
+    expect(api.getNotificationTemplateVersion).toHaveBeenCalledWith('tpl-1', 1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Loading v1…')).toBeInTheDocument()
+    await act(async () => v1.resolve(make(1)))
+    const table = await screen.findByRole('table', { name: 'Body: changes from v1 to v2' })
+    expect(within(table).getByText('Original body')).toBeInTheDocument()
+    // The single read does not move the paging cursor.
+    expect(screen.getByRole('button', { name: 'Load older versions' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'View v1' })).not.toBeInTheDocument()
   })
 })
