@@ -28,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	eventschemas "github.com/KKloudTarus/synapse-ce/docs/guide/schemas/events"
 	"github.com/KKloudTarus/synapse-ce/internal/adapter/httpapi"
 	"github.com/KKloudTarus/synapse-ce/internal/adapter/observability"
 	"github.com/KKloudTarus/synapse-ce/internal/composition/scacompose"
@@ -1598,6 +1599,10 @@ func main() {
 		// Template resolution (#1371) reads the tenant default_locale; the built-in tier stays the
 		// empty catalog until #1366 ships built-in templates.
 		notificationService.SetTenantSettings(tenantSettingsStore)
+		// The template preview (#1372) renders against the published fixtures or the tenant's
+		// recent events.
+		notificationService.SetEventFixtures(eventschemas.Fixtures)
+		notificationService.SetEventReader(notificationRepository)
 		router.SetNotifications(notificationService)
 		// The API still needs SMTP for contact verification and personal inbox mail.
 		userContactService, notificationErr = usercontacts.NewService(postgres.NewUserContactStore(databasePool), userRepo, vaultCipher, notificationSender, ids, clock, usercontacts.DeriveVerifierKey(cfg.VaultMasterKey), cfg.NotificationSMTPHost != "" && cfg.NotificationSMTPFrom != "")
