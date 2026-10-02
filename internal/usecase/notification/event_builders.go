@@ -3,35 +3,40 @@ package notification
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 
 	domain "github.com/KKloudTarus/synapse-ce/internal/domain/notification"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
 
-// eventBuilders declares the builder of every catalog event type. Variables whose value the
-// source row does not hold yet (engagement, project, finding, team and asset names, the scan
-// target, the failed condition count) are declared in the catalog and filled when the capture
-// moves to identity only (#1344 part 2); until then a template reads them as empty.
+// maxIncidentTitleRunes bounds an incident title in the event data, as the capture trigger did.
+const maxIncidentTitleRunes = 500
+
+// eventBuilders declares the builder of every catalog event type. Display names (engagement,
+// project, finding, team, assignee, agent, asset) and the failed condition count arrive as source
+// facts from the poller and pass through to the snapshot as declared variables.
 func eventBuilders() map[domain.EventType]eventBuilder {
 	return map[domain.EventType]eventBuilder{
 		domain.EventVulnerabilityAction: {
-			vars: func(e domain.Event, data eventData) map[string]string {
+			vars: func(e domain.Event, data eventData, _ sourceFacts) map[string]string {
 				return map[string]string{"severity": string(e.Severity), "action_type": data.text("action_type")}
 			},
 		},
 		domain.EventScanCompleted: {
 			subjectKey: "scan_id",
-			vars: func(_ domain.Event, data eventData) map[string]string {
-				return map[string]string{"scan_kind": data.text("scan_kind")}
+			data:       scanCompletedData,
+			vars: func(_ domain.Event, data eventData, facts sourceFacts) map[string]string {
+				return map[string]string{"scan_kind": data.text("scan_kind"), "target": displayTarget(facts.get("scan_target"))}
 			},
 			relevant: scanStillSucceeded,
 		},
-		domain.EventQualityGateFailed: {subjectKey: "analysis_id"},
+		domain.EventQualityGateFailed: {subjectKey: "analysis_id", data: qualityGateFailedData},
 		domain.EventSLAApproaching: {
 			subjectKey: "finding_id",
-			vars: func(_ domain.Event, data eventData) map[string]string {
+			vars: func(_ domain.Event, data eventData, _ sourceFacts) map[string]string {
 				deadline, _ := data.time("deadline")
 				return map[string]string{"deadline": formatTime(deadline), "lead_time_hours": leadTimeHours(data)}
 			},
@@ -39,7 +44,7 @@ func eventBuilders() map[domain.EventType]eventBuilder {
 		},
 		domain.EventFleetAgentOffline: {
 			subjectKey: "agent_id",
-			vars: func(_ domain.Event, data eventData) map[string]string {
+			vars: func(_ domain.Event, data eventData, _ sourceFacts) map[string]string {
 				lastSeen, _ := data.time("last_seen_at")
 				return map[string]string{"last_seen_at": formatTime(lastSeen)}
 			},
@@ -47,13 +52,14 @@ func eventBuilders() map[domain.EventType]eventBuilder {
 		},
 		domain.EventIncidentCreated: {
 			subjectKey: "incident_id",
-			vars: func(e domain.Event, _ eventData) map[string]string {
+			data:       incidentCreatedData,
+			vars: func(e domain.Event, _ eventData, _ sourceFacts) map[string]string {
 				return map[string]string{"severity": string(e.Severity)}
 			},
 		},
 		domain.EventOwnershipChanged: {
 			subjectKey: "finding_id",
-			vars: func(_ domain.Event, data eventData) map[string]string {
+			vars: func(_ domain.Event, data eventData, _ sourceFacts) map[string]string {
 				return map[string]string{"actor": data.text("actor"), "reason": data.text("reason")}
 			},
 		},
@@ -61,6 +67,64 @@ func eventBuilders() map[domain.EventType]eventBuilder {
 		domain.EventDestinationChanged: {},
 		domain.EventTest:               {},
 	}
+}
+
+// The data of the captured events is the object the capture trigger of migration 0163 writes, key
+// for key, so the webhook body does not change when a record carries only its identity. The trigger
+// still writes the data; it moves to identity-only capture once every running worker composes.
+
+func scanCompletedData(e domain.Event, facts sourceFacts) map[string]any {
+	return map[string]any{
+		"title": "Scan completed", "summary": "A scan completed successfully.",
+		"scan_id": factOr(facts, "scan_id", e.SourceID), "scan_kind": facts.get("scan_kind"),
+	}
+}
+
+func qualityGateFailedData(e domain.Event, facts sourceFacts) map[string]any {
+	return map[string]any{
+		"title": "Quality gate failed", "summary": "A finalized project analysis failed its quality gate.",
+		"analysis_id": factOr(facts, "analysis_id", e.SourceID), "project_id": facts.get("project_id"),
+	}
+}
+
+// incidentCreatedData keeps the trigger's title rule: the incident's own title, bounded, or a
+// generic one when the incident has none at all. An empty title stays empty.
+func incidentCreatedData(e domain.Event, facts sourceFacts) map[string]any {
+	title, ok := facts["incident_title"]
+	if !ok {
+		title = "Security incident created"
+	}
+	if runes := []rune(title); len(runes) > maxIncidentTitleRunes {
+		title = string(runes[:maxIncidentTitleRunes])
+	}
+	return map[string]any{
+		"title": title, "summary": "Fleet correlation created an incident.",
+		"incident_id": factOr(facts, "incident_id", e.SourceID), "asset_id": facts.get("asset_id"),
+	}
+}
+
+func factOr(facts sourceFacts, name, fallback string) string {
+	if v := facts.get(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// displayTarget is a scan target fit for a message: a URL loses its userinfo, query and fragment,
+// and any other form loses everything up to an "@" and from a "?" or "#", because a repository
+// URL can carry a token.
+func displayTarget(target string) string {
+	if u, err := url.Parse(target); err == nil && u.Scheme != "" && u.Host != "" {
+		u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+		return u.String()
+	}
+	if i := strings.IndexAny(target, "?#"); i >= 0 {
+		target = target[:i]
+	}
+	if i := strings.LastIndex(target, "@"); i >= 0 {
+		target = target[i+1:]
+	}
+	return target
 }
 
 // scanStillSucceeded holds back a scan.completed delivery whose job no longer reads as succeeded,

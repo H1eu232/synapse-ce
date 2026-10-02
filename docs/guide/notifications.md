@@ -239,11 +239,18 @@ stores it with the event. The snapshot keeps only declared variables up to the
 event type's maximum data class, with invisible and direction-changing
 characters removed, line breaks turned into spaces, and each value capped at
 1,000 characters. Times are RFC 3339 in UTC. The snapshot is not part of the
-webhook body, which stays the raw event. `engagement_name`, `target`,
-`project_name`, `finding_title`, `failed_conditions`, `asset_name` and the
-team and assignee names are declared but still empty: they are filled once
-capture reads them from the source records. A template reads an empty variable
-as an empty string. No event declares a list variable yet, so a template
+webhook body, which stays the raw event. Names (engagement, project, finding,
+team, assignee, agent, asset) are read from the source records when the event
+is recorded, so a later rename does not change a message already queued.
+`target` is the scan target without its credentials, query or fragment.
+A template reads a variable that has no value, for example the asset of an
+incident without one, as an empty string.
+
+Captured sources (scan jobs, quality gates, incidents) are recorded by a
+database trigger. The worker can also compose an event's data from the source
+rows when a captured record carries only its identity, producing the same object
+the webhook body has always carried; the trigger keeps writing the data until
+every running worker can compose it. No event declares a list variable yet, so a template
 cannot `range` over one. The `webhook` family's `body` is compiled as text; the
 structured JSON body of a custom webhook is validated separately when that
 feature lands. Channels carry no data class and cannot be bound to a template
