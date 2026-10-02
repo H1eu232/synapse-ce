@@ -77,11 +77,15 @@ paths:
       summary: Receive a separately authenticated provider webhook
       description: >-
         The public ID identifies an enabled tenant-owned integration. Tenant identity
-        never comes from a header, query or body. Signature is sha256=HEX(HMAC-SHA256
-        over the raw body) in X-Synapse-Hook-Signature; the current secret and the
-        24-hour rotation overlap are accepted. No human bearer token is used.
+        never comes from a header, query or body. Provider-neutral endpoints use
+        X-Synapse-Hook-Signature over the raw body. GitLab endpoints prefer Standard
+        Webhooks webhook-signature over webhook-id.timestamp.raw-body with a ±5 minute
+        timestamp window, and fall back to X-Gitlab-Token only when no signature is
+        present. The signed webhook-id (or legacy event UUID) and authenticated body digest are deduplicated atomically with durable job enqueue. Conflicting event headers and payload object_kind are rejected. No human bearer token is used.
       security:
         - inboundWebhookHMAC: []
+        - gitlabWebhookSignature: []
+        - gitlabWebhookToken: []
       parameters:
         - name: public_id
           in: path
@@ -90,11 +94,13 @@ paths:
       requestBody:
         required: true
         content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
           application/octet-stream:
             schema: {type: string, format: binary, maxLength: 1048576}
       responses:
         '202': {description: Authenticated event accepted by a provider receiver.}
-        '400': {description: Invalid request body.}
+        '400': {description: Invalid request body or provider event metadata.}
         '401': {description: Uniform response for invalid signatures, unknown IDs and disabled or revoked endpoints.}
         '413': {description: Body exceeds 1 MiB.}
         '429': {description: Per-endpoint admission limit; includes Retry-After.}
@@ -6507,7 +6513,17 @@ components:
       type: apiKey
       in: header
       name: X-Synapse-Hook-Signature
-      description: HMAC-SHA256 over the exact raw request body
+      description: Provider-neutral HMAC-SHA256 over the exact raw request body.
+    gitlabWebhookSignature:
+      type: apiKey
+      in: header
+      name: webhook-signature
+      description: GitLab Standard Webhooks v1 signature; webhook-id and webhook-timestamp are also required.
+    gitlabWebhookToken:
+      type: apiKey
+      in: header
+      name: X-Gitlab-Token
+      description: Legacy GitLab secret token, used only when webhook-signature is absent.
     bearerAuth:
       type: http
       scheme: bearer

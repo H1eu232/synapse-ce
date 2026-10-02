@@ -53,6 +53,13 @@ type InboundWebhookAdminStore interface {
 	RotateInboundWebhook(context.Context, InboundWebhookIdentity, int, string, time.Time) (bool, error)
 }
 
+type InboundWebhookEventDeduper interface {
+	// ProcessInboundWebhookEvent atomically commits dedupe and durable enqueue.
+	// The callback must use the supplied transaction context and perform no
+	// inline work or remote writes. Failure rolls back both; false,nil is a replay.
+	ProcessInboundWebhookEvent(context.Context, InboundWebhookIdentity, InboundWebhookEvent, func(context.Context) error) (bool, error)
+}
+
 type InboundWebhookIdentity struct {
 	PublicID  string
 	TenantID  shared.ID
@@ -61,13 +68,14 @@ type InboundWebhookIdentity struct {
 }
 
 type InboundWebhookEvent struct {
-	Provider  string
-	EventType string
-	EventID   string
-	Ref       string
-	SHA       string
-	Fork      bool
-	Body      []byte
+	Provider      string
+	EventType     string
+	EventID       string
+	PayloadSHA256 string
+	Ref           string
+	SHA           string
+	Fork          bool
+	Body          []byte
 }
 
 type InboundWebhookReceiver interface {
@@ -83,4 +91,16 @@ func InboundWebhookAAD(tenant shared.ID, publicID, ownerKind, ownerID string, ve
 		ownerKind, ownerID, strconv.Itoa(version),
 	})
 	return value
+}
+
+// WebhookScanTarget contains authenticated source metadata. The repository URL
+// is always read from the stored project, never from the webhook body.
+type WebhookScanTarget struct {
+	Provider           string
+	Ref                string
+	FetchRef           string
+	SHA                string
+	BaseRef            string
+	MergeRequestNumber int64
+	Fork               bool
 }

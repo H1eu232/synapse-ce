@@ -157,7 +157,7 @@ func (store *IntegrationStore) UpdateIntegration(ctx context.Context, item integ
 	return item.Clone(), nil
 }
 
-func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id shared.ID, enabled bool, expectedVersion int, audit ports.AuditEntry) (integration.Integration, error) {
+func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id shared.ID, enabled bool, expectedVersion int, requirements ports.IntegrationEnableRequirements, audit ports.AuditEntry) (integration.Integration, error) {
 	tenantID, err := integrationTenant(ctx)
 	if err != nil {
 		return integration.Integration{}, err
@@ -172,19 +172,23 @@ func (store *IntegrationStore) SetIntegrationEnabled(ctx context.Context, id sha
 	if item.Archived || item.Version != expectedVersion {
 		return integration.Integration{}, shared.ErrConflict
 	}
-	if enabled && item.Provider != integration.Provider("github") {
-		if _, configured := store.credentials[credentialKey(tenantID, id, "default")]; !configured {
-			return integration.Integration{}, shared.ErrConflict
-		}
-		tested := false
-		for _, operation := range store.operations {
-			if operation.TenantID == tenantID && operation.IntegrationID == id && operation.Type == integration.OperationTest && operation.State == integration.OperationSucceeded && operation.ConnectionRevision == item.ConnectionRevision && operation.CredentialRevision == item.CredentialRevision {
-				tested = true
-				break
+	if enabled {
+		if requirements.RequireCredential {
+			if _, configured := store.credentials[credentialKey(tenantID, id, "default")]; !configured {
+				return integration.Integration{}, shared.ErrConflict
 			}
 		}
-		if !tested {
-			return integration.Integration{}, shared.ErrConflict
+		if requirements.RequireSuccessfulTest {
+			tested := false
+			for _, operation := range store.operations {
+				if operation.TenantID == tenantID && operation.IntegrationID == id && operation.Type == integration.OperationTest && operation.State == integration.OperationSucceeded && operation.ConnectionRevision == item.ConnectionRevision && operation.CredentialRevision == item.CredentialRevision {
+					tested = true
+					break
+				}
+			}
+			if !tested {
+				return integration.Integration{}, shared.ErrConflict
+			}
 		}
 	} else if !enabled {
 		if err := store.invalidateActiveOperationsLocked(ctx, tenantID, id, store.clock.Now().UTC()); err != nil {
@@ -375,6 +379,9 @@ func (store *IntegrationStore) CreateIntegrationBinding(ctx context.Context, bin
 		if existing.TenantID == tenantID && existing.IntegrationID == binding.IntegrationID {
 			bindingCount++
 		}
+	}
+	if item.Provider == "gitlab" && bindingCount > 0 {
+		return fmt.Errorf("%w: GitLab inbound integration supports one project binding", shared.ErrConflict)
 	}
 	if bindingCount >= integration.MaxBindingsPerPoll {
 		return fmt.Errorf("%w: an integration supports at most %d bindings", shared.ErrValidation, integration.MaxBindingsPerPoll)

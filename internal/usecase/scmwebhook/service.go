@@ -230,5 +230,3 @@ func githubScanTarget(event ports.InboundWebhookEvent) (ref, commit string, fork
 	}
 	return ref, commit, fork, true, nil
 }
-
-

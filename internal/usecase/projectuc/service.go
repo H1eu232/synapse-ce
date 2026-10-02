@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -343,6 +344,63 @@ func (s *Service) SetPullRequestDecoration(ctx context.Context, actor string, te
 	return p, nil
 }
 
+// StartGitLabWebhookAnalysis starts a server-owned project scan from authenticated SCM
+// metadata. The repository URL always comes from the persisted project binding;
+// callers may supply only a source-ref label, an optional server-owned fetch ref,
+// and an immutable commit SHA.
+func (s *Service) StartGitLabWebhookAnalysis(ctx context.Context, actor string, tenantID, projectID shared.ID, target ports.WebhookScanTarget) (ports.ScanJob, error) {
+	if err := requireActor(actor); err != nil {
+		return ports.ScanJob{}, err
+	}
+	if s.scanner == nil {
+		return ports.ScanJob{}, fmt.Errorf("%w: project analysis is not configured", shared.ErrValidation)
+	}
+	p, err := s.repo.GetByID(ctx, tenantID, projectID)
+	if err != nil {
+		return ports.ScanJob{}, fmt.Errorf("get webhook project: %w", err)
+	}
+	if p == nil || p.SourceBinding.Kind != project.SourceGit {
+		return ports.ScanJob{}, fmt.Errorf("%w: webhook project must use a git source", shared.ErrValidation)
+	}
+	e, err := s.engagements.GetByProjectID(ctx, tenantID, p.ID)
+	if err != nil {
+		return ports.ScanJob{}, fmt.Errorf("get webhook project analysis context: %w", err)
+	}
+	gate, err := s.resolveManagedGate(ctx, tenantID, p.GateID)
+	if err != nil {
+		return ports.ScanJob{}, err
+	}
+	request := ports.AcquireRequest{
+		Kind:                  project.SourceGit,
+		Value:                 p.SourceBinding.Value,
+		Ref:                   strings.TrimSpace(target.Ref),
+		FetchRef:              strings.TrimSpace(target.FetchRef),
+		Commit:                strings.ToLower(strings.TrimSpace(target.SHA)),
+		DisableGitCredentials: target.Fork,
+	}
+	request.BaseRef = strings.TrimSpace(target.BaseRef)
+	var ci *projectanalysis.CIContext
+	if target.MergeRequestNumber > 0 {
+		if request.BaseRef == "" {
+			request.BaseRef = p.SourceBinding.DefaultBranch
+		}
+		ci = &projectanalysis.CIContext{Provider: target.Provider, Branch: request.Ref,
+			PullRequest: strconv.FormatInt(target.MergeRequestNumber, 10), TargetBranch: request.BaseRef, HeadSHA: request.Commit}
+		if source, err := url.Parse(p.SourceBinding.Value); err == nil {
+			ci.RepoSlug = strings.TrimSuffix(strings.Trim(source.Path, "/"), ".git")
+		}
+		if _, err := ci.Normalize(); err != nil {
+			return ports.ScanJob{}, fmt.Errorf("%w: invalid webhook SCM context", shared.ErrValidation)
+		}
+	} else {
+		request.BaseRef = p.SourceBinding.BaseRef
+	}
+	return s.scanner.StartDurableScanWithOptions(ctx, actor, e.ID, request, scauc.ScanOptions{
+		Mode: scauc.ScanModeFull, CodeQuality: true, ProjectAnalysis: true,
+		NoBuildExecution: target.Fork, Gate: gate, WebhookContext: ci,
+	})
+}
+
 func (s *Service) StartAnalysis(ctx context.Context, actor string, tenantID shared.ID, key string, coverage *measure.CoverageReport) (ports.ScanJob, error) {
 	if err := requireActor(actor); err != nil {
 		return ports.ScanJob{}, err
@@ -538,7 +596,11 @@ func (s *Service) GetAnalysis(ctx context.Context, tenantID shared.ID, key, id s
 // RecordProjectAnalysis is called by SCA only after a successful pipeline and
 // before its ScanJob becomes succeeded. Non-Project scans intentionally no-op.
 func (s *Service) RecordProjectAnalysis(ctx context.Context, engagementID shared.ID, jobID string, completedAt time.Time, result *scauc.ScanResult) error {
-	return s.recordProjectAnalysis(ctx, engagementID, jobID, completedAt, result, projectanalysis.OriginServer, nil)
+	var ci *projectanalysis.CIContext
+	if result != nil {
+		ci = result.WebhookContext
+	}
+	return s.recordProjectAnalysis(ctx, engagementID, jobID, completedAt, result, projectanalysis.OriginServer, ci)
 }
 
 // ImportAnalysisInput is a scan result a pipeline produced with synapse-cli and is handing to the
@@ -1045,7 +1107,9 @@ func (s *Service) recordProjectAnalysis(ctx context.Context, engagementID shared
 		return fmt.Errorf("save project analysis: %w", err)
 	}
 	s.pruneShortLivedBranch(ctx, p, recordingBranch)
-	s.decorateProjectAnalysis(ctx, analysis)
+	if !result.WebhookFork {
+		s.decorateProjectAnalysis(ctx, analysis)
+	}
 	return nil
 }
 

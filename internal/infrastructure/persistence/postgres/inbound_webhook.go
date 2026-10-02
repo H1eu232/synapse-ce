@@ -2,7 +2,10 @@ package postgres
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +26,7 @@ func NewInboundWebhookRepository(pool *pgxpool.Pool) *InboundWebhookRepository {
 
 var _ ports.InboundWebhookStore = (*InboundWebhookRepository)(nil)
 var _ ports.InboundWebhookAdminStore = (*InboundWebhookRepository)(nil)
+var _ ports.InboundWebhookEventDeduper = (*InboundWebhookRepository)(nil)
 
 // LookupInboundWebhook first asks the single privileged lookup for ONLY a
 // tenant ID. The sealed keys, owner and status are then read under FORCE RLS
@@ -109,6 +113,50 @@ func (s *InboundWebhookRepository) AdmitInboundWebhook(ctx context.Context, iden
 	return decision, err
 }
 
+func (s *InboundWebhookRepository) ProcessInboundWebhookEvent(ctx context.Context, identity ports.InboundWebhookIdentity, event ports.InboundWebhookEvent, receive func(context.Context) error) (bool, error) {
+	if s == nil || s.pool == nil || identity.PublicID == "" || identity.TenantID.IsZero() ||
+		identity.OwnerKind != "integration" || identity.OwnerID == "" || event.Provider == "" ||
+		event.EventID == "" || len(event.Provider) > 64 || len(event.EventID) > 128 || receive == nil {
+		return false, fmt.Errorf("%w: invalid inbound event identity", shared.ErrValidation)
+	}
+	digest, err := hex.DecodeString(event.PayloadSHA256)
+	if err != nil || len(digest) != 32 || event.PayloadSHA256 != strings.ToLower(event.PayloadSHA256) {
+		return false, fmt.Errorf("%w: invalid inbound event digest", shared.ErrValidation)
+	}
+	claimed := false
+	err = requireTenant(ctx, s.pool, identity.TenantID, func(tx pgx.Tx) error {
+		// Hold the authenticated owner and endpoint active until enqueue commits.
+		// This also prevents a forged same-tenant owner from claiming another hook.
+		var active bool
+		if err := tx.QueryRow(ctx,
+			`SELECT synapse_lock_inbound_webhook_event($1,$2,$3,$4,$5)`,
+			identity.TenantID.String(), identity.PublicID, identity.OwnerKind, identity.OwnerID, event.Provider).Scan(&active); err != nil {
+			return err
+		}
+		if !active {
+			return fmt.Errorf("%w: inbound webhook changed before enqueue", shared.ErrConflict)
+		}
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO inbound_webhook_events(tenant_id,public_id,provider,event_id,received_at,payload_sha256)
+			VALUES($1,$2,$3,$4,now(),$5) ON CONFLICT DO NOTHING
+		`, identity.TenantID, identity.PublicID, event.Provider, event.EventID, event.PayloadSHA256)
+		if err != nil {
+			return err
+		}
+		claimed = tag.RowsAffected() == 1
+		if !claimed {
+			return nil
+		}
+		// The callback's scan status, audit, and job queue writes share this tx.
+		// A failed enqueue, canceled request or process crash cannot leave a claim
+		// committed independently of its durable work.
+		return receive(bindTenantTransaction(ctx, identity.TenantID, tx))
+	})
+	if err != nil {
+		return false, err
+	}
+	return claimed, nil
+}
 
 func (s *InboundWebhookRepository) ClaimInboundWebhookEvent(ctx context.Context, identity ports.InboundWebhookIdentity, provider, eventID string, at time.Time) (bool, error) {
 	if s == nil || s.pool == nil || identity.PublicID == "" || identity.TenantID.IsZero() ||
@@ -212,4 +260,3 @@ func (s *InboundWebhookRepository) RotateInboundWebhook(ctx context.Context, ide
 	})
 	return rotated, err
 }
-

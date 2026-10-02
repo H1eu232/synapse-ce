@@ -1122,6 +1122,10 @@ func completionTimeout(timeout time.Duration) time.Duration {
 
 // ScanResult is the aggregate output of an SCA scan.
 type ScanResult struct {
+	// Assigned by the durable worker, never decoded from imported results.
+	WebhookContext *projectanalysis.CIContext `json:"-"`
+	// Fork metadata is used for the baseline but cannot trigger forge writes.
+	WebhookFork  bool                     `json:"-"`
 	Target       string                   `json:"target"`
 	SourceRef    string                   `json:"source_ref,omitempty"`
 	SourceCommit string                   `json:"source_commit,omitempty"`
@@ -1403,7 +1407,9 @@ const (
 )
 
 type ScanOptions struct {
-	Mode string `json:"mode"`
+	// Authenticated SCM metadata persisted through the internal queue.
+	WebhookContext *projectanalysis.CIContext `json:"webhook_context,omitempty"`
+	Mode           string                     `json:"mode"`
 	// PolicyDir overrides where the repo-committed accepted-risk policy (.synapseignore / OpenVEX) is read
 	// from. Empty ⇒ the scanned workspace (ws.Dir), correct for a source/repo scan where the policy travels
 	// with the code. For an IMAGE scan the workspace is the materialized image, which does NOT carry the
@@ -2143,6 +2149,15 @@ func (s *Service) StartScan(ctx context.Context, actor string, engagementID shar
 	return s.StartScanWithOptions(ctx, actor, engagementID, req, ScanOptions{})
 }
 
+// StartDurableScanWithOptions refuses inline execution. Webhook dedupe and scan
+// enqueue must commit together before any worker starts acquiring source.
+func (s *Service) StartDurableScanWithOptions(ctx context.Context, actor string, engagementID shared.ID, req ports.AcquireRequest, opts ScanOptions) (ports.ScanJob, error) {
+	if s.jobQueue == nil {
+		return ports.ScanJob{}, fmt.Errorf("%w: webhook scans require a durable queue", shared.ErrValidation)
+	}
+	return s.StartScanWithOptions(ctx, actor, engagementID, req, opts)
+}
+
 func (s *Service) StartScanWithOptions(ctx context.Context, actor string, engagementID shared.ID, req ports.AcquireRequest, opts ScanOptions) (ports.ScanJob, error) {
 	if s.jobs == nil || s.ids == nil {
 		return ports.ScanJob{}, fmt.Errorf("async scan is not configured: %w", shared.ErrValidation)
@@ -2711,6 +2726,10 @@ func (s *Service) runScanJob(ctx context.Context, actor string, engagementID sha
 		// and a bare context.Background() would drop the tenant and fail the whole scan at
 		// the persistence boundary.
 		completionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.projectAnalysisCompletionTimeout)
+		if result != nil {
+			result.WebhookContext = opts.WebhookContext
+			result.WebhookFork = opts.WebhookContext != nil && opts.NoBuildExecution
+		}
 		err = s.projectAnalysisRecorder.RecordProjectAnalysis(completionCtx, engagementID, job.ID, fin, result)
 		cancel()
 	}

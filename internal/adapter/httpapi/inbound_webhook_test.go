@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -472,5 +474,150 @@ func TestInboundWebhookEndpointAADIsTenantAndVersionBound(t *testing.T) {
 	}
 	if _, err := cipher.Open(e.CurrentSealed, ports.InboundWebhookAAD(e.TenantID, e.PublicID, e.OwnerKind, e.OwnerID, 2)); err == nil {
 		t.Fatal("previous vault ciphertext was reusable under another version")
+	}
+}
+
+func gitLabSigningSecret(fill byte) []byte {
+	raw := bytes.Repeat([]byte{fill}, sha256.Size)
+	return []byte("whsec_" + base64.StdEncoding.EncodeToString(raw))
+}
+
+func gitLabSignedHeaders(secret, body []byte, at time.Time, messageID, eventID string) http.Header {
+	raw, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(string(secret), "whsec_"))
+	timestamp := fmt.Sprintf("%d", at.Unix())
+	mac := hmac.New(sha256.New, raw)
+	_, _ = mac.Write([]byte(messageID + "." + timestamp + "."))
+	_, _ = mac.Write(body)
+	header := make(http.Header)
+	header.Set(gitLabWebhookIDHeader, messageID)
+	header.Set(gitLabTimestampHeader, timestamp)
+	header.Set(gitLabSignatureHeader, "v1,"+base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	header.Set(gitLabEventHeader, "Push Hook")
+	header.Set(gitLabEventUUIDHeader, eventID)
+	return header
+}
+
+func requestHookHeaders(h http.Handler, path string, body []byte, header http.Header) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	for key, values := range header {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestInboundGitLabSigningTokenWindowAndPrecedence(t *testing.T) {
+	h, store, receiver, cipher := setupHook(t)
+	body := []byte(`{"ref":"refs/heads/main","checkout_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)
+	secret := gitLabSigningSecret('s')
+	store.mu.Lock()
+	e := store.records[hookIDA]
+	e.Provider = "gitlab"
+	sealed, err := cipher.Seal(secret, ports.InboundWebhookAAD(e.TenantID, e.PublicID, e.OwnerKind, e.OwnerID, e.CurrentVersion))
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	e.CurrentSealed = sealed
+	store.records[hookIDA] = e
+	store.mu.Unlock()
+
+	path := "/api/v1/hooks/" + hookIDA
+	eventID := "13792a34-cac6-4fda-95a8-c58e00a3954e"
+	headers := gitLabSignedHeaders(secret, body, time.Now(), "f5e5f430-f57b-4e6e-9fac-d9128cd7232f", eventID)
+	assertHookCode(t, requestHookHeaders(h, path, body, headers), http.StatusAccepted)
+	// Transport authentication deliberately does not own provider replay
+	// semantics. A second authenticated delivery reaches the provider receiver;
+	// the GitLab receiver's event deduper is tested in scmwebhook.
+	assertHookCode(t, requestHookHeaders(h, path, body, headers), http.StatusAccepted)
+	seen := receiver.snapshot()
+	if got := len(seen); got != 2 {
+		t.Fatalf("authenticated deliveries reaching receiver = %d, want 2", got)
+	}
+	if seen[0].eventID != headers.Get(gitLabWebhookIDHeader) {
+		t.Fatalf("signed delivery replay id = %q, want signed message ID", seen[0].eventID)
+	}
+
+	stale := gitLabSignedHeaders(secret, body, time.Now().Add(-6*time.Minute), "another-message-id", "23792a34-cac6-4fda-95a8-c58e00a3954e")
+	assertHookCode(t, requestHookHeaders(h, path, body, stale), http.StatusUnauthorized)
+
+	// Presence of a signing header selects signing-token verification. A valid
+	// legacy token cannot downgrade an invalid signature.
+	bad := gitLabSignedHeaders(secret, body, time.Now(), "bad-signature-message", "33792a34-cac6-4fda-95a8-c58e00a3954e")
+	bad.Set(gitLabSignatureHeader, "v1,"+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{'x'}, sha256.Size)))
+	bad.Set(gitLabLegacyAuthHeader, string(secret))
+	assertHookCode(t, requestHookHeaders(h, path, body, bad), http.StatusUnauthorized)
+}
+
+func TestInboundGitLabLegacyTokenReceiverRetry(t *testing.T) {
+	h, store, receiver, cipher := setupHook(t)
+	body := []byte(`{"ref":"refs/heads/main","checkout_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`)
+	secret := bytes.Repeat([]byte{'l'}, 32)
+	store.mu.Lock()
+	e := store.records[hookIDA]
+	e.Provider = "gitlab"
+	sealed, err := cipher.Seal(secret, ports.InboundWebhookAAD(e.TenantID, e.PublicID, e.OwnerKind, e.OwnerID, e.CurrentVersion))
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	e.CurrentSealed = sealed
+	store.records[hookIDA] = e
+	store.mu.Unlock()
+
+	headers := make(http.Header)
+	headers.Set(gitLabLegacyAuthHeader, string(secret))
+	headers.Set(gitLabEventHeader, "Push Hook")
+	legacyEventID := "43792a34-cac6-4fda-95a8-c58e00a3954e"
+	headers.Set(gitLabEventUUIDHeader, legacyEventID)
+	path := "/api/v1/hooks/" + hookIDA
+
+	receiver.err = errors.New("temporary receiver failure")
+	assertHookCode(t, requestHookHeaders(h, path, body, headers), http.StatusServiceUnavailable)
+	receiver.err = nil
+	// A provider receiver failure is surfaced as 503 so GitLab can retry.
+	assertHookCode(t, requestHookHeaders(h, path, body, headers), http.StatusAccepted)
+	seen := receiver.snapshot()
+	if got := len(seen); got != 2 {
+		t.Fatalf("receiver calls across failed retry = %d, want 2", got)
+	}
+	if seen[0].eventID != legacyEventID {
+		t.Fatalf("legacy delivery replay id = %q, want event UUID %q", seen[0].eventID, legacyEventID)
+	}
+}
+
+func TestInboundGitLabInvalidPayloadIs400AndRetryable(t *testing.T) {
+	h, store, receiver, cipher := setupHook(t)
+	body := []byte(`{"ref":"refs/heads/main","checkout_sha":"not-a-sha"}`)
+	secret := bytes.Repeat([]byte{'v'}, 32)
+	store.mu.Lock()
+	e := store.records[hookIDA]
+	e.Provider = "gitlab"
+	sealed, err := cipher.Seal(secret, ports.InboundWebhookAAD(e.TenantID, e.PublicID, e.OwnerKind, e.OwnerID, e.CurrentVersion))
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	e.CurrentSealed = sealed
+	store.records[hookIDA] = e
+	store.mu.Unlock()
+
+	headers := make(http.Header)
+	headers.Set(gitLabLegacyAuthHeader, string(secret))
+	headers.Set(gitLabEventHeader, "Push Hook")
+	headers.Set(gitLabEventUUIDHeader, "53792a34-cac6-4fda-95a8-c58e00a3954e")
+	receiver.err = fmt.Errorf("%w: invalid GitLab webhook sha", shared.ErrValidation)
+	path := "/api/v1/hooks/" + hookIDA
+	assertHookCode(t, requestHookHeaders(h, path, body, headers), http.StatusBadRequest)
+
+	receiver.err = nil
+	// A 400 from provider parsing releases the event claim. If a corrected
+	// request is redelivered with the same provider event UUID, it is processed.
+	assertHookCode(t, requestHookHeaders(h, path, body, headers), http.StatusAccepted)
+	if got := len(receiver.snapshot()); got != 2 {
+		t.Fatalf("receiver calls across validation retry = %d, want 2", got)
 	}
 }

@@ -1,14 +1,17 @@
 package httpapi
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +22,16 @@ import (
 
 const inboundWebhookBodyLimit = 1 << 20 // 1 MiB of raw, signed bytes.
 const inboundWebhookSignature = "X-Synapse-Hook-Signature"
+
+const (
+	gitLabLegacyAuthHeader = "X-Gitlab-Token"
+	gitLabEventHeader      = "X-Gitlab-Event"
+	gitLabEventUUIDHeader  = "X-Gitlab-Event-UUID"
+	gitLabWebhookIDHeader  = "webhook-id"
+	gitLabTimestampHeader  = "webhook-timestamp"
+	gitLabSignatureHeader  = "webhook-signature"
+	gitLabSignatureWindow  = 5 * time.Minute
+)
 
 const (
 	githubSignatureHeader = "X-Hub-Signature-256"
@@ -161,11 +174,20 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 			return
 		}
+	} else if endpoint.Provider == "gitlab" {
+		var eventOK bool
+		event.EventType, event.EventID, eventOK = gitLabEventMetadata(r.Header)
+		if !eventOK {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid_webhook_event"})
+			return
+		}
 	}
 
 	// Bind ONLY the authenticated record's tenant; do not use TenantOrDefault.
+	// GitLab commits replay receipts with durable enqueue in its receiver.
+	// GitHub retains the existing transport-level delivery claim.
 	ctx := shared.WithTenant(r.Context(), endpoint.TenantID)
-	if event.EventID != "" {
+	if event.Provider == "github" && event.EventID != "" {
 		claimed, err := p.store.ClaimInboundWebhookEvent(ctx, identity, event.Provider, event.EventID, time.Now())
 		if err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "webhook_unavailable"})
@@ -177,7 +199,7 @@ func (p *inboundWebhookPlane) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := p.receiver.ReceiveInboundWebhook(ctx, identity, event); err != nil {
-		if event.EventID != "" {
+		if event.Provider == "github" && event.EventID != "" {
 			_ = p.store.ReleaseInboundWebhookEvent(ctx, identity, event.Provider, event.EventID)
 		}
 		if errors.Is(err, shared.ErrValidation) {
@@ -218,6 +240,9 @@ func inboundSignature(values []string) ([sha256.Size]byte, bool) {
 }
 
 func (p *inboundWebhookPlane) verifyRequest(e ports.InboundWebhookEndpoint, publicID string, body []byte, header http.Header, now time.Time) (bool, bool) {
+	if e.Provider == "gitlab" {
+		return p.verifyGitLab(e, publicID, body, header, now)
+	}
 	signatureHeader := inboundWebhookSignature
 	if e.Provider == "github" {
 		signatureHeader = githubSignatureHeader
@@ -225,6 +250,26 @@ func (p *inboundWebhookPlane) verifyRequest(e ports.InboundWebhookEndpoint, publ
 	presented, signatureOK := inboundSignature(header.Values(signatureHeader))
 	valid, usedPrevious := p.verify(e, publicID, body, presented, now)
 	return valid && signatureOK, usedPrevious
+}
+
+func gitLabEventMetadata(header http.Header) (string, string, bool) {
+	eventType, typeOK := singleInboundWebhookHeader(header, gitLabEventHeader)
+	eventID, idOK := singleInboundWebhookHeader(header, gitLabEventUUIDHeader)
+	if len(header.Values(gitLabSignatureHeader)) > 0 {
+		// Prefer the authenticated message ID; event UUID is an unsigned header.
+		eventID, idOK = singleInboundWebhookHeader(header, gitLabWebhookIDHeader)
+		idOK = idOK && len(eventID) <= 128 && strings.TrimSpace(eventID) == eventID
+		for _, c := range eventID {
+			if c < 0x21 || c > 0x7e {
+				idOK = false
+			}
+		}
+	} else {
+		idOK = idOK && validWebhookUUID(eventID)
+	}
+	eventType = strings.TrimSpace(eventType)
+	eventID = strings.TrimSpace(eventID)
+	return eventType, eventID, typeOK && idOK && eventType != "" && len(eventType) <= 64
 }
 
 func githubEventMetadata(header http.Header, body []byte) (ports.InboundWebhookEvent, bool, bool) {
@@ -265,7 +310,7 @@ func githubEventMetadata(header http.Header, body []byte) (ports.InboundWebhookE
 
 	case "pull_request":
 		var payload struct {
-			Action string `json:"action"`
+			Action      string `json:"action"`
 			PullRequest struct {
 				Head struct {
 					Ref  string `json:"ref"`
@@ -348,6 +393,156 @@ func singleInboundWebhookHeader(header http.Header, name string) (string, bool) 
 		return "", false
 	}
 	return values[0], true
+}
+
+func validWebhookUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, c := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+			continue
+		}
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *inboundWebhookPlane) verifyGitLab(e ports.InboundWebhookEndpoint, publicID string, body []byte, header http.Header, now time.Time) (valid, usedPrevious bool) {
+	signatures := header.Values(gitLabSignatureHeader)
+	if len(signatures) > 0 {
+		messageID, idOK := singleInboundWebhookHeader(header, gitLabWebhookIDHeader)
+		timestampRaw, timestampOK := singleInboundWebhookHeader(header, gitLabTimestampHeader)
+		headerOK := len(signatures) == 1 && idOK && timestampOK
+		unixSeconds, parseErr := strconv.ParseInt(strings.TrimSpace(timestampRaw), 10, 64)
+		at := time.Unix(unixSeconds, 0)
+		if parseErr != nil || at.Before(now.Add(-gitLabSignatureWindow)) || at.After(now.Add(gitLabSignatureWindow)) {
+			headerOK = false
+		}
+		return p.verifyGitLabSigningToken(e, publicID, body, messageID, timestampRaw, signatures[0], headerOK, now)
+	}
+
+	presented, tokenOK := singleInboundWebhookHeader(header, gitLabLegacyAuthHeader)
+	return p.verifyGitLabSecretToken(e, publicID, presented, tokenOK, now)
+}
+
+func (p *inboundWebhookPlane) openInboundKey(e ports.InboundWebhookEndpoint, publicID string, previous bool, now time.Time) ([]byte, bool) {
+	version, sealed := e.CurrentVersion, e.CurrentSealed
+	validWindow := true
+	if previous {
+		version, sealed = e.CurrentVersion-1, e.PreviousSealed
+		validWindow = e.PreviousExpiresAt.After(now) && !e.PreviousExpiresAt.After(now.Add(24*time.Hour))
+	}
+	key, err := p.cipher.Open(sealed, ports.InboundWebhookAAD(e.TenantID, publicID, e.OwnerKind, e.OwnerID, version))
+	valid := err == nil && len(key) >= 32 && validWindow
+	if !valid {
+		for i := range key {
+			key[i] = 0
+		}
+		key = make([]byte, 32)
+	}
+	return key, valid
+}
+
+func endpointWebhookAuthenticated(e ports.InboundWebhookEndpoint, matchCurrent, matchPrevious bool) bool {
+	return e.Enabled && !e.TenantID.IsZero() && e.OwnerKind != "" && e.OwnerID != "" && e.CurrentVersion > 0 &&
+		e.RevokedAt == nil && e.RatePerMinute > 0 && (matchCurrent || matchPrevious)
+}
+
+func gitLabSigningKey(secret []byte) ([]byte, bool) {
+	prefix := []byte("whsec_")
+	if !bytes.HasPrefix(secret, prefix) {
+		return make([]byte, sha256.Size), false
+	}
+	encoded := secret[len(prefix):]
+	raw := make([]byte, base64.StdEncoding.DecodedLen(len(encoded)))
+	n, err := base64.StdEncoding.Strict().Decode(raw, encoded)
+	if err != nil || n != sha256.Size {
+		for i := range raw {
+			raw[i] = 0
+		}
+		return make([]byte, sha256.Size), false
+	}
+	return raw[:n], true
+}
+
+func gitLabSignatureMatches(key []byte, messageID, timestamp string, body []byte, presented string) bool {
+	mac := hmac.New(sha256.New, key)
+	_, _ = io.WriteString(mac, messageID)
+	_, _ = io.WriteString(mac, ".")
+	_, _ = io.WriteString(mac, timestamp)
+	_, _ = io.WriteString(mac, ".")
+	_, _ = mac.Write(body)
+	expected := mac.Sum(nil)
+
+	parts := strings.Fields(presented)
+	if len(parts) == 0 || len(parts) > 8 {
+		parts = []string{""}
+	}
+	matched := false
+	for _, part := range parts {
+		var received [sha256.Size]byte
+		wellFormed := strings.HasPrefix(part, "v1,")
+		if wellFormed {
+			raw, err := base64.StdEncoding.Strict().DecodeString(part[len("v1,"):])
+			wellFormed = err == nil && len(raw) == sha256.Size
+			if wellFormed {
+				copy(received[:], raw)
+			}
+		}
+		equal := hmac.Equal(expected, received[:])
+		matched = matched || (wellFormed && equal)
+	}
+	return matched
+}
+
+func (p *inboundWebhookPlane) verifyGitLabSigningToken(e ports.InboundWebhookEndpoint, publicID string, body []byte, messageID, timestamp, presented string, headerOK bool, now time.Time) (bool, bool) {
+	current, validCurrent := p.openInboundKey(e, publicID, false, now)
+	previous, validPrevious := p.openInboundKey(e, publicID, true, now)
+	currentSigning, currentFormat := gitLabSigningKey(current)
+	previousSigning, previousFormat := gitLabSigningKey(previous)
+	matchCurrent := gitLabSignatureMatches(currentSigning, messageID, timestamp, body, presented) && validCurrent && currentFormat
+	matchPrevious := gitLabSignatureMatches(previousSigning, messageID, timestamp, body, presented) && validPrevious && previousFormat
+	for i := range current {
+		current[i] = 0
+	}
+	for i := range previous {
+		previous[i] = 0
+	}
+	for i := range currentSigning {
+		currentSigning[i] = 0
+	}
+	for i := range previousSigning {
+		previousSigning[i] = 0
+	}
+	authenticated := headerOK && endpointWebhookAuthenticated(e, matchCurrent, matchPrevious)
+	return authenticated, authenticated && !matchCurrent && matchPrevious
+}
+
+func constantTimeSecretMatch(secret []byte, presented string) bool {
+	left := sha256.Sum256(secret)
+	right := sha256.Sum256([]byte(presented))
+	return hmac.Equal(left[:], right[:])
+}
+
+func (p *inboundWebhookPlane) verifyGitLabSecretToken(e ports.InboundWebhookEndpoint, publicID, presented string, headerOK bool, now time.Time) (bool, bool) {
+	current, validCurrent := p.openInboundKey(e, publicID, false, now)
+	previous, validPrevious := p.openInboundKey(e, publicID, true, now)
+	matchCurrent := constantTimeSecretMatch(current, presented) && validCurrent
+	matchPrevious := constantTimeSecretMatch(previous, presented) && validPrevious
+	for i := range current {
+		current[i] = 0
+	}
+	for i := range previous {
+		previous[i] = 0
+	}
+	authenticated := headerOK && endpointWebhookAuthenticated(e, matchCurrent, matchPrevious)
+	return authenticated, authenticated && !matchCurrent && matchPrevious
 }
 
 func (p *inboundWebhookPlane) verify(e ports.InboundWebhookEndpoint, publicID string, body []byte, signature [sha256.Size]byte, now time.Time) (valid, usedPrevious bool) {

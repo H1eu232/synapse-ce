@@ -18,6 +18,11 @@ vi.mock('../../lib/api', () => ({
   },
 }))
 
+// Radix Select uses browser pointer/scroll APIs absent from jsdom.
+for (const name of ['scrollIntoView', 'hasPointerCapture', 'releasePointerCapture'] as const) {
+  Object.defineProperty(HTMLElement.prototype, name, { configurable: true, value: vi.fn(() => false) })
+}
+
 const provider: IntegrationProviderDescriptor = {
   provider: 'jenkins', name: 'Jenkins', description: 'Read-only Jenkins integration',
   capabilities: ['test_connection', 'discover_pipelines', 'read_runs'], configFields: [],
@@ -25,6 +30,18 @@ const provider: IntegrationProviderDescriptor = {
     { name: 'username', label: 'Username', kind: 'text', required: true, description: '' },
     { name: 'api_token', label: 'API token', kind: 'password', required: true, description: '' },
   ],
+}
+
+const gitlabProvider: IntegrationProviderDescriptor = {
+  provider: 'gitlab', name: 'GitLab', description: 'Inbound GitLab webhooks',
+  capabilities: [], configFields: [], secretFields: [],
+}
+
+const gitlabIntegration: Integration = {
+  id: 'integration-gitlab', provider: 'gitlab', name: 'GitLab inbound', endpoint: 'https://gitlab.example.com',
+  config: {}, allowPrivateNetwork: false, pollIntervalSeconds: 300, enabled: false, archived: false,
+  version: 1, connectionRevision: 1, credentialRevision: 0, credentialConfigured: false,
+  createdAt: '2026-09-30T10:00:00Z', updatedAt: '2026-09-30T10:00:00Z',
 }
 
 const integration: Integration = {
@@ -135,6 +152,45 @@ describe('Integrations settings', () => {
     render(<MemoryRouter><Integrations /></MemoryRouter>)
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Provider catalog unavailable')
+  })
+
+  it('enables an inbound-only provider without credentials, tests, discovery or polling', async () => {
+    vi.mocked(api.listIntegrationProviders).mockResolvedValue([provider, gitlabProvider])
+    vi.mocked(api.listIntegrations).mockResolvedValue([gitlabIntegration])
+    vi.mocked(api.listProjects).mockResolvedValue([{ id: 'project-1', name: 'Platform', sourceBinding: { kind: 'git', value: 'https://gitlab.example.com/acme/app' } } as never])
+    vi.mocked(api.getIntegration).mockResolvedValue(gitlabIntegration)
+    vi.mocked(api.listIntegrationOperations).mockResolvedValue([])
+    vi.mocked(api.setIntegrationEnabled).mockResolvedValue({ ...gitlabIntegration, enabled: true, version: 2 })
+
+    render(<MemoryRouter><Integrations /></MemoryRouter>)
+
+    expect(await screen.findByText('Not required')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add credentials' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Test connection' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Discover' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Poll now' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Bind Project' })).toBeInTheDocument()
+    expect(screen.queryByText('Run discovery to select a pipeline.')).not.toBeInTheDocument()
+
+    const enable = screen.getByRole('button', { name: 'Enable' })
+    expect(enable).toBeEnabled()
+    fireEvent.click(enable)
+    await waitFor(() => expect(api.setIntegrationEnabled).toHaveBeenCalledWith(gitlabIntegration, true))
+  })
+
+  it('offers only Git projects for the inbound GitLab binding', async () => {
+    vi.mocked(api.listIntegrationProviders).mockResolvedValue([gitlabProvider])
+    vi.mocked(api.listIntegrations).mockResolvedValue([gitlabIntegration])
+    vi.mocked(api.getIntegration).mockResolvedValue(gitlabIntegration)
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'git-project', name: 'Git app', sourceBinding: { kind: 'git', value: 'https://gitlab.example.com/org/app' } } as never,
+      { id: 'local-project', name: 'Local checkout', sourceBinding: { kind: 'local', value: '/repo' } } as never,
+    ])
+    render(<MemoryRouter><Integrations /></MemoryRouter>)
+    const user = userEvent.setup()
+    await user.click(await screen.findByLabelText('Synapse Project'))
+    expect(await screen.findByRole('option', { name: 'Git app' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Local checkout' })).not.toBeInTheDocument()
   })
 
   it('requires a successful test before enabling and never renders stored plaintext', async () => {
