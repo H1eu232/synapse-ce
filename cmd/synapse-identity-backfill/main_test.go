@@ -31,6 +31,7 @@ func TestParseIdentityBackfillOptionsRejectsUnsafeInput(t *testing.T) {
 		{"--tenants", "a", "--batch-size", "1001"},
 		{"--tenants", "a", "--batch-size", "0"},
 		{"--tenants", "a", "--mode", "repair"},
+		{"--tenants", "a", "--mode", "declare"},
 		{"--tenants", "a", "--max-drift", "-1"},
 		{"--tenants", "a", "--oidc-issuer", " https://idp.example.test"},
 		{"--tenants", "a", "--delivery-limit", "501"},
@@ -39,6 +40,16 @@ func TestParseIdentityBackfillOptionsRejectsUnsafeInput(t *testing.T) {
 		if _, err := parseOptions(args, &bytes.Buffer{}); err == nil {
 			t.Fatalf("expected rejection for %v", args)
 		}
+	}
+}
+
+func TestParseIdentityCutoverDeclarationEvidence(t *testing.T) {
+	o, err := parseOptions([]string{"--tenants", "a", "--mode", "declare", "--expected-policy-version", "2", "--shadow-report-id", "report", "--old-writer-generation", "release-208", "--migration-version", "208"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.policyVersion != 2 || o.shadowReportID != "report" || o.oldWriterGeneration != "release-208" || o.migrationVersion != 208 {
+		t.Fatalf("cutover options = %+v", o)
 	}
 }
 
