@@ -532,7 +532,7 @@ func GrantRuntimePrivileges(ctx context.Context, adminDSN, runtimeDSN string, ha
 		)
 	}
 	// The identity platform tables are global and owner-only. The runtime role reaches them solely
-	// through the exact-match SECURITY DEFINER functions of migration 0203; tenant-owned identity
+	// through the exact-match SECURITY DEFINER functions of migration 0206; tenant-owned identity
 	// tables keep the ordinary grant under FORCE RLS.
 	var identityInstalled bool
 	if err := adminDB.QueryRowContext(ctx, "SELECT to_regclass('public.identity_credential_digests') IS NOT NULL").Scan(&identityInstalled); err != nil {

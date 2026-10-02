@@ -20,7 +20,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 )
 
-// IdentityFoundationStore persists the additive identity model of migration 0203. Global access is
+// IdentityFoundationStore persists the additive identity model of migration 0206. Global access is
 // limited to the SECURITY DEFINER functions of that migration; every other statement runs inside a
 // tenant-bound RLS transaction.
 type IdentityFoundationStore struct{ pool *pgxpool.Pool }
@@ -47,7 +47,7 @@ var identityDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // identityProjectionActor attributes platform person audit written by the legacy projection.
 const identityProjectionActor = "system:identity-projection"
 
-// identityPersistenceError maps the stable SQLSTATEs raised by the 0203 guards to domain errors.
+// identityPersistenceError maps the stable SQLSTATEs raised by the 0206 guards to domain errors.
 func identityPersistenceError(err error) error {
 	if err == nil {
 		return nil

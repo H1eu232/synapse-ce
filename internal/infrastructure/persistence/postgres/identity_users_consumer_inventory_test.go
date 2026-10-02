@@ -104,11 +104,11 @@ func TestUsersConsumerInventory(t *testing.T) {
 	}
 }
 
-func TestMigration0203IdentityFoundationRoundTrip(t *testing.T) {
+func TestMigration0206IdentityFoundationRoundTrip(t *testing.T) {
 	isolated := newIsolatedMigrationDB(t, 203, 202)
 	for pass := 0; pass < 2; pass++ {
 		if err := goose.UpTo(isolated.db, ".", 203); err != nil {
-			t.Fatalf("pass %d: migrate up to 0203: %v", pass, err)
+			t.Fatalf("pass %d: migrate up to 0206: %v", pass, err)
 		}
 		var tables int
 		if err := isolated.db.QueryRow(`SELECT count(*) FROM pg_class WHERE relname LIKE 'identity_%' AND relkind='r' AND relforcerowsecurity`).Scan(&tables); err != nil {
@@ -131,7 +131,7 @@ func TestMigration0203IdentityFoundationRoundTrip(t *testing.T) {
 	}
 }
 
-func TestMigration0203DownRefusesEvidence(t *testing.T) {
+func TestMigration0206DownRefusesEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		seed string
