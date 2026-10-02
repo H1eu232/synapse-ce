@@ -78,11 +78,15 @@ paths:
       summary: Receive a separately authenticated provider webhook
       description: >-
         The public ID identifies an enabled tenant-owned integration. Tenant identity
-        never comes from a header, query or body. Signature is sha256=HEX(HMAC-SHA256
-        over the raw body) in X-Synapse-Hook-Signature; the current secret and the
-        24-hour rotation overlap are accepted. No human bearer token is used.
+        never comes from a header, query or body. Provider-neutral endpoints use
+        X-Synapse-Hook-Signature over the raw body. GitLab endpoints prefer Standard
+        Webhooks webhook-signature over webhook-id.timestamp.raw-body with a ±5 minute
+        timestamp window, and fall back to X-Gitlab-Token only when no signature is
+        present. The signed webhook-id (or legacy event UUID) and authenticated body digest are deduplicated atomically with durable job enqueue. Conflicting event headers and payload object_kind are rejected. No human bearer token is used.
       security:
         - inboundWebhookHMAC: []
+        - gitlabWebhookSignature: []
+        - gitlabWebhookToken: []
       parameters:
         - name: public_id
           in: path
@@ -91,11 +95,13 @@ paths:
       requestBody:
         required: true
         content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
           application/octet-stream:
             schema: {type: string, format: binary, maxLength: 1048576}
       responses:
         '202': {description: Authenticated event accepted by a provider receiver.}
-        '400': {description: Invalid request body.}
+        '400': {description: Invalid request body or provider event metadata.}
         '401': {description: Uniform response for invalid signatures, unknown IDs and disabled or revoked endpoints.}
         '413': {description: Body exceeds 1 MiB.}
         '429': {description: Per-endpoint admission limit; includes Retry-After.}
@@ -3256,6 +3262,37 @@ paths:
       responses:
         '200': {description: Attempts, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NotificationAttempt'}}}}}}}
 
+  /api/v1/notifications/deliveries/{nid}/redrive:
+    parameters: [{name: nid, in: path, required: true, schema: {type: string}}]
+    post:
+      tags: [notifications]
+      operationId: redriveNotificationDelivery
+      summary: Redrive one dead-lettered notification delivery
+      description: >
+        Requires administer permission. Requeues the existing delivery and preserves
+        its attempt history. The destination configuration and queue fence must still
+        match the values returned for the delivery. Delivery is asynchronous and can
+        duplicate a message if a previous receiver accepted it before its acknowledgement
+        was lost.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason, expected_fence]
+              properties:
+                reason: {type: string, minLength: 1, maxLength: 500, description: Required operator reason after trimming.}
+                expected_fence: {type: integer, format: int64, minimum: 1, description: Current redrive_fence from the delivery being confirmed.}
+      responses:
+        '202': {description: Accepted for asynchronous delivery, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationDelivery'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Delivery state, queue fence or channel configuration changed}
+
   /api/v1/notifications/templates:
     get:
       tags: [notifications]
@@ -3399,6 +3436,46 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {description: Stale revision, or the template is already archived}
+
+  /api/v1/notifications/templates/preview:
+    post:
+      tags: [notifications]
+      operationId: previewNotificationTemplate
+      summary: Prepare a template preview for a channel and an event type, without sending
+      description: >
+        Picks the sample event (the event type's published fixture, or one of the tenant's stored
+        events when `event_id` is set) and the template text: what resolution would choose for the
+        channel, a saved version of `template_id`, or unsaved `fields` (alone for a new template,
+        with `template_id` for an unsaved edit). Unsaved text is checked exactly as a save checks
+        it, so an engine rejection is a 400 with its field and line. Nothing is sent or stored, and
+        the response is never logged. The response names the sample and the template; it never
+        carries the event's data, its template context or template source. `rendered` stays false
+        until send-time rendering (#1365) is available; the response then also carries the
+        suppressed state and the rendered message. Registered only when templates are configured.
+        Requires manage_integrations; a stored event also requires view.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplatePreviewInput'}}}}
+      responses:
+        '200': {description: Prepared preview, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplatePreview'}}}}
+        '400': {description: Invalid input, a template the channel cannot use, an event of another type, or unsaved text the engine rejected, content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTemplateValidationError'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {description: The channel, the template, its version or the stored event does not exist in the caller's tenant}
+
+  /api/v1/notifications/templates/preview/events:
+    get:
+      tags: [notifications]
+      operationId: listNotificationPreviewEvents
+      summary: List the tenant's newest events of one type a preview can render against (at most 20)
+      description: >
+        Newest first. Each item names the event and never carries its data or template context.
+        Registered only when templates are configured. Requires manage_integrations and view.
+      parameters:
+        - {name: event_type, in: query, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Recent events, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/NotificationPreviewEvent'}}}}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
 
   /api/v1/connectors:
     get:
@@ -6568,7 +6645,17 @@ components:
       type: apiKey
       in: header
       name: X-Synapse-Hook-Signature
-      description: HMAC-SHA256 over the exact raw request body
+      description: Provider-neutral HMAC-SHA256 over the exact raw request body.
+    gitlabWebhookSignature:
+      type: apiKey
+      in: header
+      name: webhook-signature
+      description: GitLab Standard Webhooks v1 signature; webhook-id and webhook-timestamp are also required.
+    gitlabWebhookToken:
+      type: apiKey
+      in: header
+      name: X-Gitlab-Token
+      description: Legacy GitLab secret token, used only when webhook-signature is absent.
     bearerAuth:
       type: http
       scheme: bearer
@@ -13012,6 +13099,55 @@ components:
         locale: {type: string, enum: [en, vi], description: The channel locale; absent when the tenant default applies}
         custom_body: {type: boolean, description: The webhook channel sends its template body as a custom JSON body (#1376)}
 
+    NotificationTemplatePreviewInput:
+      type: object
+      required: [channel_id, event_type]
+      additionalProperties: false
+      properties:
+        channel_id: {type: string}
+        event_type: {type: string, description: A catalog event type; not `*`.}
+        event_id: {type: string, description: A stored event of `event_type` in the caller's tenant. Omitted renders against the fixture.}
+        template_id: {type: string, description: Preview this template instead of the resolved one. It must be of the channel's family and cover `event_type`.}
+        version: {type: integer, minimum: 0, description: A version of `template_id`; 0 or omitted is the latest. Not combined with `fields`.}
+        fields: {type: object, additionalProperties: {type: string}, description: Unsaved text to preview, checked like a save.}
+    NotificationPreviewEvent:
+      type: object
+      required: [id, event_type, occurred_at]
+      properties:
+        id: {type: string}
+        event_type: {type: string}
+        occurred_at: {type: string, format: date-time}
+        engagement_id: {type: string}
+        severity: {type: string}
+        subject_kind: {type: string}
+    NotificationTemplatePreview:
+      type: object
+      required: [channel, sample, rendered]
+      description: Exactly one of `resolution` and `draft` is present.
+      properties:
+        channel:
+          type: object
+          required: [id, name, type, family]
+          properties:
+            id: {type: string}
+            name: {type: string}
+            type: {type: string}
+            family: {type: string, enum: [chat, email, pager, ticket, webhook]}
+        sample:
+          allOf:
+            - $ref: '#/components/schemas/NotificationPreviewEvent'
+            - type: object
+              required: [source]
+              properties:
+                source: {type: string, enum: [fixture, event]}
+        resolution: {$ref: '#/components/schemas/NotificationTemplateResolution'}
+        draft:
+          type: object
+          properties:
+            template_id: {type: string}
+            version: {type: integer, description: The saved version previewed; absent for unsaved text.}
+            unsaved: {type: boolean}
+        rendered: {type: boolean, description: False until send-time rendering (#1365) is available.}
     NotificationTemplateResolution:
       type: object
       description: >-
@@ -13207,12 +13343,13 @@ components:
 
     NotificationDelivery:
       type: object
-      required: [id, event_id, channel_id, channel_type, matched_rule_ids, state, attempts, created_at, updated_at]
+      required: [id, event_id, channel_id, channel_type, redrive_fence, matched_rule_ids, state, attempts, created_at, updated_at]
       properties:
         id: {type: string}
         event_id: {type: string}
         channel_id: {type: string}
         channel_type: {type: string, enum: [webhook, slack, email]}
+        redrive_fence: {type: integer, format: int64, minimum: 0, description: Current durable queue claim fence; submit it as expected_fence to prevent a stale redrive.}
         recipient: {type: string}
         matched_rule_ids: {type: array, items: {type: string}}
         state: {$ref: '#/components/schemas/NotificationDeliveryState'}

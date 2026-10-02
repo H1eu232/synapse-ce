@@ -45,7 +45,7 @@ const channel: NotificationChannel = {
 }
 
 const delivery = (over: Partial<NotificationDelivery>): NotificationDelivery => ({
-  id: 'delivery', event_id: 'event', channel_id: channel.id, channel_type: 'slack', matched_rule_ids: [],
+  id: 'delivery', event_id: 'event', channel_id: channel.id, channel_type: 'slack', redrive_fence: 0, matched_rule_ids: [],
   state: 'delivered', attempts: 1, created_at: '2026-09-02T00:00:00Z', updated_at: '2026-09-02T00:00:00Z', ...over,
 })
 
@@ -269,7 +269,8 @@ describe('health derivation', () => {
     const poll = operation({ type: 'poll', finishedAt: '2026-09-01T10:00:00Z' })
     expect(ciHealth(integration, [poll], now).label).toBe('Healthy')
     expect(ciHealth(integration, [], now).label).toBe('Stale')
-    expect(ciHealth({ ...integration, enabled: false }, [], now).label).toBe('Disabled')
+    expect(ciHealth(integration, [], now, false).label).toBe('Healthy')
+    expect(ciHealth({ ...integration, enabled: false }, [], now, false).label).toBe('Disabled')
     expect(ciHealth(integration, [operation({ state: 'running' }), poll], now).label).toBe('Running')
     expect(ciHealth(integration, [operation({ state: 'partial' }), poll], now).label).toBe('Partial')
   })

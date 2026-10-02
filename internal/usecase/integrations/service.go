@@ -232,17 +232,18 @@ func (service *Service) SetEnabled(ctx context.Context, tenantID, integrationID 
 	if err != nil {
 		return integration.Integration{}, err
 	}
-	requiresCredentialTest := false
+	requirements := ports.IntegrationEnableRequirements{}
 	if enabled {
-		descriptor, err := service.registry.Descriptor(item.Provider)
-		if err != nil {
-			return integration.Integration{}, err
+		descriptor, descriptorErr := service.registry.Descriptor(item.Provider)
+		if descriptorErr != nil {
+			return integration.Integration{}, descriptorErr
 		}
-		requiresCredentialTest = len(descriptor.SecretFields) > 0
-		if requiresCredentialTest {
-			configured, err := service.store.IntegrationCredentialConfigured(tenantCtx, integrationID, credentialIdentity)
-			if err != nil {
-				return integration.Integration{}, err
+		requirements.RequireCredential = len(descriptor.SecretFields) > 0
+		requirements.RequireSuccessfulTest = descriptor.Supports(integration.CapabilityTestConnection)
+		if requirements.RequireCredential {
+			configured, credentialErr := service.store.IntegrationCredentialConfigured(tenantCtx, integrationID, credentialIdentity)
+			if credentialErr != nil {
+				return integration.Integration{}, credentialErr
 			}
 			if !configured {
 				return integration.Integration{}, fmt.Errorf("%w: configure credentials before enabling the integration", shared.ErrConflict)
@@ -254,9 +255,9 @@ func (service *Service) SetEnabled(ctx context.Context, tenantID, integrationID 
 		action = "integration.enabled"
 	}
 	audit := service.auditEntry(actor, action, integrationID, integrationTargetMetadata(item, nil))
-	updated, err := service.store.SetIntegrationEnabled(tenantCtx, integrationID, enabled, version, audit)
+	updated, err := service.store.SetIntegrationEnabled(tenantCtx, integrationID, enabled, version, requirements, audit)
 	if err != nil {
-		if enabled && requiresCredentialTest && errors.Is(err, shared.ErrConflict) {
+		if enabled && requirements.RequireSuccessfulTest && errors.Is(err, shared.ErrConflict) {
 			return integration.Integration{}, fmt.Errorf("%w: test the exact connection and credential revision successfully before enabling the integration", err)
 		}
 		return integration.Integration{}, err
@@ -286,17 +287,15 @@ func (service *Service) CreateBinding(ctx context.Context, tenantID, integration
 	if err != nil {
 		return integration.Binding{}, err
 	}
+	if (item.Provider == "gitlab" || item.Provider == "github") && (boundProject == nil || boundProject.SourceBinding.Kind != project.SourceGit) {
+		return integration.Binding{}, fmt.Errorf("%w: inbound SCM webhook binding requires a git project", shared.ErrValidation)
+	}
 	bindings, err := service.store.ListIntegrationBindings(tenantCtx, integrationID)
 	if err != nil {
 		return integration.Binding{}, err
 	}
-	if item.Provider == integration.Provider("github") {
-		if boundProject.SourceBinding.Kind != project.SourceGit {
-			return integration.Binding{}, fmt.Errorf("%w: GitHub inbound webhooks require a git-backed Project", shared.ErrValidation)
-		}
-		if len(bindings) != 0 {
-			return integration.Binding{}, fmt.Errorf("%w: a GitHub inbound integration supports exactly one Project binding", shared.ErrConflict)
-		}
+	if (item.Provider == "gitlab" || item.Provider == "github") && len(bindings) > 0 {
+		return integration.Binding{}, fmt.Errorf("%w: inbound SCM integration supports one project binding", shared.ErrConflict)
 	}
 	if len(bindings) >= integration.MaxBindingsPerPoll {
 		return integration.Binding{}, fmt.Errorf("%w: an integration supports at most %d bindings", shared.ErrValidation, integration.MaxBindingsPerPoll)

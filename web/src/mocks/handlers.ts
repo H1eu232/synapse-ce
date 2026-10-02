@@ -577,10 +577,18 @@ function mockTemplateVersion(version: number, fields: Record<string, string>): M
 const TEMPLATE_STORE: MockTemplate[] = [
   {
     id: 'tpl-incident-chat', name: 'Incident alert for chat', event_type: 'incident.created', family: 'chat', locale: 'en',
-    status: 'active', active_version: 2, revision: 3, created_at: WEEK_AGO, updated_at: DAY_AGO,
+    // v2 renders and v3 is a saved, not yet activated edit, so the version history (#1375) has a diff to show.
+    status: 'active', active_version: 2, revision: 4, created_at: WEEK_AGO, updated_at: HOUR_AGO,
     versions: [
       { ...mockTemplateVersion(1, { title: 'New incident', body: 'Open the console for details.' }), created_at: WEEK_AGO },
-      { ...mockTemplateVersion(2, { title: '{{.severity}}: {{.title}}', body: 'A new incident was opened.' }), created_at: DAY_AGO },
+      { ...mockTemplateVersion(2, { title: '{{.severity}}: {{.title}}', body: 'A new incident was opened.\nOpen the console for details.' }), created_at: DAY_AGO },
+      {
+        ...mockTemplateVersion(3, {
+          title: '{{.severity}}: {{.title}}',
+          body: 'A new incident was opened by the detection pipeline.\nAffected assets are listed in the console.\nOpen the console for details.',
+        }),
+        created_at: HOUR_AGO,
+      },
     ],
   },
   {
@@ -1920,10 +1928,15 @@ export const handlers = [
     const template = TEMPLATE_STORE.find((t) => t.id === params.nid)
     return template ? HttpResponse.json(templateDetail(template)) : HttpResponse.json({ error: 'not found' }, { status: 404 })
   }),
-  http.get('/api/v1/notifications/templates/:nid/versions', ({ params }) => {
+  http.get('/api/v1/notifications/templates/:nid/versions', ({ params, request }) => {
     const template = TEMPLATE_STORE.find((t) => t.id === params.nid)
     if (!template) return HttpResponse.json({ error: 'not found' }, { status: 404 })
-    return HttpResponse.json({ items: [...template.versions].reverse().map((v) => ({ ...v, tenant_id: 'tenant-dev', template_id: template.id })) })
+    // Newest first, older than `before`, at most `limit` (50 by default, 200 at most), as the server pages.
+    const query = new URL(request.url).searchParams
+    const before = Number(query.get('before')) || 0
+    const limit = Math.min(Number(query.get('limit')) || 50, 200)
+    const items = [...template.versions].reverse().filter((v) => before <= 0 || v.version < before).slice(0, limit)
+    return HttpResponse.json({ items: items.map((v) => ({ ...v, tenant_id: 'tenant-dev', template_id: template.id })) })
   }),
   http.patch('/api/v1/notifications/templates/:nid', async ({ params, request }) => {
     const template = TEMPLATE_STORE.find((t) => t.id === params.nid)

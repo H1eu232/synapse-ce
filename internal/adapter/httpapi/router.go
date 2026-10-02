@@ -579,7 +579,12 @@ func (rt *Router) routes() *http.ServeMux {
 			mux.HandleFunc("POST /api/v1/notifications/templates/{nid}/rollback", rt.authz(userdom.PermManageIntegrations, rt.rollbackNotificationTemplate))
 			mux.HandleFunc("POST /api/v1/notifications/templates/{nid}/archive", rt.authz(userdom.PermManageIntegrations, rt.archiveNotificationTemplate))
 			mux.HandleFunc("GET /api/v1/notifications/channels/{nid}/template-resolution", rt.authz(userdom.PermManageIntegrations, rt.previewNotificationTemplateResolution))
+			// Template preview (#1372): renders without sending, against a fixture or one of the
+			// tenant's recent events. Stored events also need view.
+			mux.HandleFunc("POST /api/v1/notifications/templates/preview", rt.authz(userdom.PermManageIntegrations, rt.previewNotificationTemplate))
+			mux.HandleFunc("GET /api/v1/notifications/templates/preview/events", rt.authz(userdom.PermManageIntegrations, rt.listNotificationPreviewEvents))
 		}
+		mux.HandleFunc("POST /api/v1/notifications/deliveries/{nid}/redrive", rt.authz(userdom.PermAdminister, rt.redriveNotificationDelivery))
 	}
 	if rt.siem != nil {
 		// Reading, pausing, resuming and testing a sink need manage_integrations. Creating a

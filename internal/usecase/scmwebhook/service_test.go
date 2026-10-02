@@ -260,4 +260,3 @@ func TestConfigureGitHubWebhookRequiresSingleBoundGitHubProject(t *testing.T) {
 		t.Fatalf("wrong-provider configure err=%v endpoint=%+v", err, admin.endpoint)
 	}
 }
-

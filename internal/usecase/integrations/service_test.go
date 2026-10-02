@@ -142,6 +142,53 @@ func TestPrivateNetworkIntegrationsRequireOperatorApproval(t *testing.T) {
 	}
 }
 
+func TestCredentiallessInboundProviderEnablesWithoutConnectionTest(t *testing.T) {
+	ctx := context.Background()
+	tenantID := shared.ID("tenant-1")
+	clock := &integrationTestClock{now: time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)}
+	ids := idgen.RandomID{}
+	queue := memory.NewJobQueue(ids, clock.Now)
+	cipher, err := vault.NewCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.NewIntegrationStore(queue, cipher, clock, &integrationTestAudit{})
+	registry := integration.NewRegistry()
+	descriptor := integration.ProviderDescriptor{
+		Provider: "gitlab", Name: "GitLab",
+		Description: "Inbound-only webhooks.",
+		Capabilities: []integration.Capability{},
+		SecretFields: []integration.FieldDescriptor{},
+	}
+	if err := registry.Register(descriptor, func(integration.Integration, integration.CredentialBundle, selfhosted.Rules) (integration.Adapter, error) {
+		return &integrationTestAdapter{descriptor: descriptor, clock: clock}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(store, registry, memory.NewProjectRepository(), integrationTestMatcher{}, ids, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(ctx, CreateInput{
+		TenantID: tenantID, Provider: "gitlab", Name: "GitLab inbound",
+		Endpoint: "https://gitlab.example.com", Config: map[string]any{},
+		PollInterval: time.Minute, Actor: "admin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := service.SetEnabled(ctx, tenantID, created.ID, true, created.Version, "admin")
+	if err != nil {
+		t.Fatalf("enable credentialless inbound provider: %v", err)
+	}
+	if !enabled.Enabled || enabled.CredentialConfigured {
+		t.Fatalf("enabled inbound integration = %+v, want enabled with no integration credential", enabled)
+	}
+	if _, err := service.StartOperation(ctx, tenantID, created.ID, integration.OperationTest, "admin"); !errors.Is(err, shared.ErrValidation) {
+		t.Fatalf("inbound-only provider test operation error = %v, want validation", err)
+	}
+}
+
 func TestServiceFullMemoryWorkflowIsIdempotentAndCancellationSafe(t *testing.T) {
 	ctx := context.Background()
 	tenantID := shared.ID("tenant-1")
@@ -573,4 +620,3 @@ func TestGitHubInboundIntegrationAllowsExactlyOneGitProjectBinding(t *testing.T)
 		t.Fatalf("local GitHub project binding err=%v, want validation", err)
 	}
 }
-

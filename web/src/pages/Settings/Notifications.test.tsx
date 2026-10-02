@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { api } from '../../lib/api'
+import { api, ApiError } from '../../lib/api'
 import type { NotificationEventSpec, NotificationRuleFilter } from '../../lib/api'
 import { resetCapabilityCache } from '../../lib/capabilities'
+import { ToastProvider } from '../../components/synapse/Toast'
 import { Alerting } from './Alerting'
 
 vi.mock('../../lib/api', async (original) => ({
@@ -16,6 +17,7 @@ vi.mock('../../lib/api', async (original) => ({
     listNotificationEventTypes: vi.fn(),
     notificationDeliveryPage: vi.fn(),
     listNotificationAttempts: vi.fn(),
+    redriveNotificationDelivery: vi.fn(),
     createNotificationChannel: vi.fn(),
     updateNotificationChannel: vi.fn(),
     createNotificationRule: vi.fn(),
@@ -139,6 +141,7 @@ describe('notification settings', () => {
           id: 'd',
           channel_id: 'c',
           channel_type: 'webhook',
+          redrive_fence: 2,
           event_id: 'e',
           state: 'retrying',
           attempts: 1,
@@ -165,6 +168,123 @@ describe('notification settings', () => {
     )
     expect(await screen.findByText(/http_503/)).toBeInTheDocument()
     expect(screen.queryByText('Acknowledged')).not.toBeInTheDocument()
+  })
+  it('lets an integration_admin inspect dead letters without offering redrive', async () => {
+    vi.mocked(api.me).mockResolvedValue({ role: 'integration_admin' } as never)
+    vi.mocked(api.notificationDeliveryPage).mockResolvedValue({ items: [{
+      id: 'dead-1', channel_id: 'c', channel_type: 'webhook',
+      event_id: 'e', state: 'dead_letter', attempts: 3,
+      redrive_fence: 9, created_at: '2026-09-10T00:00:00Z', updated_at: '',
+      matched_rule_ids: [], last_error: 'http_503',
+    }] })
+    render(<Alerting />)
+    expect(await screen.findByText(/http_503/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Redrive' })).not.toBeInTheDocument()
+  })
+  it('confirms a single redrive with a reason and the displayed queue fence', async () => {
+    const dead = {
+      id: 'dead-1', channel_id: 'c', channel_type: 'webhook' as const,
+      event_id: 'e', state: 'dead_letter' as const, attempts: 3,
+      redrive_fence: 9, created_at: '2026-09-10T00:00:00Z', updated_at: '',
+      matched_rule_ids: [],
+    }
+    const pending = { ...dead, state: 'pending' as const, redrive_fence: 10 }
+    vi.mocked(api.notificationDeliveryPage)
+      .mockResolvedValueOnce({ items: [dead] })
+      .mockResolvedValue({ items: [pending] })
+    vi.mocked(api.redriveNotificationDelivery).mockResolvedValue(pending)
+    render(<ToastProvider><Alerting /></ToastProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Redrive' }))
+    expect(await screen.findByText(/may send a duplicate/i)).toBeInTheDocument()
+    const reason = screen.getByLabelText('Reason for redrive')
+    fireEvent.change(reason, { target: { value: 'Receiver fixed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue redrive' }))
+    await waitFor(() =>
+      expect(api.redriveNotificationDelivery).toHaveBeenCalledWith(
+        'dead-1', 'Receiver fixed', 9,
+      ),
+    )
+    expect(await screen.findByText('Redrive queued. Delivery will run asynchronously.')).toBeInTheDocument()
+  })
+  it('keeps the confirmation and reason open when redrive conflicts', async () => {
+    const dead = {
+      id: 'dead-2', channel_id: 'c', channel_type: 'webhook' as const,
+      event_id: 'e', state: 'dead_letter' as const, attempts: 3,
+      redrive_fence: 4, created_at: '2026-09-10T00:00:00Z', updated_at: '',
+      matched_rule_ids: [],
+    }
+    vi.mocked(api.notificationDeliveryPage).mockResolvedValue({ items: [dead] })
+    vi.mocked(api.redriveNotificationDelivery).mockRejectedValue(new ApiError(409, 'Delivery changed'))
+    render(<Alerting />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Redrive' }))
+    fireEvent.change(screen.getByLabelText('Reason for redrive'), { target: { value: 'Recheck destination' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue redrive' }))
+    expect(await screen.findByText('Delivery changed')).toBeInTheDocument()
+    expect(screen.getByLabelText('Reason for redrive')).toHaveValue('Recheck destination')
+    expect(screen.getByRole('dialog', { name: 'Redrive notification delivery?' })).toBeInTheDocument()
+  })
+  it('requires a reason and allows cancellation without submitting', async () => {
+    const dead = {
+      id: 'dead-3', channel_id: 'c', channel_type: 'webhook' as const,
+      event_id: 'e', state: 'dead_letter' as const, attempts: 1,
+      redrive_fence: 1, created_at: '2026-09-10T00:00:00Z', updated_at: '',
+      matched_rule_ids: [],
+    }
+    vi.mocked(api.notificationDeliveryPage).mockResolvedValue({ items: [dead] })
+    render(<Alerting />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Redrive' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Queue redrive' }))
+    expect(await screen.findByText('Enter a reason of 1 to 500 characters.')).toBeInTheDocument()
+    expect(api.redriveNotificationDelivery).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Redrive notification delivery?' })).not.toBeInTheDocument(),
+    )
+  })
+  it('does not replace a newer attempt selection when redrive refresh finishes', async () => {
+    const dead = {
+      id: 'dead-selected', channel_id: 'c', channel_type: 'webhook' as const,
+      event_id: 'e', state: 'dead_letter' as const, attempts: 1,
+      redrive_fence: 1, created_at: '2026-09-10T00:00:00Z', updated_at: '', matched_rule_ids: [],
+    }
+    const other = { ...dead, id: 'other-selected', attempts: 2 }
+    const page = { items: [dead, other] }
+    let finishRefresh!: (value: typeof page) => void
+    const refresh = new Promise<typeof page>((resolve) => { finishRefresh = resolve })
+    vi.mocked(api.notificationDeliveryPage).mockResolvedValueOnce(page).mockReturnValueOnce(refresh)
+    vi.mocked(api.listNotificationAttempts).mockResolvedValue([])
+    vi.mocked(api.redriveNotificationDelivery).mockResolvedValue({ ...dead, state: 'pending', redrive_fence: 2 })
+    render(<ToastProvider><Alerting /></ToastProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'View 1 attempts' }))
+    expect(await screen.findByText('Attempts for dead-selected')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Redrive' })[0])
+    fireEvent.change(screen.getByLabelText('Reason for redrive'), { target: { value: 'Receiver fixed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue redrive' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'View 2 attempts' }))
+    expect(await screen.findByText('Attempts for other-selected')).toBeInTheDocument()
+    await act(async () => { finishRefresh(page); await refresh })
+    expect(screen.getByText('Attempts for other-selected')).toBeInTheDocument()
+    expect(api.listNotificationAttempts).toHaveBeenCalledTimes(2)
+  })
+  it('counts reason Unicode code points like the API and submits only once', async () => {
+    const dead = {
+      id: 'unicode', channel_id: 'c', channel_type: 'webhook' as const,
+      event_id: 'e', state: 'dead_letter' as const, attempts: 1,
+      redrive_fence: 1, created_at: '2026-09-10T00:00:00Z', updated_at: '', matched_rule_ids: [],
+    }
+    vi.mocked(api.notificationDeliveryPage).mockResolvedValue({ items: [dead] })
+    vi.mocked(api.redriveNotificationDelivery).mockResolvedValue({ ...dead, state: 'pending' })
+    render(<ToastProvider><Alerting /></ToastProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Redrive' }))
+    const reason = '🔧'.repeat(300)
+    fireEvent.change(screen.getByLabelText('Reason for redrive'), { target: { value: reason } })
+    expect(screen.getByText('300/500 characters')).toBeInTheDocument()
+    const submit = screen.getByRole('button', { name: 'Queue redrive' })
+    fireEvent.click(submit)
+    fireEvent.click(submit)
+    await waitFor(() => expect(api.redriveNotificationDelivery).toHaveBeenCalledWith('unicode', reason, 1))
+    expect(api.redriveNotificationDelivery).toHaveBeenCalledTimes(1)
   })
   it('offers only the channel types the server advertises', async () => {
     vi.mocked(api.listCapabilities).mockResolvedValue([

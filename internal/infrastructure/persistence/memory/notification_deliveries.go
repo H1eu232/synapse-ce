@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -25,7 +26,7 @@ func (r *NotificationRepository) GetDelivery(_ context.Context, tenant, id share
 	if !ok {
 		return notification.Delivery{}, deliveryNotFound(id)
 	}
-	return cloneDelivery(stored.delivery), nil
+	return r.deliveryWithFence(stored), nil
 }
 
 // ListDeliveries pages newest first with the same filters and cursor as the Postgres query.
@@ -39,7 +40,7 @@ func (r *NotificationRepository) ListDeliveries(_ context.Context, f ports.Notif
 	var items []notification.Delivery
 	for key, stored := range r.deliveries {
 		if key.tenant == f.TenantID && r.deliveryMatches(stored.delivery, f) {
-			items = append(items, cloneDelivery(stored.delivery))
+			items = append(items, r.deliveryWithFence(stored))
 		}
 	}
 	slices.SortFunc(items, newestDeliveryFirst)
@@ -257,14 +258,82 @@ func (r *NotificationRepository) CancelDelivery(_ context.Context, tenant, deliv
 
 // DeadLetterDelivery moves an open delivery whose job was dead-lettered to dead_letter and reports
 // whether this call did it, so a repeated callback does not count the same dead letter twice.
-func (r *NotificationRepository) DeadLetterDelivery(_ context.Context, tenant, delivery shared.ID, reason string) (bool, error) {
+func (r *NotificationRepository) DeadLetterDelivery(_ context.Context, tenant, delivery shared.ID, fence int64, reason string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := notificationKey{tenant, delivery}
-	if stored, found := r.deliveries[key]; found && r.jobs != nil && !r.jobs.hasFailed(stored.jobID) {
-		return false, nil
+	if stored, found := r.deliveries[key]; found && r.jobs != nil {
+		r.jobs.mu.Lock()
+		defer r.jobs.mu.Unlock()
+		job := r.jobs.jobs[stored.jobID]
+		if job == nil || job.tenantID != tenant || job.status != "failed" || job.claimFence != fence {
+			return false, nil
+		}
 	}
 	return r.closeDelivery(key, notification.DeliveryDead, reason), nil
+}
+
+// deliveryWithFence is called with the repository lock held.
+func (r *NotificationRepository) deliveryWithFence(stored storedDelivery) notification.Delivery {
+	d := cloneDelivery(stored.delivery)
+	if r.jobs != nil {
+		r.jobs.mu.Lock()
+		defer r.jobs.mu.Unlock()
+		if job := r.jobs.jobs[stored.jobID]; job != nil && job.tenantID == d.TenantID {
+			d.RedriveFence = job.claimFence
+		}
+	}
+	return d
+}
+
+// RedriveDelivery updates the delivery and its queue job under both locks.
+func (r *NotificationRepository) RedriveDelivery(_ context.Context, tenant, id shared.ID, expectedFence int64) (notification.Delivery, notification.Channel, error) {
+	fail := func(err error) (notification.Delivery, notification.Channel, error) {
+		return notification.Delivery{}, notification.Channel{}, err
+	}
+	if expectedFence < 1 {
+		return fail(fmt.Errorf("positive queue fence required: %w", shared.ErrValidation))
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := notificationKey{tenant, id}
+	stored, ok := r.deliveries[key]
+	if !ok {
+		return fail(deliveryNotFound(id))
+	}
+	if r.countOpenDeliveries(tenant) >= maxOpenDeliveries {
+		return fail(capacityReached("delivery"))
+	}
+	c, active := r.activeChannel(tenant, stored.delivery.ChannelID)
+	if !active || c.SecretVersion != stored.channelVersion || c.Type != stored.delivery.ChannelType || stored.delivery.State != notification.DeliveryDead {
+		return fail(fmt.Errorf("notification delivery or channel configuration changed: %w", shared.ErrConflict))
+	}
+	if c.Type == notification.ChannelEmail && !slices.ContainsFunc(c.Recipients, func(recipient string) bool {
+		return strings.EqualFold(recipient, stored.delivery.Recipient)
+	}) {
+		return fail(fmt.Errorf("notification recipient is no longer configured: %w", shared.ErrConflict))
+	}
+	if r.jobs == nil {
+		return fail(fmt.Errorf("notification delivery queue missing: %w", shared.ErrConflict))
+	}
+	r.jobs.mu.Lock()
+	defer r.jobs.mu.Unlock()
+	job := r.jobs.jobs[stored.jobID]
+	if job == nil || job.tenantID != tenant || job.kind != notificationDeliverJobKey || job.status != "failed" || job.claimFence != expectedFence || !job.claimedUntil.IsZero() {
+		return fail(fmt.Errorf("notification delivery queue state changed: %w", shared.ErrConflict))
+	}
+	var payload struct {
+		DeliveryID shared.ID `json:"delivery_id"`
+	}
+	if json.Unmarshal(job.payload, &payload) != nil || payload.DeliveryID != id {
+		return fail(fmt.Errorf("notification delivery queue identity changed: %w", shared.ErrConflict))
+	}
+	job.status, job.attempts, job.claimFence, job.availableAt = "queued", 0, job.claimFence+1, r.now().UTC()
+	d := &stored.delivery
+	d.State, d.LastError, d.NextAttemptAt, d.DeliveredAt = notification.DeliveryPending, "", nil, nil
+	d.RedriveFence, d.UpdatedAt = job.claimFence, r.now().UTC()
+	r.deliveries[key] = stored
+	return cloneDelivery(*d), cloneChannel(c), nil
 }
 
 func (r *NotificationRepository) closeDelivery(key notificationKey, state notification.DeliveryState, reason string) bool {

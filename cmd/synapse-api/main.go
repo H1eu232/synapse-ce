@@ -28,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	eventschemas "github.com/KKloudTarus/synapse-ce/docs/guide/schemas/events"
 	"github.com/KKloudTarus/synapse-ce/internal/adapter/httpapi"
 	"github.com/KKloudTarus/synapse-ce/internal/adapter/observability"
 	"github.com/KKloudTarus/synapse-ce/internal/composition/scacompose"
@@ -56,6 +57,7 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/fleetca"
 	azurepipelinesintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/azurepipelines"
 	githubintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/github"
+	gitlabintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/gitlab"
 	jenkinsintegration "github.com/KKloudTarus/synapse-ce/internal/infrastructure/integration/jenkins"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/llm/openai"
 	"github.com/KKloudTarus/synapse-ce/internal/infrastructure/logstream"
@@ -197,7 +199,6 @@ import (
 	ownershipuc "github.com/KKloudTarus/synapse-ce/internal/usecase/ownership"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/ports"
 	projectuc "github.com/KKloudTarus/synapse-ce/internal/usecase/projectuc"
-	scmwebhookuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scmwebhook"
 	promotionuc "github.com/KKloudTarus/synapse-ce/internal/usecase/promotion"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/purplecoverage"
 	purpleteamuc "github.com/KKloudTarus/synapse-ce/internal/usecase/purpleteam"
@@ -219,6 +220,7 @@ import (
 	scauc "github.com/KKloudTarus/synapse-ce/internal/usecase/sca"
 	scanrunuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scanrun"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/scmconnectoruc"
+	scmwebhookuc "github.com/KKloudTarus/synapse-ce/internal/usecase/scmwebhook"
 	siemuc "github.com/KKloudTarus/synapse-ce/internal/usecase/siem"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/slauc"
 	"github.com/KKloudTarus/synapse-ce/internal/usecase/srcreach"
@@ -976,6 +978,10 @@ func main() {
 		log.Error("integration provider registry init failed", "err", err)
 		os.Exit(1)
 	}
+	if err := gitlabintegration.Register(integrationRegistry); err != nil {
+		log.Error("integration provider registry init failed", "err", err)
+		os.Exit(1)
+	}
 	integrationRules, err := cfg.IntegrationSelfHostedRules()
 	if err != nil {
 		log.Error("integration endpoint configuration invalid", "err", err)
@@ -1480,7 +1486,7 @@ func main() {
 	}
 	router := httpapi.NewRouter(log, auth, engService, scaService, aupService, findingsService, exportService, reportService, evidenceService, reconService, logBroker, transferService, auditService, vexService, usersService, credentialsService)
 	if cfg.InboundWebhooksEnabled {
-		if databasePool == nil || cfg.VaultMasterKey == "" {
+		if databasePool == nil || reconQueue == nil || cfg.VaultMasterKey == "" {
 			log.Error("inbound webhooks require PostgreSQL and SYNAPSE_VAULT_MASTER_KEY")
 			os.Exit(1)
 		}
@@ -1491,6 +1497,13 @@ func main() {
 			log.Error("inbound webhook runtime DB role cannot enforce tenant isolation", "err", err)
 			os.Exit(1)
 		}
+		// Receipt and enqueue commit together before any source work starts.
+		scaService.SetQueue(reconQueue)
+		if toolExecution != config.ToolExecutionDispatchOnly && scaWorker == nil {
+			scaWorker = worker.New(reconQueue, map[string]worker.Handler{
+				scauc.ScanJobKind: scaJobHandler{svc: scaService},
+			}, worker.Config{Visibility: cfg.ScanTimeout + time.Minute, MaxAttempts: 3}, log)
+		}
 		webhookRepository := postgres.NewInboundWebhookRepository(databasePool)
 		githubWebhookReceiver := scmwebhookuc.NewService(integrationService, projectService)
 		if err := githubWebhookReceiver.SetAdmin(
@@ -1500,7 +1513,17 @@ func main() {
 			log.Error("GitHub inbound webhook administration init failed", "err", err)
 			os.Exit(1)
 		}
-		router.SetInboundWebhookPlane(webhookRepository, vaultCipher, githubWebhookReceiver)
+		gitlabWebhookReceiver, err := scmwebhookuc.NewReceiver(integrationStore, projectService, webhookRepository, clock)
+		if err != nil {
+			log.Error("GitLab inbound webhook receiver init failed", "err", err)
+			os.Exit(1)
+		}
+		providerReceiver, err := scmwebhookuc.NewProviderReceiver(githubWebhookReceiver, gitlabWebhookReceiver)
+		if err != nil {
+			log.Error("SCM inbound webhook receiver init failed", "err", err)
+			os.Exit(1)
+		}
+		router.SetInboundWebhookPlane(webhookRepository, vaultCipher, providerReceiver)
 		router.SetInboundWebhookAdmin(githubWebhookReceiver)
 	}
 	if cfg.OwnershipMode != "off" && cfg.OwnershipMode != "observe" && cfg.OwnershipMode != "enforce" {
@@ -1585,6 +1608,10 @@ func main() {
 		// Template resolution (#1371) reads the tenant default_locale; the built-in tier stays the
 		// empty catalog until #1366 ships built-in templates.
 		notificationService.SetTenantSettings(tenantSettingsStore)
+		// The template preview (#1372) renders against the published fixtures or the tenant's
+		// recent events.
+		notificationService.SetEventFixtures(eventschemas.Fixtures)
+		notificationService.SetEventReader(notificationRepository)
 		router.SetNotifications(notificationService)
 		// The API still needs SMTP for contact verification and personal inbox mail.
 		userContactService, notificationErr = usercontacts.NewService(postgres.NewUserContactStore(databasePool), userRepo, vaultCipher, notificationSender, ids, clock, usercontacts.DeriveVerifierKey(cfg.VaultMasterKey), cfg.NotificationSMTPHost != "" && cfg.NotificationSMTPFrom != "")

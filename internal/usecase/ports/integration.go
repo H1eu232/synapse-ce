@@ -8,12 +8,17 @@ import (
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
 )
 
+type IntegrationEnableRequirements struct {
+	RequireCredential     bool
+	RequireSuccessfulTest bool
+}
+
 type IntegrationStore interface {
 	CreateIntegration(ctx context.Context, item integration.Integration, audit AuditEntry) error
 	ListIntegrations(ctx context.Context, includeArchived bool) ([]integration.Integration, error)
 	GetIntegration(ctx context.Context, id shared.ID) (integration.Integration, error)
 	UpdateIntegration(ctx context.Context, item integration.Integration, expectedVersion int, audit AuditEntry) (integration.Integration, error)
-	SetIntegrationEnabled(ctx context.Context, id shared.ID, enabled bool, expectedVersion int, audit AuditEntry) (integration.Integration, error)
+	SetIntegrationEnabled(ctx context.Context, id shared.ID, enabled bool, expectedVersion int, requirements IntegrationEnableRequirements, audit AuditEntry) (integration.Integration, error)
 	ArchiveIntegration(ctx context.Context, id shared.ID, expectedVersion int, audit AuditEntry) error
 
 	PutIntegrationCredential(ctx context.Context, integrationID shared.ID, credentialID string, plaintext []byte, expectedVersion, expectedConnectionRevision int, audit AuditEntry) error

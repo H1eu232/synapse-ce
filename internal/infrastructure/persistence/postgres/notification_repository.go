@@ -654,12 +654,14 @@ func (r *NotificationRepository) ListSourceFailures(ctx context.Context, f ports
 	return out, err
 }
 
-const deliverySelect = `SELECT tenant_id,id,event_id,channel_id,channel_type,recipient,matched_rules,state,attempts,last_error,next_attempt_at,delivered_at,created_at,updated_at FROM notification_deliveries`
+const deliverySelect = `SELECT d.tenant_id,d.id,d.event_id,d.channel_id,d.channel_type,d.recipient,d.matched_rules,d.state,d.attempts,d.last_error,d.next_attempt_at,d.delivered_at,d.created_at,d.updated_at,
+COALESCE((SELECT j.claim_fence FROM jobs j WHERE j.tenant_id=d.tenant_id AND j.id='notification-'||d.id AND j.kind='notification.deliver'),0)
+FROM notification_deliveries d`
 
 func scanDelivery(row scanner, d *notification.Delivery) error {
 	var rules []byte
 	var typ, state string
-	if err := row.Scan(&d.TenantID, &d.ID, &d.EventID, &d.ChannelID, &typ, &d.Recipient, &rules, &state, &d.Attempts, &d.LastError, &d.NextAttemptAt, &d.DeliveredAt, &d.CreatedAt, &d.UpdatedAt); err != nil {
+	if err := row.Scan(&d.TenantID, &d.ID, &d.EventID, &d.ChannelID, &typ, &d.Recipient, &rules, &state, &d.Attempts, &d.LastError, &d.NextAttemptAt, &d.DeliveredAt, &d.CreatedAt, &d.UpdatedAt, &d.RedriveFence); err != nil {
 		return err
 	}
 	d.ChannelType = notification.ChannelType(typ)
@@ -832,23 +834,31 @@ func (r *NotificationRepository) CancelDelivery(ctx context.Context, tenant, did
 	})
 }
 
-func (r *NotificationRepository) DeadLetterDelivery(ctx context.Context, tenant, did shared.ID, reason string) (bool, error) {
+func (r *NotificationRepository) DeadLetterDelivery(ctx context.Context, tenant, did shared.ID, fence int64, reason string) (bool, error) {
 	changed := false
 	err := WithTenant(ctx, r.pool, tenant.String(), func(tx pgx.Tx) error {
-		// The delivery and its queue job are locked/updated in the same
-		// transaction, so racing callbacks cannot both claim the transition.
-		tag, err := tx.Exec(ctx, `UPDATE notification_deliveries d
-			SET state='dead_letter',last_error=$3,next_attempt_at=NULL,updated_at=now()
-			WHERE tenant_id=$1 AND id=$2 AND state IN ('pending','retrying')
-			AND EXISTS(SELECT 1 FROM jobs j WHERE j.tenant_id=d.tenant_id
-				AND j.id='notification-'||d.id AND j.status='failed')`, tenant, did, sanitizeError(reason))
+		// Lock the durable job first. Redrive and reconciliation use the same order,
+		// so a delayed callback cannot apply an earlier failed cycle to newer work.
+		var status, kind string
+		var currentFence int64
+		if err := tx.QueryRow(ctx, `SELECT status,kind,claim_fence FROM jobs WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenant, "notification-"+did.String()).Scan(&status, &kind, &currentFence); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		if status != "failed" || kind != "notification.deliver" || currentFence != fence {
+			return nil
+		}
+		tag, err := tx.Exec(ctx, `UPDATE notification_deliveries SET state='dead_letter',last_error=$3,next_attempt_at=NULL,updated_at=now()
+			WHERE tenant_id=$1 AND id=$2 AND state IN ('pending','retrying')`, tenant, did, sanitizeError(reason))
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO notification_audit_intents
 			(tenant_id,id,delivery_id,action,error_code,occurred_at)
-			VALUES($1,'dead:'||$2,$2,'notification.delivery_failed',$3,now())
-			ON CONFLICT DO NOTHING`, tenant, did, sanitizeError(reason))
+			VALUES($1,$4,$2,'notification.delivery_failed',$3,now())
+			ON CONFLICT DO NOTHING`, tenant, did, sanitizeError(reason), fmt.Sprintf("dead:%s:%d", did, fence))
 		if err == nil {
 			changed = true
 		}
@@ -858,6 +868,104 @@ func (r *NotificationRepository) DeadLetterDelivery(ctx context.Context, tenant,
 		return false, err // a transaction that failed to commit changed nothing
 	}
 	return changed, nil
+}
+
+// RedriveDelivery resets one failed notification job in place. The tenant
+// admission lock is acquired first, then job, channel, and delivery rows. This
+// matches projection and BeginAttempt lock ordering and serializes confirmations.
+func (r *NotificationRepository) RedriveDelivery(ctx context.Context, tenant, did shared.ID, expectedFence int64) (notification.Delivery, notification.Channel, error) {
+	var delivery notification.Delivery
+	var channel notification.Channel
+	if expectedFence < 1 {
+		return delivery, channel, fmt.Errorf("positive queue fence required: %w", shared.ErrValidation)
+	}
+	err := WithTenant(ctx, r.pool, tenant.String(), func(tx pgx.Tx) error {
+		if err := notificationAdmission(ctx, tx, tenant, "delivery", 10000); err != nil {
+			return err
+		}
+		var channelID shared.ID
+		if err := tx.QueryRow(ctx, `SELECT channel_id FROM notification_deliveries WHERE tenant_id=$1 AND id=$2`, tenant, did).Scan(&channelID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("notification delivery %s: %w", did, shared.ErrNotFound)
+			}
+			return err
+		}
+		var jobStatus, jobKind string
+		var jobFence int64
+		var jobPayload []byte
+		var claimedUntil *time.Time
+		if err := tx.QueryRow(ctx, `SELECT status,kind,claim_fence,claimed_until,payload FROM jobs WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenant, "notification-"+did.String()).Scan(&jobStatus, &jobKind, &jobFence, &claimedUntil, &jobPayload); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("notification delivery queue state: %w", shared.ErrConflict)
+			}
+			return err
+		}
+		if jobKind != "notification.deliver" || jobStatus != "failed" || jobFence != expectedFence || claimedUntil != nil {
+			return fmt.Errorf("notification delivery queue state changed: %w", shared.ErrConflict)
+		}
+		var payload struct {
+			DeliveryID shared.ID `json:"delivery_id"`
+		}
+		if json.Unmarshal(jobPayload, &payload) != nil || payload.DeliveryID != did {
+			return fmt.Errorf("notification delivery queue identity changed: %w", shared.ErrConflict)
+		}
+		if err := scanChannel(tx.QueryRow(ctx, channelSelect+` WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenant, channelID), &channel); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("notification channel: %w", shared.ErrNotFound)
+			}
+			return err
+		}
+		var state, channelType, recipient string
+		var channelVersion int
+		if err := tx.QueryRow(ctx, `SELECT state,channel_version,channel_type,recipient FROM notification_deliveries WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenant, did).Scan(&state, &channelVersion, &channelType, &recipient); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("notification delivery %s: %w", did, shared.ErrNotFound)
+			}
+			return err
+		}
+		if state != string(notification.DeliveryDead) {
+			return fmt.Errorf("only a dead-lettered notification can be redriven: %w", shared.ErrConflict)
+		}
+		if channel.DeletedAt != nil || !channel.Enabled || channel.Health.Paused() {
+			return fmt.Errorf("notification channel is disabled, deleted, or paused: %w", shared.ErrConflict)
+		}
+		if channel.SecretVersion != channelVersion || string(channel.Type) != channelType {
+			return fmt.Errorf("notification channel configuration changed: %w", shared.ErrConflict)
+		}
+		if channel.Type == notification.ChannelEmail {
+			stillAddressed := false
+			for _, currentRecipient := range channel.Recipients {
+				if strings.EqualFold(currentRecipient, recipient) {
+					stillAddressed = true
+					break
+				}
+			}
+			if !stillAddressed {
+				return fmt.Errorf("notification recipient is no longer configured: %w", shared.ErrConflict)
+			}
+		}
+		tag, err := tx.Exec(ctx, `UPDATE jobs SET status='queued',attempts=0,claim_fence=claim_fence+1,claimed_until=NULL,available_at=now(),updated_at=now()
+			WHERE tenant_id=$1 AND id=$2 AND kind='notification.deliver' AND status='failed' AND claim_fence=$3`, tenant, "notification-"+did.String(), expectedFence)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("notification delivery queue state changed: %w", shared.ErrConflict)
+		}
+		tag, err = tx.Exec(ctx, `UPDATE notification_deliveries SET state='pending',last_error='',next_attempt_at=NULL,delivered_at=NULL,template_ref='',updated_at=now()
+			WHERE tenant_id=$1 AND id=$2 AND state='dead_letter'`, tenant, did)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("notification delivery state changed: %w", shared.ErrConflict)
+		}
+		return scanDelivery(tx.QueryRow(ctx, deliverySelect+` WHERE d.tenant_id=$1 AND d.id=$2`, tenant, did), &delivery)
+	})
+	if err != nil {
+		return notification.Delivery{}, notification.Channel{}, err
+	}
+	return delivery, channel, nil
 }
 
 func stableID(parts ...string) shared.ID {

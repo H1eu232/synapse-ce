@@ -106,8 +106,13 @@ type NotificationRepository interface {
 	FinishAttempt(context.Context, shared.ID, shared.ID, string, int64, shared.ID, time.Time, string, int, string, *time.Time) error
 	CancelDelivery(context.Context, shared.ID, shared.ID, string, int64, string) error
 	// DeadLetterDelivery reports whether this call durably transitioned a pending
-	// delivery to dead_letter. Concurrent or repeated callbacks return false.
-	DeadLetterDelivery(context.Context, shared.ID, shared.ID, string) (bool, error)
+	// delivery to dead_letter for the current queue fence. Delayed callbacks from an
+	// earlier redrive cycle return false.
+	DeadLetterDelivery(context.Context, shared.ID, shared.ID, int64, string) (bool, error)
+	// RedriveDelivery requeues the existing failed notification job and resets its
+	// queue retry budget atomically. expectedFence makes repeated/stale UI requests
+	// conflict. It refuses stale channel config and active/paused destinations.
+	RedriveDelivery(context.Context, shared.ID, shared.ID, int64) (notification.Delivery, notification.Channel, error)
 
 	// RecordChannelOutcome applies one finished attempt to its channel's health (#1464). When the
 	// observation pauses the channel, the same transaction appends the pause to the history,
@@ -119,6 +124,15 @@ type NotificationRepository interface {
 	ResumeChannel(context.Context, shared.ID, shared.ID, int, string, time.Time) (notification.Channel, error)
 	// ListChannelHealthEvents returns a channel's pause and resume history, newest first.
 	ListChannelHealthEvents(context.Context, shared.ID, shared.ID, int) ([]notification.ChannelHealthEvent, error)
+}
+
+// NotificationEventReader reads a tenant's stored notification events for the template preview
+// (#1372). Both methods see only the tenant's own events; another tenant's event is not found.
+type NotificationEventReader interface {
+	// ListRecentNotificationEvents returns up to limit events of one type, newest first.
+	ListRecentNotificationEvents(ctx context.Context, tenant shared.ID, eventType notification.EventType, limit int) ([]notification.Event, error)
+	// GetNotificationEvent returns one event, or shared.ErrNotFound.
+	GetNotificationEvent(ctx context.Context, tenant, id shared.ID) (notification.Event, error)
 }
 
 // NotificationChannelOutcome is one finished attempt as channel health reads it.
