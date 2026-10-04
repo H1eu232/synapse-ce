@@ -11189,11 +11189,27 @@ components:
         debug_events:
           type: array
           items: {type: object}
+        engine_outcomes:
+          type: array
+          maxItems: 64
+          description: Server-computed outcomes for bounded scan engines. Missing on historical jobs means coverage is unknown.
+          items: {$ref: "#/components/schemas/EngineOutcome"}
+        engine_coverage:
+          $ref: "#/components/schemas/EngineCoverage"
 
     ScanResult:
       type: object
       properties:
         target: {type: string}
+        execution_mode: {type: string, enum: [full, vulnerabilities, licenses], description: Mode selected for this invocation; scan_mode may include retained prior results.}
+        includes_previous_results: {type: boolean, description: True when retained prior results contribute to this result.}
+        engine_outcomes:
+          type: array
+          maxItems: 64
+          description: Server-computed outcomes for bounded scan engines. Missing on historical results means coverage is unknown.
+          items: {$ref: "#/components/schemas/EngineOutcome"}
+        engine_coverage:
+          $ref: "#/components/schemas/EngineCoverage"
         languages:
           type: array
           items: {type: object}
@@ -11213,6 +11229,41 @@ components:
           type: object
           additionalProperties: {type: string}
         vuln_db_snapshot: {type: string}
+
+    EngineOutcome:
+      type: object
+      required: [engine, execution, coverage, required]
+      properties:
+        engine: {type: string, minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9_-]*$"}
+        execution: {type: string, enum: [completed, failed, timed_out, cancelled, not_run]}
+        coverage: {type: string, enum: [complete, partial, unknown, not_applicable]}
+        reason: {type: string, enum: ["", not_selected, disabled, not_applicable, unavailable, legacy_reporter, deadline_exceeded, budget_exhausted, cancelled, engine_error, upstream_failure, truncated, source_budget, unrendered_charts, dependency_unresolved, analysis_incomplete]}
+        required: {type: boolean}
+        counts:
+          type: object
+          additionalProperties: false
+          properties:
+            findings: {$ref: "#/components/schemas/EngineMeasurement"}
+            files_seen: {$ref: "#/components/schemas/EngineMeasurement"}
+            files_parsed: {$ref: "#/components/schemas/EngineMeasurement"}
+            files_skipped: {$ref: "#/components/schemas/EngineMeasurement"}
+            files_unscanned: {$ref: "#/components/schemas/EngineMeasurement"}
+            source_budget_bytes: {$ref: "#/components/schemas/EngineMeasurement"}
+            unrendered_charts: {$ref: "#/components/schemas/EngineMeasurement"}
+            proposals: {$ref: "#/components/schemas/EngineMeasurement"}
+
+    EngineMeasurement:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+
+    EngineCoverage:
+      type: object
+      required: [status, required, completed]
+      properties:
+        status: {type: string, enum: [complete, partial, unknown, not_applicable]}
+        required: {type: integer, minimum: 0, maximum: 64}
+        completed: {type: integer, minimum: 0, maximum: 64}
 
     ProjectDependencyGraph:
       type: object
