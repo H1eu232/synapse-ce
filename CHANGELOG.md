@@ -7,6 +7,10 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+### Added
+
+- Bitbucket Cloud inbound `repo:push` and open pull-request creation/update webhooks (#1453), with HMAC-SHA256 verification, request UUID and authenticated-body replay protection, and PostgreSQL transactions covering receipts and durable scan enqueue. Multi-ref pushes and deliveries during an active scan remain queued until a running slot is available; workers recheck scope before executing. Administrators can bind one existing Git Project and configure or rotate the sealed webhook secret in the console. Fork PR scans disable Git credentials and build execution and do not decorate the forge; repository acquisition always uses the Project's stored origin.
+
 ### Fixed
 
 - **An exhausted scan budget no longer looks like a clean scan (#1548, #1549).** When the shared budget ran out, SAST, secret and IaC findings could come back empty while dependency confidence stayed high and the job finished successfully, so a scan that never completed was indistinguishable from one that found nothing. Each planned engine now records its own execution and coverage as server-owned facts, independently of whether it produced findings, and those facts are sealed into native provenance under manifest schema v2. Results sealed under v1 keep their original hash and are neither resealed nor regraded. The CLI, API, dashboard and reports read overall `engine_coverage` separately from dependency completeness; historical results without engine metadata stay `unknown` rather than being promoted to complete. The existing findings-based CLI gate remains the default, and the new opt-in `--require-complete` exits 1 after the report when a required engine did not complete.
