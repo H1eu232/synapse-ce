@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/KKloudTarus/synapse-ce/internal/domain/msgtemplate"
 	domain "github.com/KKloudTarus/synapse-ce/internal/domain/notification"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/privacy"
 	"github.com/KKloudTarus/synapse-ce/internal/domain/shared"
@@ -144,7 +145,18 @@ func (d eventData) time(key string) (time.Time, bool) {
 // scrubSecrets removes secrets a scanner or a producer left in a value (#1361): keyed assignments
 // such as password=, bearer tokens, AWS access key IDs, PEM private keys and URL credentials. It
 // runs before the snapshot, so no template ever sees them.
+//
+// It scrubs twice. The raw pass sees a PEM block while its line breaks still mark its lines. The
+// snapshot then removes invisible characters, which can rejoin a key a scanner split (pass, a zero
+// width space, word=), so the value is sanitized here and scrubbed again: the snapshot stores the
+// text the second pass saw. Scrubbing a scrubbed value changes nothing, so projecting an event
+// again stores the same snapshot.
 func scrubSecrets(value string) string {
+	value = scrubPatterns(value)
+	return scrubPatterns(strings.TrimSpace(msgtemplate.Sanitize(value)))
+}
+
+func scrubPatterns(value string) string {
 	return redact.URLCreds(privacy.ScrubSecretPatterns(value))
 }
 
